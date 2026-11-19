@@ -49,7 +49,7 @@ for mise, copying from `$(npm root -g)/pi-stick/share/.` instead. The CLI
 has no npm runtime dependencies; reviewer dependencies stay inside Docker.
 
 For maintainers: `npm run pack:npm` builds the public CLI tarball. Publish the
-tested tarball with `npm publish dist/pi-stick-<version>.tgz --access public`.
+tested tarball with `npm publish ./dist/pi-stick-<version>.tgz --access public`.
 The checkout's manifest stays private because it also builds the reviewer image.
 
 ### Source install (Node.js 24.12+)
