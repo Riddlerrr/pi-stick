@@ -8,6 +8,11 @@ Progress is plain text so pipes and reattached terminals see the same review.
 A fresh installation has no projects. Creating one clones source but does not
 build images, start containers, or call a model.
 
+## Development
+
+Run `npm run check` for Biome linting, formatting and TypeScript checks.
+Use `npm run lint -- --write` to apply Biome's safe fixes.
+
 ## Install
 
 Needs Linux, Node.js 24.12+ (native TypeScript), Git, util-linux `flock`, tar,

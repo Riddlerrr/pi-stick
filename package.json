@@ -9,6 +9,7 @@
     "@earendil-works/pi-durable": "1.5.2"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.3.5",
     "@types/node": "24.19.2",
     "typescript": "6.0.3"
   },
@@ -19,7 +20,8 @@
     "pi-stick": "./pi-stick"
   },
   "scripts": {
-    "check": "tsc --noEmit",
+    "check": "npm run lint && tsc --noEmit",
+    "lint": "biome check --error-on-warnings .",
     "test": "node --test test/*.test.ts"
   }
 }
