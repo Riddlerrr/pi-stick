@@ -13,12 +13,36 @@ build images, start containers, or call a model.
 Run `npm run check` for Biome linting, formatting and TypeScript checks.
 Use `npm run lint -- --write` to apply Biome's safe fixes.
 
+On Linux, `npm run build:binary` uses Bun to compile for the host architecture
+(x64 or arm64) and writes `dist/pi-stick-linux-<arch>.tar.gz`. Pushing a
+`v*` tag builds and tests both archives before publishing a GitHub release.
+
 ## Install
 
-Needs Linux, Node.js 24.12+ (native TypeScript), Git, util-linux `flock`, tar,
-and Docker with Compose/Buildx. For reviews, install and
+Needs Linux, Git, util-linux `flock`, tar, and Docker with Compose/Buildx. For reviews, install and
 authenticate gh and Pi (model `openai-codex/gpt-6.2-sol`). The default images
 assume host UID 1000. npm is needed for reviewer upgrades.
+
+### Linux binary via mise
+
+The release binary needs neither Node nor Bun on the host. On a fresh install:
+
+```sh
+mise use -g github:Riddlerrr/pi-stick@latest
+export PI_STICK_HOME="$HOME/.local/share/pi-stick"
+install -d -m 700 "$PI_STICK_HOME"
+cp -R "$(dirname "$(mise which pi-stick)")/share/." "$PI_STICK_HOME/"
+pi-stick --help
+```
+
+The binary defaults to `~/.local/share/pi-stick`. To use another app directory,
+persist an absolute `PI_STICK_HOME` in your environment. This directory holds
+the editable runtime files, default projects and review state; it is not tied
+to a mise version. On upgrade, merge changes from the new `share/` while idle
+rather than overwriting local recipes or reviewer upgrades. Run reviewer
+Compose commands from `$PI_STICK_HOME`.
+
+### Source install (Node.js 24.12+)
 
 On this host, edit the Git checkout at `~/workspace/pi-stick`. Run the CLI and
 Compose from the installed copy at `~/workspace/homelab/pi-stick`, not from
@@ -57,8 +81,8 @@ pi-stick create project my-app               # prompts for Git URL
 pi-stick create project another --repo https://github.com/OWNER/REPO.git
 ```
 
-By default workspaces live under `projects/` beside the launcher (gitignored),
-regardless of the current directory. To override, put this object in
+By default workspaces live under `projects/` in the app directory (beside the
+source launcher unless `PI_STICK_HOME` is set), regardless of the current directory. To override, put this object in
 `~/.config/pi-stick/settings.json`:
 
 ```json

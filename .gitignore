@@ -1,6 +1,7 @@
 state/
 /projects/
 node_modules/
+/dist/
 .env
 .env.*
 secrets.yml

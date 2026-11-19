@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import { basename, join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
-import { json, prompt, ROOT, read, run, STATE, touch, writeJson } from "./platform.ts";
+import { compiled, json, prompt, ROOT, read, run, STATE, touch, writeJson } from "./platform.ts";
 import { closed, type Project } from "./projects.ts";
 import type { Manifest } from "./snapshots.ts";
 import { fresh } from "./snapshots.ts";
@@ -95,7 +95,9 @@ export async function launch(pr: Project, url: string, fd: number, resume?: stri
 	const log = fs.openSync(join(dir, "worker.log"), "a");
 	try {
 		fs.writeFileSync(ACTIVE, id);
-		const child = spawn(process.execPath, [join(ROOT, "pi-stick"), "_worker", id, url], {
+		const args = ["_worker", id, url];
+		if (!compiled) args.unshift(process.argv[1]);
+		const child = spawn(process.execPath, args, {
 			detached: true,
 			stdio: ["ignore", log, log, fd],
 		});

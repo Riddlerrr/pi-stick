@@ -3,11 +3,11 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { TestContext } from "node:test";
 import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { ROOT, read, writeJson } from "../src/platform.ts";
+import { read, writeJson } from "../src/platform.ts";
 import { Project } from "../src/projects.ts";
 import { status, tryLock } from "../src/runs.ts";
 
@@ -18,13 +18,17 @@ function fixture(t: TestContext) {
 	t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 	fs.mkdirSync(app);
 	fs.mkdirSync(bin);
-	for (const name of ["src", "pi-stick", "package.json", "review-method.md", "project-template"])
-		fs.cpSync(join(ROOT, name), join(app, name), { recursive: true });
+	const binary = process.env.PI_STICK_TEST_BINARY;
+	if (binary) fs.cpSync(join(dirname(binary), "share"), app, { recursive: true });
+	else
+		for (const name of ["src", "pi-stick", "package.json", "review-method.md", "project-template"])
+			fs.cpSync(join(import.meta.dirname, "..", name), join(app, name), { recursive: true });
 	const cli = join(bin, "pi-stick");
-	fs.symlinkSync(join(app, "pi-stick"), cli);
+	fs.symlinkSync(binary ?? join(app, "pi-stick"), cli);
 	const env = {
 		...process.env,
 		HOME: tmp,
+		PI_STICK_HOME: binary ? app : undefined,
 		PATH: `${bin}:${process.env.PATH}`,
 		GIT_CONFIG_NOSYSTEM: "1",
 		GIT_CONFIG_GLOBAL: join(tmp, ".gitconfig"),
