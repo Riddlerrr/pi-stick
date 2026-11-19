@@ -1,0 +1,12 @@
+services:
+  runner:
+    build: .
+    init: true
+    working_dir: /workspace
+    volumes: [source:/workspace]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 2g
+    pids_limit: 256
+volumes:
+  source:

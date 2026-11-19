@@ -1,0 +1,6 @@
+# Development only: edit the persistent Git checkout inside the runner.
+services:
+  runner:
+    working_dir: /workspace/repo
+    volumes:
+      - ./repo:/workspace/repo

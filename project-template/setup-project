@@ -1,0 +1,3 @@
+#!/bin/sh
+# Install project dependencies here. Runs in the runner with the repo as cwd.
+set -eu

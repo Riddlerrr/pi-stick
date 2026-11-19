@@ -1,0 +1,17 @@
+state/
+/projects/
+node_modules/
+.env
+.env.*
+secrets.yml
+secrets-*.yml
+secrets.json
+*.sqlite*
+*.log
+*.tar
+*.tar.*
+*.tgz
+*.oci
+*.docker
+images/
+backups/
