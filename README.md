@@ -26,8 +26,8 @@ assume host UID 1000. npm is needed for reviewer upgrades.
 
 ### Interactive Linux installer
 
-From this checkout, run `./scripts/install.sh` as your normal user (no sudo). Enter a
-**new** app directory at the prompt, e.g. `~/workspace/homelab/pi-stick`.
+From this checkout, run `./scripts/install.sh` as your normal user (no sudo). Press Enter
+for `~/pi-stick` (or `$PI_STICK_HOME` if set), or enter a **new** app directory.
 The installer downloads the latest Linux binary and matching runtime files,
 creates the projects and private state directories, and installs a launcher
 in `~/.local/bin` that sets `PI_STICK_HOME` for you. Put that directory on
@@ -39,13 +39,14 @@ The release binary needs neither Node nor Bun on the host. On a fresh install:
 
 ```sh
 mise use -g github:Riddlerrr/pi-stick@latest
-export PI_STICK_HOME="$HOME/.local/share/pi-stick"
+export PI_STICK_HOME="$HOME/pi-stick"
 install -d -m 700 "$PI_STICK_HOME"
 cp -R "$(dirname "$(mise which pi-stick)")/share/." "$PI_STICK_HOME/"
 pi-stick --help
 ```
 
-The binary defaults to `~/.local/share/pi-stick`. To use another app directory,
+Release 0.1.0 defaults to `~/.local/share/pi-stick`; newer builds default to
+`~/pi-stick`. No data is moved on upgrade. To keep using an existing directory,
 persist an absolute `PI_STICK_HOME` in your environment. This directory holds
 the editable runtime files, default projects and review state; it is not tied
 to a mise version. On upgrade, merge changes from the new `share/` while idle

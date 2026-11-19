@@ -9,7 +9,7 @@ case "$(uname -s)-$(uname -m)" in
   *) die "Supported platforms: Linux x86_64 and aarch64." ;;
 esac
 
-default=${PI_STICK_HOME:-"$HOME/.local/share/pi-stick"}
+default=${PI_STICK_HOME:-"$HOME/pi-stick"}
 printf 'New pi-stick app directory (projects and state live here) [%s]: ' "$default" >&2
 IFS= read -r app || die "No input received."
 app=${app:-"$default"}

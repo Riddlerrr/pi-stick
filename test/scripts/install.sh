@@ -5,10 +5,11 @@ cd "$(dirname "$0")/../.."
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 export HOME="$tmp"
-app="$HOME/fresh install"
+unset PI_STICK_HOME
+app="$HOME/pi-stick"
 mkdir -p "$HOME/.local/bin"
 ln -s "$app/pi-stick" "$HOME/.local/bin/pi-stick"
-printf '%s\n' "$app" | ./scripts/install.sh
+printf '\n' | ./scripts/install.sh
 "$HOME/.local/bin/pi-stick" cleanup --dry-run
 test -f "$app/state/lock"
 test -f "$app/project-template/.dockerignore"
