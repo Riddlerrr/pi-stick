@@ -41,21 +41,24 @@ if ! $reuse && [[ $app != "$previous" && ( -e $launcher || -L $launcher ) ]]; th
     die "Move the existing $launcher aside first."
 fi
 
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 asset="pi-stick-linux-$arch.tar.gz"
 curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
   "https://github.com/Riddlerrr/pi-stick/releases/latest/download/$asset" -o "$tmp/$asset"
-tar -xzf "$tmp/$asset" -C "$tmp" --no-same-owner
-release="$tmp/pi-stick"
-[[ -x "$release/pi-stick" && -d "$release/share/project-template" ]] || die "Incomplete release archive."
+tar -xzf "$tmp/$asset" -C "$tmp" --no-same-owner pi-stick/pi-stick
+binary="$tmp/pi-stick/pi-stick"
+[[ -f $binary && -x $binary ]] || die "Missing release binary."
+(cd "$repo" && ./scripts/stage-release.sh "$tmp/checkout")
+files="$tmp/checkout/share"
+printf 'CLI: latest Linux release. Runtime files: %s\n' "$repo"
 
 if $reuse; then
   [[ -d $app/state && ! -L $app/state && ! -L $app/state/lock ]] || die "Unexpected state directory or lock."
   exec 9>>"$app/state/lock"
   flock -n 9 && [[ ! -e $app/state/active ]] || die "pi-stick is busy or has an unsettled review."
-  files="$release/share"
-  mv -- "$release/pi-stick" "$files/pi-stick"
+  mv -- "$binary" "$files/pi-stick"
   changed=()
   shopt -s globstar dotglob
   for src in "$files"/**/*; do
@@ -70,7 +73,7 @@ if $reuse; then
     changed+=("$rel")
   done
   if ((${#changed[@]})); then
-    printf 'Replace all listed files with release copies (A), skip all (s), or choose per file (p)? [A] ' >&2
+    printf 'Replace all listed files (A), skip all (s), or choose per file (p)? [A] ' >&2
     IFS= read -r choice || die 'No choice received.'
     case ${choice,,} in
       ''|a|all) ;;
@@ -78,7 +81,7 @@ if $reuse; then
       p|per-file)
         selected=()
         for rel in "${changed[@]}"; do
-          printf 'Install release copy of %s? [y/N] ' "$rel" >&2
+          printf 'Install new copy of %s? [y/N] ' "$rel" >&2
           IFS= read -r answer || die 'No choice received.'
           case ${answer,,} in y|yes) selected+=("$rel") ;; ''|n|no) ;; *) die 'Expected yes or no.' ;; esac
         done
@@ -90,14 +93,14 @@ if $reuse; then
       mv -fT -- "$files/$rel" "$app/$rel"
     done
   else
-    echo 'Release files are unchanged.'
+    echo 'Installed files are unchanged.'
   fi
   exec 9>&-
 else
   mkdir -p -- "$(dirname "$app")" "$bin"
   mkdir -- "$app"
-  cp -R -- "$release/share/." "$app/"
-  install -m 755 -- "$release/pi-stick" "$app/pi-stick"
+  cp -R -- "$files/." "$app/"
+  install -m 755 -- "$binary" "$app/pi-stick"
   mkdir -p -- "$app/projects" "$app/state/"{projects,runs,sessions}
   write_launcher "$app" > "$tmp/launcher"
   chmod 755 "$tmp/launcher"

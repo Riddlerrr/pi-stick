@@ -3,8 +3,8 @@ RUN apt-get update && apt-get -y upgrade && rm -rf /var/lib/apt/lists/*
 ARG NPM_VERSION=12.2.3
 RUN npm install --global npm@${NPM_VERSION} --ignore-scripts --no-audit --no-fund
 WORKDIR /app
-COPY package*.json ./
+COPY --chmod=0644 package*.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
-COPY reviewer.ts ./
+COPY --chmod=0644 reviewer.ts ./
 USER node
 CMD ["sleep","infinity"]
