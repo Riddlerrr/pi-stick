@@ -31,7 +31,9 @@ for `~/pi-stick` (or `$PI_STICK_HOME` if set), or enter a **new** app directory.
 The installer downloads the latest Linux binary and matching runtime files,
 creates the projects and private state directories, and installs a launcher
 in `~/.local/bin` that sets `PI_STICK_HOME` for you. Put that directory on
-your PATH. The installer does not start Docker or migrate existing data.
+your PATH. At the reviewer prompt, press Enter to build and start the container,
+then run `pi-stick doctor`. Answer `n` to skip both. A failed startup or check
+returns a nonzero status and leaves the installation in place. No data is migrated.
 
 ### Linux binary via mise
 

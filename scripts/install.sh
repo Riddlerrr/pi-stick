@@ -44,4 +44,17 @@ printf '#!/usr/bin/env bash\nexport PI_STICK_HOME=%q\nexec "$PI_STICK_HOME/pi-st
 chmod 755 "$tmp/launcher"
 mv -T -- "$tmp/launcher" "$launcher"
 printf 'Installed %s. Add %s to PATH if needed.\n' "$launcher" "$bin"
-printf 'To start the reviewer: cd %q && docker compose up -d --build\n' "$app"
+while true; do
+  printf 'Build and start the Docker reviewer, then run pi-stick doctor? [Y/n] ' >&2
+  IFS= read -r answer || die "No input received. Reviewer not started."
+  case ${answer,,} in
+    ''|y|yes)
+      (cd "$app" && docker compose up -d --build --wait)
+      "$launcher" doctor
+      break ;;
+    n|no)
+      printf 'To start and check later: cd %q && docker compose up -d --build --wait && %q doctor\n' "$app" "$launcher"
+      break ;;
+    *) echo "Please enter Y or N." >&2 ;;
+  esac
+done
