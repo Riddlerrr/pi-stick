@@ -9,7 +9,11 @@ declare const PI_STICK_COMPILED: boolean;
 export const compiled = typeof PI_STICK_COMPILED !== "undefined" && PI_STICK_COMPILED;
 const home = process.env.PI_STICK_HOME;
 if (home !== undefined && !isAbsolute(home)) throw Error("PI_STICK_HOME must be an absolute path");
-const root = home ?? (compiled ? join(homedir(), ".local/share/pi-stick") : resolve(import.meta.dirname, ".."));
+const root =
+	home ??
+	(typeof PI_STICK_COMPILED !== "undefined"
+		? join(homedir(), ".local/share/pi-stick")
+		: resolve(import.meta.dirname, ".."));
 export const ROOT = existsSync(root) ? realpathSync(root) : root;
 export const STATE = join(ROOT, "state");
 export const read = (path: string) => readFileSync(path, "utf8");

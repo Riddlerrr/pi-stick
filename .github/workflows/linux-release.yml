@@ -23,6 +23,12 @@ jobs:
         with:
           node-version: 24
       - run: npm ci && npm run check && npm test
+      - name: Test npm tarball
+        if: matrix.arch == 'x64'
+        run: |
+          npm run pack:npm
+          npm install --prefix "$RUNNER_TEMP/npm" --offline dist/pi-stick-*.tgz
+          PI_STICK_TEST_BINARY="$RUNNER_TEMP/npm/node_modules/pi-stick/pi-stick.js" npm test
       - run: npm run build:binary
       - name: Test extracted binary
         run: |

@@ -11,13 +11,10 @@ esac
 mkdir -p dist
 stage=$(mktemp -d dist/.build-XXXXXX)
 trap 'rm -rf "$stage"' EXIT
-mkdir -p "$stage/pi-stick/share"
+./scripts/stage-release.sh "$stage/pi-stick"
 bun build --compile --target="$target" --define PI_STICK_COMPILED=true \
   --no-compile-autoload-bunfig --no-compile-autoload-dotenv \
   src/cli.ts --outfile "$stage/pi-stick/pi-stick"
-cp -R project-template compose.yaml Dockerfile .dockerignore package.json package-lock.json \
-  reviewer.ts review-method.md "$stage/pi-stick/share/"
-cp README.md CHANGELOG.md "$stage/pi-stick/"
 archive="pi-stick-linux-$arch.tar.gz"
 tar -czf "$stage/$archive" -C "$stage" pi-stick
 mv "$stage/$archive" dist/
