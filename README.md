@@ -24,6 +24,15 @@ Needs Linux, Git, util-linux `flock`, tar, and Docker with Compose/Buildx. For r
 authenticate gh and Pi (model `openai-codex/gpt-6.2-sol`). The default images
 assume host UID 1000. npm is needed for reviewer upgrades.
 
+### Interactive Linux installer
+
+From this checkout, run `./scripts/install.sh` as your normal user (no sudo). Enter a
+**new** app directory at the prompt, e.g. `~/workspace/homelab/pi-stick`.
+The installer downloads the latest Linux binary and matching runtime files,
+creates the projects and private state directories, and installs a launcher
+in `~/.local/bin` that sets `PI_STICK_HOME` for you. Put that directory on
+your PATH. The installer does not start Docker or migrate existing data.
+
 ### Linux binary via mise
 
 The release binary needs neither Node nor Bun on the host. On a fresh install:
