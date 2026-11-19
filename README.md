@@ -13,6 +13,7 @@ build images, start containers, or call a model.
 Run `npm run check` for Biome linting, formatting and TypeScript checks.
 Use `npm run lint -- --write` to apply Biome's safe fixes.
 
+Run `mise install bun` from the checkout to use the same Bun version as release CI.
 On Linux, `npm run build:binary` uses Bun to compile for the host architecture
 (x64 or arm64) and writes `dist/pi-stick-linux-<arch>.tar.gz`. Pushing a
 `v*` tag builds and tests both archives before publishing a GitHub release.
