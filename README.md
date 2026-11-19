@@ -27,11 +27,15 @@ assume host UID 1000. npm is needed for reviewer upgrades.
 ### Interactive Linux installer
 
 From this checkout, run `./scripts/install.sh` as your normal user (no sudo). Press Enter
-for `~/pi-stick` (or `$PI_STICK_HOME` if set), or enter a **new** app directory.
+to reuse the directory recorded by a previous installer run, or `~/pi-stick`
+on first install. An explicit `PI_STICK_HOME` overrides the suggested path.
 The installer downloads the latest Linux binary and matching runtime files,
 creates the projects and private state directories, and installs a launcher
 in `~/.local/bin` that sets `PI_STICK_HOME` for you. Put that directory on
-your PATH. At the reviewer prompt, press Enter to build and start the container,
+your PATH. On reruns, identical files are ignored. For missing or changed
+release files, choose **replace all** (default), **skip all**, or **per-file**. Updating a
+file replaces it with the release copy, including any local edits. Projects,
+review state and files not in the release are never replaced. At the reviewer prompt, press Enter to build and start the container,
 then run `pi-stick doctor`. Answer `n` to skip both. A failed startup or check
 returns a nonzero status and leaves the installation in place. No data is migrated.
 
