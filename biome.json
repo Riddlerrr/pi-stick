@@ -24,7 +24,7 @@
 		"lineWidth": 120
 	},
 	"files": {
-		"includes": ["src/**/*.ts", "test/**/*.ts", "reviewer.ts", "!!**/node_modules"]
+		"includes": ["src/**/*.ts", "test/**/*.ts", "agent-runtime.ts", "!!**/node_modules"]
 	},
 	"plugins": ["./scripts/biome/model-type-comparison.grit"]
 }

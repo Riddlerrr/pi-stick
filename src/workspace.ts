@@ -1,49 +1,65 @@
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { json, prompt, ROOT, read, run, STATE, writeJson } from "./platform.ts";
+import { prompt, ROOT, read, run, STATE, userSettings, writeJson } from "./platform.ts";
 
 export const NAME = "[a-z0-9][a-z0-9-]{0,62}";
-export const SLUG = "[A-Za-z0-9-]+/[A-Za-z0-9_][A-Za-z0-9_.-]*";
 const validName = new RegExp(`^${NAME}$`);
+
+export function isValidName(name: string) {
+	return validName.test(name);
+}
+
 function canonical(path: string): string {
 	if (fs.lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink() || fs.existsSync(path))
 		return fs.realpathSync(path);
 	return join(canonical(dirname(path)), basename(path));
 }
+
 const within = (path: string, parent: string) =>
 	path === parent || path.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
 
 export function projectsDir() {
-	const file = join(homedir(), ".config/pi-stick/settings.json");
-	const config = fs.existsSync(file) ? json(file) : {};
-	if (!config || typeof config !== "object" || Array.isArray(config)) throw Error(`Expected an object in ${file}`);
+	const config = userSettings();
 	const path = "projects_dir" in config ? config.projects_dir : join(ROOT, "projects");
 	if (typeof path !== "string" || !(isAbsolute(path) || path.startsWith("~/")))
 		throw Error("projects_dir must be an absolute path (or start with ~/)");
 	const dir = canonical(resolve(path.startsWith("~/") ? join(homedir(), path.slice(2)) : path));
-	if (within(ROOT, dir) || [STATE, join(ROOT, ".git"), join(ROOT, "project-template")].some((p) => within(dir, p)))
-		throw Error("Choose a dedicated projects directory outside pi-stick state, template and Git metadata");
+	if (
+		within(ROOT, dir) ||
+		[STATE, join(ROOT, ".git"), join(ROOT, "project-template"), join(ROOT, "actions")].some((p) => within(dir, p))
+	)
+		throw Error("Choose a dedicated projects directory outside pi-stick state, actions, template and Git metadata");
 	return dir;
 }
 
-export function registered() {
+export interface ProjectInfo {
+	name: string;
+	folder: string;
+	repo: string;
+}
+
+export function listProjects(): ProjectInfo[] {
 	const dir = projectsDir();
-	const result = new Map<string, string>();
-	if (!fs.existsSync(dir)) return result;
+	if (!fs.existsSync(dir)) return [];
+	const items: ProjectInfo[] = [];
 	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
 		if (!entry.isDirectory() || !validName.test(entry.name)) continue;
-		const folder = join(dir, entry.name),
-			file = join(folder, "project.json");
-		if (!fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) continue;
-		const repo = json(file)?.github;
-		if (repo === null) continue;
-		if (typeof repo !== "string" || !new RegExp(`^${SLUG}$`).test(repo))
-			throw Error(`Expected GitHub owner/repo or null in ${file}`);
-		if (result.has(repo.toLowerCase())) throw Error(`Multiple projects registered for ${repo}`);
-		result.set(repo.toLowerCase(), folder);
+		const folder = join(dir, entry.name);
+		if (!fs.lstatSync(join(folder, "compose.yaml"), { throwIfNoEntry: false })?.isFile()) continue;
+		items.push({ name: entry.name, folder, repo: join(folder, "repo") });
 	}
-	return result;
+	return items.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function getProject(name: string): ProjectInfo {
+	if (!validName.test(name)) throw Error("Use a project name with lowercase letters, digits and hyphens");
+	const folder = join(projectsDir(), name);
+	if (!fs.lstatSync(folder, { throwIfNoEntry: false })?.isDirectory())
+		throw Error(`Unknown project ${name}; use pi-stick create project ${name}`);
+	if (!fs.lstatSync(join(folder, "compose.yaml"), { throwIfNoEntry: false })?.isFile())
+		throw Error(`Project ${name} is missing compose.yaml`);
+	return { name, folder, repo: join(folder, "repo") };
 }
 
 export async function createProject(name: string, source?: string) {
@@ -54,12 +70,6 @@ export async function createProject(name: string, source?: string) {
 	source ??= await prompt("Git URL (or absolute local repository path): ");
 	if (!/^(https:\/\/|ssh:\/\/|git@|\/)/.test(source))
 		throw Error("Expected an HTTPS or SSH Git URL, or an absolute local path");
-	const github =
-		new RegExp(`^(?:https://github\\.com/|git@github\\.com:|ssh://git@github\\.com/)(${SLUG})/*$`, "i")
-			.exec(source)?.[1]
-			.replace(/\.git$/, "")
-			.toLowerCase() ?? null;
-	if (github && registered().has(github)) throw Error(`Already registered: ${github}`);
 	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const tmp = fs.mkdtempSync(join(dir, ".create-")),
 		stage = join(tmp, name);
@@ -68,7 +78,7 @@ export async function createProject(name: string, source?: string) {
 		fs.chmodSync(stage, 0o700);
 		const compose = join(stage, "compose.yaml");
 		fs.writeFileSync(compose, `name: pi-dev-${name}\n${read(compose)}`);
-		writeJson(join(stage, "project.json"), { github });
+		writeJson(join(stage, "project.json"), { name, source });
 		run(
 			[
 				"git",

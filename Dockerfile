@@ -5,6 +5,6 @@ RUN npm install --global npm@${NPM_VERSION} --ignore-scripts --no-audit --no-fun
 WORKDIR /app
 COPY --chmod=0644 package*.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
-COPY --chmod=0644 reviewer.ts ./
+COPY --chmod=0644 agent-runtime.ts ./
 USER node
-CMD ["sleep","infinity"]
+CMD ["node", "/app/agent-runtime.ts"]

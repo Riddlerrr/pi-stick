@@ -1,28 +1,29 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { once } from "node:events";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline";
 import type { TestContext } from "node:test";
 import test from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
-import { read, writeJson } from "../src/platform.ts";
-import { Project } from "../src/projects.ts";
-import { status, tryLock } from "../src/runs.ts";
+import { closed, read, runId, tryLock, writeJson } from "../src/platform.ts";
+import { status } from "../src/runs.ts";
+import { ephemeralArgs, parseModelSpec } from "../src/system.ts";
+import { TaskEnv } from "../src/tasks.ts";
 
 function fixture(t: TestContext) {
-	const tmp = fs.mkdtempSync(join(tmpdir(), "pi-stick-test-")),
-		app = join(tmp, "install"),
-		bin = join(tmp, "bin");
+	const tmp = fs.mkdtempSync(join(tmpdir(), "pi-stick-test-"));
+	const app = join(tmp, "install");
+	const bin = join(tmp, "bin");
 	t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 	fs.mkdirSync(app);
 	fs.mkdirSync(bin);
 	const binary = process.env.PI_STICK_TEST_BINARY;
 	if (binary) fs.cpSync(join(dirname(binary), "share"), app, { recursive: true });
-	else
-		for (const name of ["src", "pi-stick", "package.json", "review-method.md", "project-template"])
+	else {
+		for (const name of ["src", "pi-stick", "package.json", "project-template", "agent-runtime.ts", "Dockerfile"])
 			fs.cpSync(join(import.meta.dirname, "..", name), join(app, name), { recursive: true });
+	}
 	const cli = join(bin, "pi-stick");
 	fs.symlinkSync(binary ?? join(app, "pi-stick"), cli);
 	const env = {
@@ -51,9 +52,9 @@ function fixture(t: TestContext) {
 	git("init", "-q");
 	git("config", "user.name", "Test");
 	git("config", "user.email", "test@local");
-	fs.writeFileSync(join(source, "example"), "committed\n");
+	fs.writeFileSync(join(source, "example.txt"), "committed\n");
 	git("add", ".");
-	git("commit", "-qm", "fixture");
+	git("commit", "-qm", "initial");
 	const stub = (name: string, js: string) =>
 		fs.writeFileSync(join(bin, name), `#!/usr/bin/env node\n${js}`, { mode: 0o700 });
 	return { tmp, app, bin, source, ok, fail, invoke, git, stub, env };
@@ -67,11 +68,11 @@ test("version reports the CLI package version without creating state", (t) => {
 	assert.ok(!fs.existsSync(join(app, "state")));
 });
 
-test("symlinked CLI clones independent workspaces; failed creates leave no partial project", (t) => {
+test("create project clones independent workspaces without GitHub coupling", (t) => {
 	const { app, source, tmp, ok, fail } = fixture(t);
 	ok(["create", "project", "first"], `${source}\n`);
 	const first = join(app, "projects/first");
-	assert.equal(read(join(first, "repo/example")), "committed\n");
+	assert.equal(read(join(first, "repo/example.txt")), "committed\n");
 	assert.ok(fs.statSync(join(first, "repo/.git")).isDirectory());
 	assert.equal(fs.statSync(first).mode & 0o077, 0);
 	fs.writeFileSync(join(first, ".dockerignore"), "local edit");
@@ -83,201 +84,193 @@ test("symlinked CLI clones independent workspaces; failed creates leave no parti
 	assert.deepEqual(fs.readdirSync(join(app, "projects")).sort(), ["first", "second"]);
 });
 
-test("settings, registration and URL validation", (t) => {
+test("settings projects_dir validation", (t) => {
 	const { app, source, tmp, ok, fail } = fixture(t);
 	const conf = join(tmp, ".config/pi-stick/settings.json");
 	fs.mkdirSync(join(tmp, ".config/pi-stick"), { recursive: true });
 	writeJson(conf, { projects_dir: "~/my projects" });
 	ok(["create", "project", "demo", "--repo", source]);
-	const project = join(tmp, "my projects/demo/project.json");
-	writeJson(project, { github: "Acme/Example" });
-	fail(["create", "project", "other", "--repo", "git@github.com:Acme/Example.git"], /Already registered/);
-	fail(["pull", "https://evil.github.com/acme/example/pull/15"], /Expected a GitHub PR URL/);
-	fail(["pull", "https://github.com/other/repo/pull/1"], /No project registered/);
-	fs.unlinkSync(conf);
-	fail(["pull", "https://github.com/acme/example/pull/15"], /No project registered/);
-	assert.ok(fs.existsSync(project));
-	for (const value of ["relative", join(app, "state/projects"), tmp]) {
+	assert.ok(fs.existsSync(join(tmp, "my projects/demo/project.json")));
+	for (const value of ["relative", join(app, "state/runs"), join(app, "actions"), tmp]) {
 		writeJson(conf, { projects_dir: value });
 		fail(["create", "project", "other", "--repo", source], /projects directory|absolute path/);
 	}
 });
 
-test("dev override is not part of the PR recipe", (t) => {
-	const { app, source, ok } = fixture(t);
+test("TaskEnv validates base compose, materializes bind mounts, and isolates repo checkout", (t) => {
+	const { app, tmp, source, git, ok } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);
-	const folder = join(app, "projects/demo"),
-		project = new Project("acme/example", 1, folder);
+	const folder = join(app, "projects/demo");
+	const id = runId();
+	const task = new TaskEnv(id, { name: "demo", folder, repo: join(folder, "repo") }, join(tmp, "state"));
+
 	const dev = JSON.parse(
 		execFileSync("docker", ["compose", "config", "--format", "json"], { cwd: folder, encoding: "utf8" }),
 	);
 	assert.equal(dev.name, "pi-dev-demo");
 	assert.ok(dev.services.runner.volumes.some((m: { source: string }) => m.source === join(folder, "repo")));
-	const conf = project.config();
-	assert.deepEqual(
-		conf.services.runner.volumes?.map((m) => m.type),
-		["volume"],
+
+	const { network, services } = task.materializeCompose();
+	assert.equal(network, `${task.key}_default`);
+	assert.deepEqual(services, ["runner"]);
+	const mat = JSON.parse(read(task.composeFile).replaceAll("$$", "$"));
+	assert.ok(
+		mat.services.runner.volumes.some(
+			(m: { type: string; source: string; target: string }) =>
+				m.type === "bind" && m.source === task.workspace && m.target === "/workspace",
+		),
 	);
-	assert.equal(conf.volumes?.source.name, `${project.key}_source`);
-	const file = join(folder, "compose.yaml");
-	fs.writeFileSync(file, read(file).replace("source:/workspace", "./repo:/workspace"));
-	assert.throws(() => project.config(), /host mounts/);
+	assert.ok(
+		mat.services.runner.volumes.some(
+			(m: { type: string; source: string; target: string }) =>
+				m.type === "bind" && m.source === task.scratch && m.target === "/scratch",
+		),
+	);
+	assert.equal(mat.volumes, undefined);
+
+	const head = git("rev-parse", "HEAD");
+	const { baseHead } = task.prepareWorkspace(head);
+	assert.equal(baseHead, head);
+	fs.writeFileSync(join(task.repo, "example.txt"), "task edit\n");
+	// Original project repo remains untouched
+	assert.equal(read(join(folder, "repo/example.txt")), "committed\n");
+	const { patch } = task.captureDiff(baseHead);
+	assert.match(patch, /\+task edit/);
+	assert.match(read(join(task.dir, "changes.patch")), /\+task edit/);
+
+	const composePath = join(folder, "compose.yaml");
+	fs.writeFileSync(composePath, read(composePath).replace("source:/workspace", "./repo:/workspace"));
+	assert.throws(() => task.validateBase(), /host mounts/);
 });
 
-test("doctor refuses to probe credentials if reviewer isolation fails", (t) => {
-	const { stub, invoke, tmp } = fixture(t),
-		called = join(tmp, "token-request");
-	stub(
-		"docker",
-		`if (process.argv.includes('inspect')) console.log(JSON.stringify([{State:{Running:false},Mounts:[]}]));`,
-	);
-	stub("pi", `require('node:fs').writeFileSync(${JSON.stringify(called)},'')`);
-	const result = invoke(["doctor"]);
-	assert.equal(result.status, 1);
-	assert.match(result.stdout, /FAIL Reviewer identity/);
-	assert.ok(!fs.existsSync(called));
-	assert.doesNotMatch(result.stdout, /subscription/);
+test("ephemeral container args enforce hardening and model spec validation", () => {
+	assert.deepEqual(parseModelSpec("openai-codex/gpt-6.2-sol"), {
+		provider: "openai-codex",
+		modelId: "gpt-6.2-sol",
+		raw: "openai-codex/gpt-6.2-sol",
+	});
+	assert.throws(() => parseModelSpec("no-slash"), /provider\/modelId/);
+	if (process.getuid?.()) {
+		const argv = ephemeralArgs({
+			network: "pi-stick-demo-abc_default",
+			repo: "/tmp/repo",
+			scratch: "/tmp/scratch",
+			context: "/tmp/context",
+			sessions: "/tmp/sessions",
+		});
+		assert.ok(argv.includes("--rm"));
+		assert.ok(argv.includes("--read-only"));
+		assert.ok(argv.includes("ALL"));
+		assert.ok(argv.includes("no-new-privileges:true"));
+		assert.ok(argv.includes("pi-stick-demo-abc_default"));
+		assert.ok(argv.includes("/tmp/repo:/workspace"));
+		assert.ok(argv.includes("/tmp/scratch:/scratch"));
+		assert.ok(argv.includes("/tmp/context:/context:ro"));
+		assert.ok(argv.includes("/tmp/sessions:/sessions"));
+	}
 });
 
-test("private state, lock contention, follow, recovery guards and confirmed cleanup", (t) => {
+test("per-run locks allow concurrent runs, follow, diff, and selective cleanup", (t) => {
 	const { app, ok, fail } = fixture(t);
 	ok(["cleanup", "--dry-run"]);
-	const state = join(app, "state"),
-		key = "pi-stick-demo-1",
-		project = join(state, "projects", key),
-		id = "a".repeat(32),
-		run = join(state, "runs", id);
-	fs.mkdirSync(project);
-	fs.mkdirSync(run);
-	fs.writeFileSync(join(project, "last-used"), "");
-	fs.utimesSync(join(project, "last-used"), 1, 1);
-	fs.writeFileSync(join(run, "project"), key);
-	status(run, "Agent: first\nsecond\x1b[2J\r\u202e");
-	const fd = fs.openSync(join(state, "lock"), "a");
+	const runs = join(app, "state/runs");
+	const sessions = join(app, "state/sessions");
+	const idA = "a".repeat(32);
+	const idB = "b".repeat(32);
+	const dirA = join(runs, idA);
+	const dirB = join(runs, idB);
+	fs.mkdirSync(dirA, { recursive: true });
+	fs.mkdirSync(dirB, { recursive: true });
+	writeJson(join(dirA, "meta.json"), {
+		id: idA,
+		project: "demo",
+		action: "check",
+		createdAt: "2026-01-01T00:00:00.000Z",
+		updatedAt: "2026-01-01T00:00:00.000Z",
+		status: "running",
+	});
+	writeJson(join(dirB, "meta.json"), {
+		id: idB,
+		project: "demo",
+		action: "check",
+		createdAt: "2026-01-01T00:00:00.000Z",
+		updatedAt: "2026-01-01T00:00:00.000Z",
+		status: "done",
+	});
+	status(dirB, "hello\x1b[2J\r\u202e", "orchestrator");
+	fs.writeFileSync(join(dirB, "exit"), "0");
+	fs.writeFileSync(join(dirB, "last-used"), "");
+	fs.utimesSync(join(dirB, "last-used"), 1, 1);
+	fs.writeFileSync(join(sessions, `${idB}.sqlite`), "");
+
+	const fdA = fs.openSync(join(dirA, "lock"), "a");
 	try {
-		assert.ok(tryLock(fd));
-		fail(["cleanup", "--dry-run"], /busy/);
+		assert.ok(tryLock(fdA));
+		// Active run shows in `runs`, finished run also shows in `runs --all`
+		const activeOut = ok(["runs"]);
+		assert.match(activeOut, new RegExp(idA));
+		assert.doesNotMatch(activeOut, new RegExp(idB));
+		const allOut = ok(["runs", "--all"]);
+		assert.match(allOut, new RegExp(idA));
+		assert.match(allOut, new RegExp(idB));
+
+		// Update refuses while run A is active
+		fail(["update", "--yes"], /active/);
+
+		// Cleanup cleans finished run B while leaving locked active run A untouched
+		assert.match(ok(["cleanup", "--dry-run"]), new RegExp(idB));
+		ok(["cleanup"], "y\n");
+		assert.ok(fs.existsSync(dirA));
+		assert.ok(!fs.existsSync(dirB));
+		assert.ok(!fs.existsSync(join(sessions, `${idB}.sqlite`)));
 	} finally {
-		fs.closeSync(fd);
+		fs.closeSync(fdA);
 	}
-	fail(["review", "--follow", id], /Worker interrupted/);
-	fail(["review", "--resume", id], /prepared runs/);
-	writeJson(join(run, "prepared.json"), {});
-	fs.writeFileSync(join(run, "test-in-progress"), "");
-	fail(["review", "--resume", id], /Uncertain test result/);
-	assert.match(ok(["cleanup", "--dry-run", "--days", "0"]), /No eligible/);
-	fs.writeFileSync(join(run, "exit"), "0");
-	assert.equal(ok(["review", "--follow", id]), "Agent: first\nsecond\\x1b[2J\\r\\u202e\n");
-	fs.writeFileSync(join(state, "active"), id);
-	fail(["cleanup"], /Unsettled/);
-	fs.unlinkSync(join(state, "active"));
-	assert.match(ok(["cleanup", "--dry-run"]), /including reports/);
-	ok(["cleanup"], "n\n");
-	assert.ok(fs.existsSync(project));
-	fs.writeFileSync(join(state, "sessions", `${id}.sqlite`), "");
-	ok(["cleanup"], "y\n");
-	assert.ok(!fs.existsSync(project));
-	assert.ok(!fs.existsSync(run));
-	assert.deepEqual(fs.readdirSync(join(state, "sessions")), []);
+
+	// Interrupted unlocked run without exit fails follow cleanly
+	fs.writeFileSync(join(dirA, "progress"), "");
+	fail(["follow", idA], /Worker interrupted/);
 });
 
-test("pull, refresh and detached review exercise real Git and the JSON-lines bridge offline", async (t) => {
-	const { app, tmp, ok, fail, invoke, source, git, stub, env, bin } = fixture(t);
-	const url = "https://github.com/acme/example/pull/15",
-		head = git("rev-parse", "HEAD");
-	git("config", "--global", `url.${source}.insteadOf`, "https://github.com/acme/example.git");
-	ok(["create", "project", "demo", "--repo", source]);
-	writeJson(join(app, "projects/demo/project.json"), { github: "Acme/Example" });
-	const catalog = join(tmp, ".pi/agent");
-	fs.mkdirSync(catalog, { recursive: true });
-	writeJson(join(catalog, "models-store.json"), { "openai-codex": { models: [{ id: "gpt-6.2-sol" }] } });
-	stub("pi", `console.log('fixture-only-token')`);
-	stub(
-		"gh",
-		`const a=process.argv.slice(2), path=a.at(-1); console.log(JSON.stringify(a.includes('graphql') ? [{data:{repository:{pullRequest:{reviewThreads:{nodes:[]}}}}}] : path.endsWith('/pulls/15') ? {head:{sha:'${head}'},base:{sha:'${head}',repo:{full_name:'Acme/Example'}},changed_files:0} : []))`,
-	);
-	stub(
-		"docker",
-		`const a=process.argv.slice(2), has=s=>a.includes(s);
-    if (a[0]==='inspect') console.log(JSON.stringify([{State:{Running:true},HostConfig:{CapDrop:['ALL'],SecurityOpt:['no-new-privileges:true'],ReadonlyRootfs:true},Config:{Labels:{'com.docker.compose.project':'pi-stick'}},Mounts:[{Type:'bind',Source:${JSON.stringify(join(app, "state/sessions"))},Destination:'/sessions'}]}]));
-    else if (has('config')) console.log(JSON.stringify({services:{runner:{volumes:[{type:'volume',source:'source',target:'/workspace'}]}}}));
-    else if (has('/usr/local/bin/test-file')) {
-      if (a.at(-1)!=='example' || !has('timeout') || !has('/workspace/repo')) process.exit(2);
-      console.log('fixture test passed');
-    }
-    else if (has('tar')) process.stdin.resume();
-    else if (has('id')) console.log(process.getuid());
-    else if (has('/app/reviewer.ts')) {
-      const rl=require('node:readline').createInterface({input:process.stdin}); let step=0;
-      const send=x=>console.log(JSON.stringify(x));
-      rl.on('line',line=>{const m=JSON.parse(line);
-        if (step===0 && m.token==='fixture-only-token') {
-          const fs=require('node:fs'), gate=process.env.TEST_GATE;
-          const start=()=>send({tool:'read',args:{value:'example'}});
-          if (!gate) start();
-          else {
-            fs.writeFileSync(gate+'.ready','');
-            const poll=setInterval(()=>{if(fs.existsSync(gate)){clearInterval(poll);start()}},25);
-          }
-        }
-        else if(step===1 && m.text==='committed\\n') send({tool:'search',args:{value:'committed'}});
-        else if(step===2 && m.text.includes('example:1:committed')) send({tool:'test',args:{value:'../escape'}});
-        else if(step===3 && m.error) send({tool:'test',args:{value:'example'}});
-        else if(step===4 && !m.error && m.text.includes('exit=0\\nfixture test passed')) {send({progress:'Checking fixture'});send({report:'Fixture report'});rl.close();}
-        else process.exit(2); step++;
-      });
-    }`,
-	);
-	assert.match(ok(["pull", url]), /No model call/);
-	const snapshot = join(app, "state/projects/pi-stick-demo-15/snapshot"),
-		repo = join(snapshot, "repo");
-	fs.writeFileSync(join(repo, "example"), "local edit\n");
-	execFileSync("git", ["-C", repo, "add", "example"]);
-	fail(["pull", url], /Staged changes block/);
-	execFileSync("git", ["-C", repo, "reset", "-q", "HEAD", "--", "example"]);
-	fs.writeFileSync(join(repo, "untracked"), "preserve");
-	ok(["pull", url]);
-	const [history] = fs.readdirSync(join(snapshot, "history"));
-	assert.match(read(join(snapshot, "history", history, "tracked-changes.patch")), /local edit/);
-	assert.equal(read(join(repo, "untracked")), "preserve");
-	assert.equal(read(join(repo, "example")), "committed\n");
-	if (!process.getuid?.()) {
-		const result = invoke(["review", url]);
-		assert.equal(result.status, 1);
-		assert.match(result.stdout, /Blocked/);
-		return;
+test("agent-runtime offline self-check exercises Pi Durable SQLite, Codemode, and multiplexed JSON-RPC", async (t) => {
+	const tmp = fs.mkdtempSync(join(tmpdir(), "pi-stick-rt-"));
+	t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+	const runtime = join(import.meta.dirname, "..", "agent-runtime.ts");
+	const child = spawn(process.execPath, [runtime], {
+		env: { ...process.env, PI_STICK_SESSIONS_DIR: tmp },
+		stdio: ["pipe", "pipe", "pipe"],
+	});
+	const stderrChunks: string[] = [];
+	child.stderr.on("data", (d) => stderrChunks.push(d.toString()));
+	const exit = closed(child);
+	const lines = createInterface({ input: child.stdout });
+	const seenMethods: string[] = [];
+	let ready = false;
+	child.stdin.write(`${JSON.stringify({ id: runId(), check: true, models: {}, credentials: {} })}\n`);
+	for await (const line of lines) {
+		const msg = JSON.parse(line);
+		if (typeof msg.rpc === "number") {
+			seenMethods.push(msg.method);
+			child.stdin.write(
+				`${JSON.stringify({ rpc: msg.rpc, result: { text: `probe-ok:${msg.method}`, error: false } })}\n`,
+			);
+		} else if (msg.ready === true) {
+			ready = true;
+			break;
+		}
 	}
-	const gate = join(tmp, "gate"),
-		launcher = spawn(join(bin, "pi-stick"), ["review", url], {
-			env: { ...env, TEST_GATE: gate },
-			stdio: "ignore",
-		});
-	const detached = once(launcher, "exit");
-	let id: string;
-	try {
-		const deadline = Date.now() + 10000;
-		while (!fs.existsSync(`${gate}.ready`) && Date.now() < deadline) await sleep(25);
-		assert.ok(fs.existsSync(`${gate}.ready`), "worker reached reviewer");
-		id = read(join(app, "state/active"));
-		launcher.kill("SIGINT");
-		await detached;
-		fail(["cleanup", "--dry-run"], /busy/);
-	} finally {
-		fs.writeFileSync(gate, "continue");
-		launcher.kill();
-	}
-	const out = ok(["review", "--follow", id]);
-	assert.match(out, /Checking fixture/);
-	assert.match(out, /Agent: Fixture report/);
-	const dir = join(app, "state/runs", id);
-	assert.match(ok(["review", "--follow", id]), /Wrote:/);
-	assert.equal(read(join(dir, "review-report.md")), "Fixture report\n");
-	assert.ok(!fs.existsSync(join(dir, "test-in-progress")));
-	assert.ok(!fs.existsSync(join(app, "state/active")));
-	for (const f of fs.readdirSync(dir)) assert.ok(!read(join(dir, f)).includes("fixture-only-token"));
-	fs.writeFileSync(join(dir, "exit"), "1");
-	fs.writeFileSync(join(repo, "example"), "different working tree");
-	assert.match(ok(["review", "--resume", id]), /Agent: Fixture report/);
-	fs.writeFileSync(join(snapshot, ".pull-incomplete"), "");
-	fail(["pull", url], /Previous pull was interrupted/);
+	child.stdin.end();
+	const [code] = await exit;
+	assert.equal(code, 0, stderrChunks.join(""));
+	assert.equal(ready, true);
+	assert.deepEqual(seenMethods.sort(), ["logs", "ps"]);
+});
+
+test("doctor stops early when Docker daemon is unavailable", (t) => {
+	const { stub, invoke } = fixture(t);
+	stub("docker", `process.exit(1);`);
+	const res = invoke(["doctor"]);
+	assert.equal(res.status, 1);
+	assert.match(res.stdout, /FAIL Docker daemon/);
+	assert.doesNotMatch(res.stdout, /Agent image/);
 });
