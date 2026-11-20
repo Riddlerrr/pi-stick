@@ -91,7 +91,7 @@ export interface EphemeralContainerOptions {
 	scratch?: string;
 	context?: string;
 	sessions?: string;
-	tmpfsSessions?: boolean;
+	tmpfsProbe?: boolean;
 }
 
 export function ephemeralArgs(opts: EphemeralContainerOptions): string[] {
@@ -120,17 +120,27 @@ export function ephemeralArgs(opts: EphemeralContainerOptions): string[] {
 		"--network",
 		opts.network,
 	];
-	if (opts.repo) args.push("-v", `${opts.repo}:/workspace`);
-	if (opts.scratch) args.push("-v", `${opts.scratch}:/scratch`);
-	if (opts.context) args.push("-v", `${opts.context}:/context:ro`);
-	if (opts.tmpfsSessions) args.push("--tmpfs", `/sessions:uid=${uid},mode=0700`);
-	else if (opts.sessions) args.push("-v", `${opts.sessions}:/sessions`);
+	if (opts.tmpfsProbe) {
+		args.push(
+			"--tmpfs",
+			`/workspace:rw,uid=${uid},mode=0700`,
+			"--tmpfs",
+			`/scratch:rw,uid=${uid},mode=0700`,
+			"--tmpfs",
+			`/sessions:rw,uid=${uid},mode=0700`,
+		);
+	} else {
+		if (opts.repo) args.push("-v", `${opts.repo}:/workspace`);
+		if (opts.scratch) args.push("-v", `${opts.scratch}:/scratch`);
+		if (opts.context) args.push("-v", `${opts.context}:/context:ro`);
+		if (opts.sessions) args.push("-v", `${opts.sessions}:/sessions`);
+	}
 	args.push(opts.image ?? IMAGE, "node", "/app/agent-runtime.ts");
 	return args;
 }
 
 export async function probe(image = IMAGE): Promise<void> {
-	const argv = ephemeralArgs({ image, network: "none", tmpfsSessions: true });
+	const argv = ephemeralArgs({ image, network: "none", tmpfsProbe: true });
 	const child = spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "inherit"] });
 	const exit = closed(child);
 	exit.catch(() => {});

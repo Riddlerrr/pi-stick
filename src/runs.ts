@@ -99,6 +99,7 @@ function composeInstructions(
 	project: ProjectInfo,
 	services: string[],
 	contextFiles: string[],
+	availableSubagents?: Record<string, ResolvedAgentSpec>,
 ): string {
 	const parts: string[] = [
 		`You are agent '${agent.name}' running inside an isolated Docker container for project '${project.name}'.`,
@@ -117,6 +118,14 @@ function composeInstructions(
 	}
 	if (contextFiles.length) {
 		parts.push(`Read-only prepared context files in /context: ${contextFiles.join(", ")}.`);
+	}
+	if (availableSubagents && Object.keys(availableSubagents).length && agent.tools.includes("delegate")) {
+		const lines = Object.values(availableSubagents).map(
+			(a) => `- ${a.name} (mode: ${a.mode}, model: ${a.model})${a.description ? `: ${a.description}` : ""}`,
+		);
+		parts.push(
+			`Configured subagents you can invoke in parallel via the 'delegate' tool:\n${lines.join("\n")}\nNote: parallel batches may include multiple read-only subagents, while read-write subagents must run one at a time.`,
+		);
 	}
 	const agentsMd = join(project.folder, "AGENTS.md");
 	if (fs.existsSync(agentsMd)) {
@@ -344,6 +353,20 @@ export async function worker(id: string): Promise<number> {
 		writeMeta(id, meta);
 		status(dir, `Starting action '${action.name}' (${action.orchestrator.model})…`);
 
+		const subagentPayloads: Record<string, unknown> = {};
+		for (const [agentName, spec] of Object.entries(action.agents)) {
+			const parsedModel = parseModelSpec(spec.model);
+			subagentPayloads[agentName] = {
+				name: agentName,
+				description: spec.description,
+				model: { provider: parsedModel.provider, modelId: parsedModel.modelId },
+				instructions: composeInstructions(spec, project, services, contextFiles),
+				mode: spec.mode,
+				tools: spec.tools,
+				maxTurns: spec.maxTurns,
+			};
+		}
+
 		const jobPayload: Record<string, unknown> = {
 			id,
 			models: auth.models,
@@ -351,11 +374,13 @@ export async function worker(id: string): Promise<number> {
 			orchestrator: {
 				name: "orchestrator",
 				model: { provider: orchModel.provider, modelId: orchModel.modelId },
-				instructions: composeInstructions(action.orchestrator, project, services, contextFiles),
+				instructions: composeInstructions(action.orchestrator, project, services, contextFiles, action.agents),
 				mode: action.orchestrator.mode,
 				tools: action.orchestrator.tools,
 				maxTurns: action.orchestrator.maxTurns,
 			},
+			agents: subagentPayloads,
+			stages: action.stages,
 			prompt: cfg.prompt,
 			requestId: cfg.requestId,
 			continueRun: cfg.mode === "continue",

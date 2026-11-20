@@ -224,10 +224,16 @@ export function loadActionFromDir(
 				throw Error(`Invalid stage name in action '${name}'`);
 			if (!Array.isArray(stage.parallel) || !stage.parallel.length)
 				throw Error(`Stage '${stage.name}' in action '${name}' must list at least one agent in 'parallel'`);
+			let rwCount = 0;
 			for (const ref of stage.parallel) {
 				if (typeof ref !== "string" || !agents[ref])
 					throw Error(`Stage '${stage.name}' references undefined agent '${ref}'`);
+				if (agents[ref].mode === "read-write") rwCount++;
 			}
+			if (rwCount > 1)
+				throw Error(
+					`Stage '${stage.name}' cannot run multiple read-write agents in parallel; use read-only agents or separate stages`,
+				);
 			stages.push({
 				name: stage.name,
 				parallel: stage.parallel,

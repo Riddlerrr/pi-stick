@@ -45,12 +45,20 @@ interface AgentRuntimeSpec {
 	maxTurns?: number;
 }
 
+interface StageRuntimeSpec {
+	name: string;
+	parallel: string[];
+	prompt?: string;
+}
+
 interface Job {
 	id: string;
 	check?: boolean;
 	models?: Record<string, Model<Api>[]>;
 	credentials?: Record<string, CredentialPayload>;
 	orchestrator?: AgentRuntimeSpec;
+	agents?: Record<string, AgentRuntimeSpec>;
+	stages?: StageRuntimeSpec[];
 	prompt?: string;
 	requestId?: string;
 	continueRun?: boolean;
@@ -63,6 +71,7 @@ interface RpcResponseMessage {
 
 interface AgentContext {
 	name: string;
+	label: string;
 	mode: "read-only" | "read-write";
 	scratchDir: string;
 }
@@ -288,6 +297,7 @@ for (const provider of allProviders) {
 const agentByConv = new Map<ConversationId, AgentContext>();
 const defaultAgentCtx: AgentContext = {
 	name: "orchestrator",
+	label: "orchestrator",
 	mode: job.orchestrator?.mode ?? "read-write",
 	scratchDir: join(SCRATCH_DIR, "orchestrator"),
 };
@@ -298,10 +308,108 @@ function getAgentCtx(conversationId: ConversationId): AgentContext {
 }
 
 const probeEvents: string[] = [];
-const emitProgress = (line: string, agent?: string) => {
-	if (job.check) probeEvents.push(agent ? `[${agent}] ${line}` : line);
-	else send({ progress: line, ...(agent ? { agent } : {}) });
+const emitProgress = (line: string, label?: string) => {
+	if (job.check) probeEvents.push(label ? `[${label}] ${line}` : line);
+	else send({ progress: line, ...(label ? { agent: label } : {}) });
 };
+
+const activeSubagents: Record<string, AgentRuntimeSpec> = { ...(job.agents ?? {}) };
+const agentOutputs: Record<string, string> = {};
+let activeHarness: Harness | undefined;
+
+function recordAgentOutput(agentName: string, text: string) {
+	if (agentOutputs[agentName]) agentOutputs[agentName] = `${agentOutputs[agentName]}\n\n---\n\n${text}`;
+	else agentOutputs[agentName] = text;
+}
+
+async function runSubagent(
+	spec: AgentRuntimeSpec,
+	promptText: string,
+): Promise<{ agent: string; ok: boolean; output: string }> {
+	if (!activeHarness) throw Error("Harness not initialized");
+	const scratchDir = join(SCRATCH_DIR, spec.name);
+	fs.mkdirSync(scratchDir, { recursive: true });
+	const subTools = spec.tools.filter((t) => t !== "delegate");
+	const { extensions, tools } = selectToolsAndExtensions(subTools);
+	const conv = await activeHarness.createConversation(
+		{
+			ownership: { kind: "ownerless" },
+			agent: {
+				model: spec.model,
+				instructions: spec.instructions,
+				extensions,
+				tools,
+				...(spec.maxTurns ? { maxTurns: spec.maxTurns } : {}),
+			},
+		},
+		ctx,
+	);
+	const label = `agent:${spec.name}`;
+	agentByConv.set(conv.id, {
+		name: spec.name,
+		label,
+		mode: spec.mode,
+		scratchDir,
+	});
+	emitProgress("started", label);
+	try {
+		const sub = await conv.submit({ type: "input", content: promptText }, ctx);
+		const settled = await sub.wait(ctx);
+		if (settled.status !== "done" || settled.type !== "input") {
+			const msg = `Subagent '${spec.name}' did not complete (${settled.status})`;
+			emitProgress(msg, label);
+			return { agent: spec.name, ok: false, output: msg };
+		}
+		const entry = await conv.commit((tx) => tx.entry(AssistantEntry, settled.answer), ctx);
+		const message = entry?.model?.[0];
+		if (message?.role !== "assistant") {
+			const msg = `Subagent '${spec.name}' returned no assistant answer`;
+			emitProgress(msg, label);
+			return { agent: spec.name, ok: false, output: msg };
+		}
+		const text = message.content
+			.filter((b) => b.type === "text")
+			.map((b) => b.text)
+			.join("\n")
+			.trim();
+		const final = text || "(empty output)";
+		recordAgentOutput(spec.name, final);
+		emitProgress("completed", label);
+		return { agent: spec.name, ok: true, output: final };
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		emitProgress(`error: ${msg}`, label);
+		return { agent: spec.name, ok: false, output: `Error: ${msg}` };
+	}
+}
+
+async function runParallelBatch(
+	batch: Array<{ spec: AgentRuntimeSpec; prompt: string }>,
+	batchLabel: string,
+): Promise<{ results: Array<{ agent: string; ok: boolean; output: string }>; cleanlinessWarning?: string }> {
+	const rwCount = batch.filter((b) => b.spec.mode === "read-write").length;
+	if (rwCount > 1) {
+		throw Error(
+			`Cannot run ${rwCount} read-write subagents in parallel in '${batchLabel}'; run read-write subagents sequentially or use read-only subagents for parallel execution.`,
+		);
+	}
+	const allReadOnly = batch.every((b) => b.spec.mode === "read-only");
+	let beforeClean: string | undefined;
+	if (allReadOnly) {
+		const res = await callHostRpc("check_clean", {});
+		if (!res.error) beforeClean = res.text;
+	}
+	const results = await Promise.all(batch.map((item) => runSubagent(item.spec, item.prompt)));
+	let cleanlinessWarning: string | undefined;
+	if (allReadOnly && beforeClean !== undefined) {
+		const after = await callHostRpc("check_clean", {});
+		if (!after.error && after.text !== beforeClean) {
+			cleanlinessWarning = `WARNING: Tracked repository files changed during read-only round '${batchLabel}':\n${after.text.trim()}`;
+			emitProgress(cleanlinessWarning, "orchestrator");
+		}
+	}
+	return { results, cleanlinessWarning };
+}
 
 const readTool = defineTool({
 	name: "read",
@@ -629,6 +737,64 @@ const restartTool = defineTool({
 	},
 });
 
+const delegateTool = defineTool({
+	name: "delegate",
+	description:
+		"Run one or more configured subagents in parallel and collect their results. Multiple read-only subagents may run concurrently; read-write subagents must run one at a time.",
+	parameters: {
+		type: "object",
+		properties: {
+			tasks: {
+				type: "array",
+				minItems: 1,
+				maxItems: 16,
+				items: {
+					type: "object",
+					properties: {
+						agent: { type: "string", description: "Configured subagent name." },
+						prompt: { type: "string", description: "Specific task or question for this subagent." },
+					},
+					required: ["agent", "prompt"],
+					additionalProperties: false,
+				},
+			},
+		},
+		required: ["tasks"],
+		additionalProperties: false,
+	},
+	callers: ["model"],
+	execute: async (args, api) => {
+		const caller = getAgentCtx(api.conversationId);
+		if (caller.name !== "orchestrator") {
+			return {
+				output: [{ type: "text" as const, text: "Only the orchestrator may call delegate." }],
+				isError: true,
+			};
+		}
+		const { tasks } = args as { tasks: Array<{ agent: string; prompt: string }> };
+		try {
+			const batch: Array<{ spec: AgentRuntimeSpec; prompt: string }> = [];
+			for (const t of tasks) {
+				const spec = activeSubagents[t.agent];
+				if (!spec) {
+					const available = Object.keys(activeSubagents).join(", ") || "(none)";
+					throw Error(`Unknown subagent '${t.agent}'. Available: ${available}`);
+				}
+				batch.push({ spec, prompt: t.prompt });
+			}
+			const { results, cleanlinessWarning } = await runParallelBatch(batch, "delegate");
+			const sections = results.map((r) => `### Agent: ${r.agent} (${r.ok ? "ok" : "error"})\n\n${r.output}`);
+			if (cleanlinessWarning) sections.push(`### Repository Cleanliness Warning\n\n${cleanlinessWarning}`);
+			return { output: [{ type: "text" as const, text: sections.join("\n\n") }] };
+		} catch (err) {
+			return {
+				output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
+				isError: true,
+			};
+		}
+	},
+});
+
 const toolMap = new Map<string, ToolRegistration>([
 	["read", readTool],
 	["write", writeTool],
@@ -639,6 +805,7 @@ const toolMap = new Map<string, ToolRegistration>([
 	["logs", logsTool],
 	["ps", psTool],
 	["restart", restartTool],
+	["delegate", delegateTool],
 ]);
 
 const registry = createRegistry();
@@ -647,10 +814,10 @@ const mainExtension = defineExtension({
 	hooks: [
 		hook(GenerationTask, {
 			afterResponse(message, api) {
-				const agentName = getAgentCtx(api.conversationId).name;
+				const agentLabel = getAgentCtx(api.conversationId).label;
 				if (message.content.some((b) => b.type === "toolCall")) {
 					for (const b of message.content) {
-						if (b.type === "text" && b.text.trim()) emitProgress(b.text.trim(), agentName);
+						if (b.type === "text" && b.text.trim()) emitProgress(b.text.trim(), agentLabel);
 					}
 				}
 			},
@@ -658,13 +825,16 @@ const mainExtension = defineExtension({
 		hook(ToolTask, {
 			beforeTool(call, api) {
 				if (call.parent) return;
-				const agentName = getAgentCtx(api.conversationId).name;
-				if (call.name === "codemode") emitProgress("codemode", agentName);
-				else if (call.name === "exec" && typeof call.arguments?.command === "string")
-					emitProgress(`exec: ${JSON.stringify(call.arguments.command.slice(0, 200))}`, agentName);
+				const agentLabel = getAgentCtx(api.conversationId).label;
+				if (call.name === "codemode") emitProgress("codemode", agentLabel);
+				else if (call.name === "delegate" && Array.isArray(call.arguments?.tasks)) {
+					const names = (call.arguments.tasks as Array<{ agent?: string }>).map((t) => t.agent ?? "?").join(", ");
+					emitProgress(`delegate: [${names}]`, agentLabel);
+				} else if (call.name === "exec" && typeof call.arguments?.command === "string")
+					emitProgress(`exec: ${JSON.stringify(call.arguments.command.slice(0, 200))}`, agentLabel);
 				else if (typeof call.arguments?.path === "string")
-					emitProgress(`${call.name}: ${JSON.stringify(call.arguments.path.slice(0, 200))}`, agentName);
-				else emitProgress(call.name, agentName);
+					emitProgress(`${call.name}: ${JSON.stringify(call.arguments.path.slice(0, 200))}`, agentLabel);
+				else emitProgress(call.name, agentLabel);
 			},
 		}),
 	],
@@ -696,53 +866,138 @@ const h = await Harness.open(
 	{ models, registry },
 	ctx,
 );
+activeHarness = h;
 
 try {
 	if (job.check) {
-		// Offline self-check: exercise Codemode + multiplexed host RPC + SQLite durability without hitting any LLM.
+		// Offline self-check: exercise Codemode + multiplexed RPC + native file tools + read-only scratch + parallel multi-agent delegate + SQLite durability.
 		const { fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import("@earendil-works/pi-ai");
 		const faux = fauxProvider();
 		models.setProvider(faux.provider);
+		const fauxModel = { provider: faux.provider.id, modelId: faux.getModel().id };
+
+		activeSubagents["checker-a"] = {
+			name: "checker-a",
+			model: fauxModel,
+			instructions: "Offline read-only probe subagent A",
+			mode: "read-only",
+			tools: ["read", "write", "grep", "find"],
+		};
+		activeSubagents["checker-b"] = {
+			name: "checker-b",
+			model: fauxModel,
+			instructions: "Offline read-only probe subagent B",
+			mode: "read-only",
+			tools: ["read", "write"],
+		};
+
 		const code = `const [a, b] = await Promise.all([tools.ps({}), tools.logs({ tail: 5 })]); return a + '|' + b;`;
-		faux.setResponses([
-			fauxAssistantMessage([fauxText("Probing runtime."), fauxToolCall("codemode", { code })], {
-				stopReason: "toolUse",
-			}),
-			(transcript) => {
-				const result = transcript.messages.at(-1);
-				const ok =
-					result?.role === "toolResult" &&
-					!result.isError &&
-					result.content.some(
-						(b) => b.type === "text" && b.text.includes("probe-ok:ps") && b.text.includes("probe-ok:logs"),
+		const router = (transcript: {
+			messages: Array<{ role: string; isError?: boolean; content: string | Array<{ type: string; text?: string }> }>;
+		}) => {
+			const msgText = (m: { content: string | Array<{ type: string; text?: string }> } | undefined) =>
+				!m ? "" : typeof m.content === "string" ? m.content : m.content.map((b) => b.text ?? "").join("\n");
+			const firstUser = msgText(transcript.messages.find((m) => m.role === "user"));
+			const last = transcript.messages.at(-1);
+			if (firstUser === "probe A") {
+				if (last?.role === "user") {
+					// Verify read-only subagent is blocked from writing to /workspace AND allowed to write to /scratch/checker-a
+					return fauxAssistantMessage(
+						[
+							fauxToolCall("write", { path: "/workspace/should-fail.txt", content: "nope" }),
+							fauxToolCall("write", { path: "/scratch/checker-a/note.txt", content: "ok-a" }),
+						],
+						{ stopReason: "toolUse" },
 					);
-				return fauxAssistantMessage([fauxText(ok ? "ready" : "Self-check probe failed")]);
-			},
-		]);
-		const conv = await h.createConversation(
-			{
-				ownership: { kind: "ownerless" },
-				agent: { model: { provider: faux.provider.id, modelId: faux.getModel().id } },
-			},
-			ctx,
-		);
-		const sub = await conv.submit({ type: "input", content: "Offline self-check" }, ctx);
+				}
+				const results = transcript.messages.filter((m) => m.role === "toolResult");
+				const blockedWorkspace = results.some((r) => r.isError && msgText(r).includes("read-only"));
+				const wroteScratch = results.some((r) => !r.isError);
+				return fauxAssistantMessage([
+					fauxText(blockedWorkspace && wroteScratch ? "subagent-a-ok" : "subagent-a-fail"),
+				]);
+			}
+			if (firstUser === "probe B") {
+				if (last?.role === "user") {
+					return fauxAssistantMessage(
+						[fauxToolCall("write", { path: "/scratch/checker-b/note.txt", content: "ok-b" })],
+						{ stopReason: "toolUse" },
+					);
+				}
+				return fauxAssistantMessage([fauxText("subagent-b-ok")]);
+			}
+			// Orchestrator sequence: (1) Codemode multiplexed RPC, (2) parallel delegate, (3) final ready
+			const toolResults = transcript.messages.filter((m) => m.role === "toolResult");
+			if (toolResults.length === 0) {
+				return fauxAssistantMessage([fauxText("Probing runtime."), fauxToolCall("codemode", { code })], {
+					stopReason: "toolUse",
+				});
+			}
+			if (toolResults.length === 1) {
+				const okRpc =
+					!toolResults[0].isError &&
+					msgText(toolResults[0]).includes("probe-ok:ps") &&
+					msgText(toolResults[0]).includes("probe-ok:logs");
+				if (!okRpc) return fauxAssistantMessage([fauxText("rpc-probe-failed")]);
+				return fauxAssistantMessage(
+					[
+						fauxToolCall("delegate", {
+							tasks: [
+								{ agent: "checker-a", prompt: "probe A" },
+								{ agent: "checker-b", prompt: "probe B" },
+							],
+						}),
+					],
+					{ stopReason: "toolUse" },
+				);
+			}
+			const del = toolResults[1];
+			const okDel = !del.isError && msgText(del).includes("subagent-a-ok") && msgText(del).includes("subagent-b-ok");
+			return fauxAssistantMessage([fauxText(okDel ? "ready" : `delegate-probe-failed:${msgText(del)}`)]);
+		};
+		faux.setResponses(Array.from({ length: 12 }, () => router as never));
+
+		const root = await h.root(ctx, {
+			agent: { model: fauxModel, instructions: "Offline orchestrator probe" },
+		});
+		const sub = await root.submit({ type: "input", content: "Offline self-check" }, ctx);
 		const settled = await sub.wait(ctx);
-		if (settled.status !== "done" || settled.type !== "input" || faux.state.callCount !== 2)
-			throw Error(`Offline self-check failed: ${JSON.stringify({ settled, calls: faux.state.callCount })}`);
-		const answer = await conv.commit((tx) => tx.entry(AssistantEntry, settled.answer), ctx);
+		if (settled.status !== "done" || settled.type !== "input")
+			throw Error(`Offline self-check failed: ${JSON.stringify(settled)}`);
+		const answer = await root.commit((tx) => tx.entry(AssistantEntry, settled.answer), ctx);
 		const message = answer?.model?.[0];
 		if (message?.role !== "assistant" || !message.content.some((b) => b.type === "text" && b.text === "ready"))
-			throw Error("Offline self-check did not produce expected answer");
-		if (
-			JSON.stringify(probeEvents) !== JSON.stringify(["[orchestrator] Probing runtime.", "[orchestrator] codemode"])
-		)
+			throw Error(`Offline self-check did not return ready: ${JSON.stringify(message?.content)}`);
+		if (!probeEvents.includes("[orchestrator] Probing runtime.") || !probeEvents.includes("[orchestrator] codemode"))
 			throw Error(`Unexpected probe progress events: ${JSON.stringify(probeEvents)}`);
 		send({ ready: true });
 	} else {
 		const spec = job.orchestrator;
 		if (!spec || !job.prompt) throw Error("Missing orchestrator configuration or prompt");
 		fs.mkdirSync(defaultAgentCtx.scratchDir, { recursive: true });
+
+		let finalPrompt = job.prompt;
+		if (!job.continueRun && job.stages?.length) {
+			const stageSections: string[] = [];
+			for (const stage of job.stages) {
+				emitProgress(`Starting parallel stage '${stage.name}': ${stage.parallel.join(", ")}`, "orchestrator");
+				const stagePrompt = stage.prompt ? `${stage.prompt}\n\nTask context:\n${job.prompt}` : job.prompt;
+				const batch = stage.parallel.map((agentName) => {
+					const agentSpec = activeSubagents[agentName];
+					if (!agentSpec) throw Error(`Stage '${stage.name}' references missing agent '${agentName}'`);
+					return { spec: agentSpec, prompt: stagePrompt };
+				});
+				const { results, cleanlinessWarning } = await runParallelBatch(batch, `stage:${stage.name}`);
+				const lines = [`## Stage: ${stage.name}`];
+				for (const r of results) {
+					lines.push(`### Agent: ${r.agent} (${r.ok ? "ok" : "error"})\n\n${r.output}`);
+				}
+				if (cleanlinessWarning) lines.push(`### Repository Cleanliness Warning\n\n${cleanlinessWarning}`);
+				stageSections.push(lines.join("\n\n"));
+			}
+			finalPrompt = `${job.prompt}\n\n---\n\n# Parallel Stage Results\n\n${stageSections.join("\n\n")}`;
+		}
+
 		const { extensions, tools } = selectToolsAndExtensions(spec.tools);
 		const root = await h.root(ctx, {
 			agent: {
@@ -753,7 +1008,7 @@ try {
 				...(spec.maxTurns ? { maxTurns: spec.maxTurns } : {}),
 			},
 		});
-		const sub = await root.submit({ type: "input", content: job.prompt, requestId: job.requestId ?? job.id }, ctx);
+		const sub = await root.submit({ type: "input", content: finalPrompt, requestId: job.requestId ?? job.id }, ctx);
 		const settled = await sub.wait(ctx);
 		if (settled.status !== "done" || settled.type !== "input")
 			throw Error(`Task submission did not complete: ${settled.status}`);
@@ -766,7 +1021,7 @@ try {
 			.join("\n")
 			.trim();
 		if (!report) throw Error("Agent returned an empty report");
-		send({ report });
+		send({ report, ...(Object.keys(agentOutputs).length ? { outputs: agentOutputs } : {}) });
 	}
 } finally {
 	rl.close();

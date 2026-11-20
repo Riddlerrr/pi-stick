@@ -240,12 +240,23 @@ test("per-run locks allow concurrent runs, follow, diff, and selective cleanup",
 	fail(["follow", idA], /Worker interrupted/);
 });
 
-test("agent-runtime offline self-check exercises Pi Durable SQLite, Codemode, and multiplexed JSON-RPC", async (t) => {
+test("agent-runtime offline self-check exercises Pi Durable SQLite, Codemode, read-only scratch, parallel delegate, and multiplexed JSON-RPC", async (t) => {
 	const tmp = fs.mkdtempSync(join(tmpdir(), "pi-stick-rt-"));
+	const workspace = join(tmp, "workspace");
+	const scratch = join(tmp, "scratch");
+	const sessions = join(tmp, "sessions");
+	fs.mkdirSync(workspace, { recursive: true });
+	fs.mkdirSync(scratch, { recursive: true });
+	fs.mkdirSync(sessions, { recursive: true });
 	t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 	const runtime = join(import.meta.dirname, "..", "agent-runtime.ts");
 	const child = spawn(process.execPath, [runtime], {
-		env: { ...process.env, PI_STICK_SESSIONS_DIR: tmp },
+		env: {
+			...process.env,
+			PI_STICK_SESSIONS_DIR: sessions,
+			PI_STICK_WORKSPACE_DIR: workspace,
+			PI_STICK_SCRATCH_DIR: scratch,
+		},
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 	const stderrChunks: string[] = [];
@@ -260,7 +271,7 @@ test("agent-runtime offline self-check exercises Pi Durable SQLite, Codemode, an
 		if (typeof msg.rpc === "number") {
 			seenMethods.push(msg.method);
 			child.stdin.write(
-				`${JSON.stringify({ rpc: msg.rpc, result: { text: `probe-ok:${msg.method}`, error: false } })}\n`,
+				`${JSON.stringify({ rpc: msg.rpc, result: { text: msg.method === "check_clean" ? "" : `probe-ok:${msg.method}`, error: false } })}\n`,
 			);
 		} else if (msg.ready === true) {
 			ready = true;
@@ -271,7 +282,13 @@ test("agent-runtime offline self-check exercises Pi Durable SQLite, Codemode, an
 	const [code] = await exit;
 	assert.equal(code, 0, stderrChunks.join(""));
 	assert.equal(ready, true);
-	assert.deepEqual(seenMethods.sort(), ["logs", "ps"]);
+	assert.ok(seenMethods.includes("ps"));
+	assert.ok(seenMethods.includes("logs"));
+	assert.ok(seenMethods.includes("check_clean"));
+	// Read-only subagents wrote to their isolated scratch dirs and were blocked from /workspace
+	assert.ok(!fs.existsSync(join(workspace, "should-fail.txt")));
+	assert.equal(read(join(scratch, "checker-a/note.txt")), "ok-a");
+	assert.equal(read(join(scratch, "checker-b/note.txt")), "ok-b");
 });
 
 test("doctor stops early when Docker daemon is unavailable", (t) => {
@@ -451,4 +468,133 @@ if (has('config')) {
 	fs.writeFileSync(join(runPath, "exit"), "1");
 	const resOut = ok(["resume", id]);
 	assert.match(resOut, /Follow-up complete/);
+});
+
+test("multi-agent action validates stages, resolves multi-provider auth, enforces per-agent RPC policies, and saves per-agent outputs", (t) => {
+	const { app, tmp, source, ok, fail, stub } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	ok(["create", "action", "deep-check"]);
+	const actionDir = join(app, "actions/deep-check");
+	fs.mkdirSync(join(actionDir, "agents"), { recursive: true });
+	fs.writeFileSync(join(actionDir, "agents/sec.md"), "Check security.");
+	fs.writeFileSync(join(actionDir, "agents/perf.md"), "Check performance.");
+
+	// Invalid: parallel stage with two read-write agents must be rejected
+	writeJson(join(actionDir, "action.json"), {
+		name: "deep-check",
+		model: "openai-codex/gpt-6.2-sol",
+		orchestrator: { instructions: "instructions.md", mode: "read-write" },
+		agents: {
+			sec: { instructions: "agents/sec.md", mode: "read-write" },
+			perf: { instructions: "agents/perf.md", mode: "read-write" },
+		},
+		stages: [{ name: "parallel-bad", parallel: ["sec", "perf"] }],
+	});
+	fail(["run", "demo", "deep-check"], /multiple read-write agents in parallel/);
+
+	// Valid multi-provider multi-agent action
+	writeJson(join(actionDir, "action.json"), {
+		name: "deep-check",
+		description: "Multi-agent parallel analysis",
+		orchestrator: {
+			model: "openai-codex/gpt-6.2-sol",
+			instructions: "instructions.md",
+			mode: "read-write",
+			tools: ["read", "write", "edit", "grep", "find", "codemode", "exec", "logs", "ps", "restart", "delegate"],
+			allowedServices: ["runner", "web"],
+		},
+		agents: {
+			sec: {
+				description: "Security specialist",
+				model: "anthropic/claude-sonnet-4-5",
+				instructions: "agents/sec.md",
+				mode: "read-only",
+				tools: ["read", "grep", "find", "exec", "logs"],
+				allowedServices: ["runner"],
+			},
+			perf: {
+				description: "Performance specialist",
+				model: "openai-codex/gpt-6.2-sol",
+				instructions: "agents/perf.md",
+				mode: "read-only",
+				tools: ["read", "grep", "find", "ps"],
+				allowedServices: ["runner"],
+			},
+		},
+		stages: [{ name: "analyze", parallel: ["sec", "perf"], prompt: "Audit codebase" }],
+	});
+
+	const piDir = join(tmp, ".pi/agent");
+	fs.mkdirSync(piDir, { recursive: true });
+	writeJson(join(piDir, "models-store.json"), { "openai-codex": { models: [{ id: "gpt-6.2-sol" }] } });
+	writeJson(join(piDir, "auth.json"), { "openai-codex": { type: "oauth" }, anthropic: { type: "api_key" } });
+	stub(
+		"pi",
+		`const idx = process.argv.indexOf('--model');
+const m = idx >= 0 ? process.argv[idx + 1] : '';
+if (m.startsWith('anthropic/')) console.log('anthropic-key-fixture');
+else console.log('codex-token-fixture');`,
+	);
+
+	stub(
+		"docker",
+		`const a = process.argv.slice(2);
+const has = s => a.includes(s);
+if (has('config')) {
+  console.log(JSON.stringify({
+    services: {
+      runner: { volumes: [{ type: 'volume', source: 'source', target: '/workspace' }] },
+      web: {}
+    },
+    volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
+    networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
+  }));
+} else if (has('exec') && has('sh') && has('-lc')) {
+  console.log('ran:' + a.at(-1));
+} else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
+  const rl = require('node:readline').createInterface({ input: process.stdin });
+  const send = x => process.stdout.write(JSON.stringify(x) + '\\n');
+  let got = 0;
+  let job = null;
+  rl.on('line', line => {
+    const m = JSON.parse(line);
+    if (!job) {
+      job = m;
+      if (job.credentials['openai-codex'].token !== 'codex-token-fixture') process.exit(3);
+      if (job.credentials['openai-codex'].authType !== 'oauth') process.exit(4);
+      if (job.credentials['anthropic'].token !== 'anthropic-key-fixture') process.exit(5);
+      if (job.credentials['anthropic'].authType !== 'api_key') process.exit(6);
+      if (!job.orchestrator.instructions.includes('Security specialist')) process.exit(7);
+      if (job.stages.length !== 1 || job.stages[0].parallel.join(',') !== 'sec,perf') process.exit(8);
+      // Test per-agent host RPC policy: sec cannot exec on 'web', orchestrator can exec on 'web', perf cannot exec at all
+      send({ rpc: 1, method: 'exec', params: { service: 'web', command: 'echo 1' }, agent: 'sec' });
+      send({ rpc: 2, method: 'exec', params: { service: 'web', command: 'echo 2' }, agent: 'orchestrator' });
+      send({ rpc: 3, method: 'exec', params: { service: 'runner', command: 'echo 3' }, agent: 'perf' });
+      return;
+    }
+    if (m.rpc === 1 && m.result.error && m.result.text.includes('not permitted')) got |= 1;
+    else if (m.rpc === 2 && !m.result.error && m.result.text.includes('ran:echo 2')) got |= 2;
+    else if (m.rpc === 3 && m.result.error && m.result.text.includes('not permitted')) got |= 4;
+    else process.exit(9);
+    if (got === 7) {
+      send({ progress: 'checked auth', agent: 'agent:sec' });
+      send({ progress: 'checked queries', agent: 'agent:perf' });
+      send({
+        report: 'Combined synthesis report',
+        outputs: { sec: 'Security findings', perf: 'Perf findings' }
+      });
+      rl.close();
+    }
+  });
+}`,
+	);
+
+	const out = ok(["run", "demo", "deep-check", "Run full audit"]);
+	const id = /Run: ([0-9a-f]{32})/.exec(out)![1];
+	assert.match(out, /\[agent:sec\] checked auth/);
+	assert.match(out, /\[agent:perf\] checked queries/);
+	assert.match(out, /Combined synthesis report/);
+	const runPath = join(app, "state/runs", id);
+	assert.equal(read(join(runPath, "outputs/sec.md")), "Security findings\n");
+	assert.equal(read(join(runPath, "outputs/perf.md")), "Perf findings\n");
 });
