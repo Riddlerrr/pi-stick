@@ -9,12 +9,34 @@ import { createInterface } from "node:readline";
 
 declare const PI_STICK_COMPILED: boolean;
 export const compiled = typeof PI_STICK_COMPILED !== "undefined" && PI_STICK_COMPILED;
-const home = process.env.PI_STICK_HOME;
-if (home !== undefined && !isAbsolute(home)) throw Error("PI_STICK_HOME must be an absolute path");
-const root =
-	home ??
-	(typeof PI_STICK_COMPILED !== "undefined" ? join(homedir(), "pi-stick") : resolve(import.meta.dirname, ".."));
-export const ROOT = existsSync(root) ? realpathSync(root) : root;
+
+const explicitHome = process.env.PI_STICK_HOME;
+if (explicitHome !== undefined && !isAbsolute(explicitHome)) throw Error("PI_STICK_HOME must be an absolute path");
+const explicitDevHome = process.env.PI_STICK_DEV_HOME;
+if (explicitDevHome !== undefined && !isAbsolute(explicitDevHome))
+	throw Error("PI_STICK_DEV_HOME must be an absolute path");
+
+const envDev = process.env.PI_STICK_DEV;
+const argvDev = process.argv[2] === "--dev";
+export const devMode =
+	envDev === "1" || envDev === "true" || argvDev
+		? true
+		: envDev === "0" || envDev === "false"
+			? false
+			: !compiled && explicitHome === undefined;
+
+const sourceRoot = resolve(import.meta.dirname, "..");
+const assetsRoot = compiled
+	? (explicitHome ?? join(homedir(), "pi-stick"))
+	: explicitHome && !devMode
+		? explicitHome
+		: sourceRoot;
+const dataRoot = devMode
+	? (explicitDevHome ?? join(homedir(), "pi-stick-dev"))
+	: (explicitHome ?? join(homedir(), "pi-stick"));
+
+export const ASSETS = existsSync(assetsRoot) ? realpathSync(assetsRoot) : assetsRoot;
+export const ROOT = existsSync(dataRoot) ? realpathSync(dataRoot) : dataRoot;
 export const STATE = join(ROOT, "state");
 export const read = (path: string) => readFileSync(path, "utf8");
 export const json = (path: string) => JSON.parse(read(path));
@@ -37,7 +59,7 @@ export interface UserSettings {
 }
 
 export function settingsPath() {
-	return join(homedir(), ".config/pi-stick/settings.json");
+	return devMode ? join(ROOT, "settings.json") : join(homedir(), ".config/pi-stick/settings.json");
 }
 
 export function userSettings(): UserSettings {

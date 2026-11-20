@@ -8,6 +8,7 @@ import { type LoadedAction, loadAction, type ResolvedAgentSpec, resolveInputs, r
 import {
 	closed,
 	compiled,
+	devMode,
 	gitCommand,
 	isLocked,
 	json,
@@ -171,6 +172,7 @@ async function spawnWorker(id: string, fd: number) {
 		const child = spawn(process.execPath, args, {
 			detached: true,
 			stdio: ["ignore", log, log, fd],
+			env: { ...process.env, ...(devMode ? { PI_STICK_DEV: "1" } : {}) },
 		});
 		await once(child, "spawn");
 		child.unref();

@@ -1,5 +1,6 @@
 state/
 /projects/
+/actions/
 node_modules/
 /dist/
 .env

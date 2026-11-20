@@ -12,6 +12,12 @@ A Linux CLI platform for running independent, isolated AI tasks against local Do
 - `npm run check` — Biome lint/format check (warnings are errors) and `tsc --noEmit`.
 - `npm run lint -- --write` — Apply safe Biome fixes.
 - `npm test` — Run `node --test test/*.test.ts`.
+- `npm run build:image:dev` — Build the dev agent image (`pi-stick:dev`).
+- `./pi-stick-dev ...` (or `./pi-stick ...` without `PI_STICK_HOME`, `pi-stick --dev ...`, `PI_STICK_DEV=1`) — Run in isolated **dev mode**:
+  - Data (`projects/`, `actions/`, `state/`) lives in `~/pi-stick-dev` (override with `PI_STICK_DEV_HOME`), keeping both the Git checkout and your installed `~/pi-stick` untouched.
+  - Settings are read from `~/pi-stick-dev/settings.json` instead of `~/.config/pi-stick/settings.json`.
+  - Templates, schema, and `Dockerfile` are read live from the checkout (`ASSETS`).
+  - Uses Docker image `pi-stick:dev` (override with `PI_STICK_IMAGE`).
 - `npm run build:binary` / `npm run pack:npm` — Build Linux release archive or npm package (uses Bun pinned in `mise.toml`).
 
 ## Install

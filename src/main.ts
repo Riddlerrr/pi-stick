@@ -39,7 +39,7 @@ const usage = {
 const help =
 	"Isolated Docker project workspaces and extensible multi-agent tasks\n\nUsage:\n" +
 	Object.values(usage)
-		.map((s) => `  pi-stick ${s}`)
+		.map((s) => `  pi-stick [--dev] ${s}`)
 		.join("\n");
 
 type Command =
@@ -164,8 +164,9 @@ function parse(cmd: string, args: string[]): Command {
 	throw Error(Object.hasOwn(usage, cmd) ? `Usage: pi-stick ${usage[cmd as keyof typeof usage]}` : help);
 }
 
-export async function main([cmd, ...args]: string[]) {
+export async function main(rawArgs: string[]) {
 	process.umask(0o077);
+	const [cmd, ...args] = rawArgs[0] === "--dev" ? rawArgs.slice(1) : rawArgs;
 	if (cmd === "--help" || cmd === "-h" || !cmd) {
 		console.log(help);
 		return 0;

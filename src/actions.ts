@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { json, ROOT, read, run, userSettings, writeJson } from "./platform.ts";
+import { ASSETS, json, ROOT, read, run, userSettings, writeJson } from "./platform.ts";
 import { parseModelSpec } from "./system.ts";
 import { isValidName, type ProjectInfo } from "./workspace.ts";
 
@@ -358,7 +358,7 @@ export function createAction(name: string, project?: ProjectInfo): string {
 	const dest = join(base, name);
 	if (fs.lstatSync(dest, { throwIfNoEntry: false })) throw Error(`Action directory already exists: ${dest}`);
 	fs.mkdirSync(dest, { recursive: true, mode: 0o700 });
-	const schemaRel = relative(dest, join(ROOT, "action.schema.json"));
+	const schemaRel = relative(dest, join(ASSETS, "action.schema.json"));
 	const manifest: ActionManifest = {
 		$schema: schemaRel,
 		name,

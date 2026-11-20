@@ -21,6 +21,8 @@
   },
   "scripts": {
     "build:binary": "./scripts/build-linux.sh",
+    "build:image:dev": "docker build -t pi-stick:dev .",
+    "dev": "PI_STICK_DEV=1 node src/cli.ts",
     "pack:npm": "./scripts/pack-npm.sh",
     "check": "npm run lint && tsc --noEmit",
     "lint": "biome check --error-on-warnings .",

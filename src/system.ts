@@ -3,11 +3,25 @@ import * as fs from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { closed, json, output, prompt, ROOT, read, run, runId, STATE, userSettings } from "./platform.ts";
+import {
+	ASSETS,
+	closed,
+	devMode,
+	json,
+	output,
+	prompt,
+	ROOT,
+	read,
+	run,
+	runId,
+	STATE,
+	settingsPath,
+	userSettings,
+} from "./platform.ts";
 import { validateCompose } from "./tasks.ts";
 import { listProjects } from "./workspace.ts";
 
-export const IMAGE = "pi-stick:current";
+export const IMAGE = process.env.PI_STICK_IMAGE || (devMode ? "pi-stick:dev" : "pi-stick:current");
 
 export interface ModelSpec {
 	provider: string;
@@ -181,6 +195,11 @@ export async function probe(image = IMAGE): Promise<void> {
 }
 
 export async function doctor(extraChecks: Array<[string, () => unknown | Promise<unknown>]> = []): Promise<boolean> {
+	console.log(`Mode: ${devMode ? "dev" : "installed"}`);
+	console.log(`Home: ${ROOT}`);
+	if (ASSETS !== ROOT) console.log(`Assets: ${ASSETS}`);
+	console.log(`Settings: ${settingsPath()}`);
+	console.log(`Image: ${IMAGE}`);
 	const settings = userSettings();
 	const checks: Array<[string, () => unknown | Promise<unknown>]> = [
 		["Docker daemon", () => output(["docker", "info", "--format", "{{.ServerVersion}}"])],
@@ -230,7 +249,7 @@ export async function update(yes: boolean, activeRunCount: number) {
 	const stage = fs.mkdtempSync(join(tmpdir(), "pi-stick-update-"));
 	const copy = (name: string, from: string, to: string) => fs.copyFileSync(join(from, name), join(to, name));
 	try {
-		for (const f of [...files, "agent-runtime.ts", ".dockerignore"]) copy(f, ROOT, stage);
+		for (const f of [...files, "agent-runtime.ts", ".dockerignore"]) copy(f, ASSETS, stage);
 		const base = "node:current-bookworm-slim";
 		const digest = /^Digest:\s+(sha256:[0-9a-f]{64})$/m.exec(
 			output(["docker", "buildx", "imagetools", "inspect", base]),
@@ -263,7 +282,7 @@ export async function update(yes: boolean, activeRunCount: number) {
 		await probe(candidate);
 		const backup = join(STATE, "backups", id);
 		fs.mkdirSync(backup, { recursive: true });
-		for (const f of files) copy(f, ROOT, backup);
+		for (const f of files) copy(f, ASSETS, backup);
 		let hadCurrent = false;
 		try {
 			const prevId = output(["docker", "image", "inspect", IMAGE, "--format", "{{.Id}}"]);
@@ -278,9 +297,9 @@ export async function update(yes: boolean, activeRunCount: number) {
 		try {
 			run(["docker", "tag", candidate, IMAGE]);
 			await probe(IMAGE);
-			for (const f of files) copy(f, stage, ROOT);
+			for (const f of files) copy(f, stage, ASSETS);
 		} catch (err) {
-			for (const f of files) copy(f, backup, ROOT);
+			for (const f of files) copy(f, backup, ASSETS);
 			if (hadCurrent) run(["docker", "tag", rollback, IMAGE]);
 			throw err;
 		}

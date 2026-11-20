@@ -4,7 +4,7 @@
 
 ## Layout
 
-- `pi-stick`, `src/` — Host CLI. Runs directly on Node 24.12+ and bundles with Bun. **Use Node built-ins only** (no npm runtime dependencies).
+- `pi-stick`, `pi-stick-dev`, `src/` — Host CLI. Runs directly on Node 24.12+ and bundles with Bun. **Use Node built-ins only** (no npm runtime dependencies). Uncompiled `./pi-stick` (without `PI_STICK_HOME`), `./pi-stick-dev`, `--dev`, or `PI_STICK_DEV=1` runs in isolated dev mode (`~/pi-stick-dev`, `~/pi-stick-dev/settings.json`, `pi-stick:dev`, live checkout assets).
   - `src/cli.ts`, `src/main.ts` — Thin executable wrapper and CLI dispatcher.
   - `src/platform.ts` — Paths, settings, `flock` helpers, process helpers.
   - `src/workspace.ts` — Local Docker project workspaces (`create project`, discovery).

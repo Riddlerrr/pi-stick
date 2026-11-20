@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { prompt, ROOT, read, run, STATE, userSettings, writeJson } from "./platform.ts";
+import { ASSETS, prompt, ROOT, read, run, STATE, userSettings, writeJson } from "./platform.ts";
 
 export const NAME = "[a-z0-9][a-z0-9-]{0,62}";
 const validName = new RegExp(`^${NAME}$`);
@@ -27,7 +27,8 @@ export function projectsDir() {
 	const dir = canonical(resolve(path.startsWith("~/") ? join(homedir(), path.slice(2)) : path));
 	if (
 		within(ROOT, dir) ||
-		[STATE, join(ROOT, ".git"), join(ROOT, "project-template"), join(ROOT, "actions")].some((p) => within(dir, p))
+		within(ASSETS, dir) ||
+		[STATE, join(ROOT, "actions"), join(ASSETS, ".git"), join(ASSETS, "project-template")].some((p) => within(dir, p))
 	)
 		throw Error("Choose a dedicated projects directory outside pi-stick state, actions, template and Git metadata");
 	return dir;
@@ -74,7 +75,7 @@ export async function createProject(name: string, source?: string) {
 	const tmp = fs.mkdtempSync(join(dir, ".create-")),
 		stage = join(tmp, name);
 	try {
-		fs.cpSync(join(ROOT, "project-template"), stage, { recursive: true });
+		fs.cpSync(join(ASSETS, "project-template"), stage, { recursive: true });
 		fs.chmodSync(stage, 0o700);
 		const compose = join(stage, "compose.yaml");
 		fs.writeFileSync(compose, `name: pi-dev-${name}\n${read(compose)}`);

@@ -24,6 +24,7 @@ function fixture(t: TestContext) {
 		for (const name of [
 			"src",
 			"pi-stick",
+			"pi-stick-dev",
 			"package.json",
 			"project-template",
 			"agent-runtime.ts",
@@ -37,7 +38,10 @@ function fixture(t: TestContext) {
 	const env = {
 		...process.env,
 		HOME: tmp,
-		PI_STICK_HOME: binary ? app : undefined,
+		PI_STICK_HOME: app,
+		PI_STICK_DEV: undefined,
+		PI_STICK_DEV_HOME: undefined,
+		PI_STICK_IMAGE: undefined,
 		PATH: `${bin}:${process.env.PATH}`,
 		GIT_CONFIG_NOSYSTEM: "1",
 		GIT_CONFIG_GLOBAL: join(tmp, ".gitconfig"),
@@ -717,5 +721,51 @@ test("stage-release.sh packages updated runtime files and excludes removed legac
 		"share/project-template/test-file",
 	]) {
 		assert.ok(!fs.existsSync(join(tmp, removed)), `stale legacy file still staged: ${removed}`);
+	}
+});
+
+test("dev mode isolates data, settings, and image from installed home via auto-dev, --dev, and pi-stick-dev", (t) => {
+	const { app, tmp, bin, source, stub, env } = fixture(t);
+	stub("docker", `process.exit(1);`);
+	// Put a production settings.json that must NOT leak into dev mode
+	fs.mkdirSync(join(tmp, ".config/pi-stick"), { recursive: true });
+	writeJson(join(tmp, ".config/pi-stick/settings.json"), { projects_dir: join(tmp, "prod-projects") });
+
+	const devHome = join(tmp, "pi-stick-dev");
+
+	// 1. --dev flag overrides PI_STICK_HOME (e.g. from launcher) and uses ~/pi-stick-dev + pi-stick:dev
+	const flagDoc = spawnSync(join(bin, "pi-stick"), ["--dev", "doctor"], { env, cwd: tmp, encoding: "utf8" });
+	assert.match(flagDoc.stdout, /Mode: dev/);
+	assert.match(flagDoc.stdout, new RegExp(`Home: ${devHome}`));
+	assert.match(flagDoc.stdout, new RegExp(`Settings: ${join(devHome, "settings.json")}`));
+	assert.match(flagDoc.stdout, /Image: pi-stick:dev/);
+
+	// 2. Uncompiled ./pi-stick without PI_STICK_HOME auto-enters dev mode, keeping checkout clean
+	if (!process.env.PI_STICK_TEST_BINARY) {
+		const noHomeEnv = { ...env, PI_STICK_HOME: undefined };
+		const autoDoc = spawnSync(join(app, "pi-stick"), ["doctor"], { env: noHomeEnv, cwd: tmp, encoding: "utf8" });
+		assert.match(autoDoc.stdout, /Mode: dev/);
+		assert.match(autoDoc.stdout, new RegExp(`Home: ${devHome}`));
+		assert.match(autoDoc.stdout, new RegExp(`Assets: ${app}`));
+
+		// 3. ./pi-stick-dev wrapper forces dev mode even when PI_STICK_HOME is set
+		const wrapCreate = spawnSync(join(app, "pi-stick-dev"), ["create", "project", "dev-proj", "--repo", source], {
+			env,
+			cwd: tmp,
+			encoding: "utf8",
+		});
+		assert.equal(wrapCreate.status, 0, wrapCreate.stderr);
+		assert.ok(fs.existsSync(join(devHome, "projects/dev-proj/repo/example.txt")));
+		assert.ok(!fs.existsSync(join(tmp, "prod-projects/dev-proj")));
+		assert.ok(!fs.existsSync(join(app, "projects/dev-proj")));
+
+		// 4. PI_STICK_DEV_HOME overrides the dev data folder
+		const customDev = join(tmp, "custom-dev");
+		const customDoc = spawnSync(join(app, "pi-stick-dev"), ["doctor"], {
+			env: { ...env, PI_STICK_DEV_HOME: customDev },
+			cwd: tmp,
+			encoding: "utf8",
+		});
+		assert.match(customDoc.stdout, new RegExp(`Home: ${customDev}`));
 	}
 });
