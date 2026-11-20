@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import pkg from "../package.json" with { type: "json" };
 import { read, STATE } from "./platform.ts";
 import { target } from "./projects.ts";
 import { ACTIVE, cleanup, follow, LOCK, launch, resumeURL, runDir, tryLock, worker } from "./runs.ts";
@@ -12,6 +13,7 @@ const usage = {
 	pull: "pull PR_URL",
 	review: "review (PR_URL | --follow RUN_ID | --resume RUN_ID)",
 	cleanup: "cleanup [--dry-run] [--days DAYS]",
+	version: "version",
 	doctor: "doctor",
 	update: "update [--yes]",
 };
@@ -80,6 +82,10 @@ export async function main([cmd, ...args]: string[]) {
 	}
 	if (Object.hasOwn(usage, cmd) && args.some((s) => s === "--help" || s === "-h")) {
 		console.log(`Usage: pi-stick ${usage[cmd as keyof typeof usage]}`);
+		return 0;
+	}
+	if (cmd === "version" && !args.length) {
+		console.log(pkg.version);
 		return 0;
 	}
 	if (cmd === "_worker" && args.length === 2) {

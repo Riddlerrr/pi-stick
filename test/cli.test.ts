@@ -59,6 +59,14 @@ function fixture(t: TestContext) {
 	return { tmp, app, bin, source, ok, fail, invoke, git, stub, env };
 }
 
+test("version reports the CLI package version without creating state", (t) => {
+	const { app, ok, fail } = fixture(t);
+	const { version } = JSON.parse(read(join(import.meta.dirname, "..", "package.json")));
+	assert.equal(ok(["version"]), `${version}\n`);
+	fail(["version", "extra"], /Usage: pi-stick version/);
+	assert.ok(!fs.existsSync(join(app, "state")));
+});
+
 test("symlinked CLI clones independent workspaces; failed creates leave no partial project", (t) => {
 	const { app, source, tmp, ok, fail } = fixture(t);
 	ok(["create", "project", "first"], `${source}\n`);
