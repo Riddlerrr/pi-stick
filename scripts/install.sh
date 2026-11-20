@@ -24,7 +24,7 @@ if [[ -f $launcher && ! -L $launcher ]]; then
   fi
 fi
 default=${PI_STICK_HOME:-${previous:-"$HOME/pi-stick"}}
-printf 'pi-stick app directory (projects and state live here) [%s]: ' "$default" >&2
+printf 'pi-stick app directory (projects, actions and state live here) [%s]: ' "$default" >&2
 IFS= read -r app || die "No input received."
 app=${app:-"$default"}
 [[ $app == '~/'* ]] && app="$HOME/${app:2}"
@@ -55,16 +55,21 @@ files="$tmp/checkout/share"
 printf 'CLI: latest Linux release. Runtime files: %s\n' "$repo"
 
 if $reuse; then
-  [[ -d $app/state && ! -L $app/state && ! -L $app/state/lock ]] || die "Unexpected state directory or lock."
-  exec 9>>"$app/state/lock"
-  flock -n 9 && [[ ! -e $app/state/active ]] || die "pi-stick is busy or has an unsettled review."
+  [[ -d $app/state && ! -L $app/state ]] || die "Unexpected state directory."
+  shopt -s nullglob
+  for lockfile in "$app"/state/runs/*/lock; do
+    if ! flock -n "$lockfile" true; then
+      die "pi-stick has an active task run; wait for it to finish before upgrading."
+    fi
+  done
+  shopt -u nullglob
   mv -- "$binary" "$files/pi-stick"
   changed=()
   shopt -s globstar dotglob
   for src in "$files"/**/*; do
     [[ -f $src ]] || continue
     rel=${src#"$files/"}
-    case $rel in state|state/*|projects|projects/*) die "Unexpected release path: $rel" ;; esac
+    case $rel in state|state/*|projects|projects/*|actions|actions/*) die "Unexpected release path: $rel" ;; esac
     dest="$app/$rel"
     [[ $(realpath -m -- "$dest") == "$dest" && ( ! -e $dest || -f $dest ) ]] || die "Unsafe update path: $dest"
     if [[ ! -f $dest ]]; then echo "Missing: $rel"
@@ -95,28 +100,27 @@ if $reuse; then
   else
     echo 'Installed files are unchanged.'
   fi
-  exec 9>&-
 else
   mkdir -p -- "$(dirname "$app")" "$bin"
   mkdir -- "$app"
   cp -R -- "$files/." "$app/"
   install -m 755 -- "$binary" "$app/pi-stick"
-  mkdir -p -- "$app/projects" "$app/state/"{projects,runs,sessions}
+  mkdir -p -- "$app/projects" "$app/actions" "$app/state/"{runs,sessions}
   write_launcher "$app" > "$tmp/launcher"
   chmod 755 "$tmp/launcher"
   mv -T -- "$tmp/launcher" "$launcher"
   printf 'Installed %s. Add %s to PATH if needed.\n' "$launcher" "$bin"
 fi
 while true; do
-  printf 'Build and start the Docker reviewer, then run pi-stick doctor? [Y/n] ' >&2
-  IFS= read -r answer || die "No input received. Reviewer not started."
+  printf 'Build the pi-stick agent Docker image and run pi-stick doctor? [Y/n] ' >&2
+  IFS= read -r answer || die "No input received. Image not built."
   case ${answer,,} in
     ''|y|yes)
-      (cd "$app" && docker compose up -d --build --wait)
+      (cd "$app" && docker build -t pi-stick:current .)
       "$launcher" doctor
       break ;;
     n|no)
-      printf 'To start and check later: cd %q && docker compose up -d --build --wait && %q doctor\n' "$app" "$launcher"
+      printf 'To build and check later: cd %q && docker build -t pi-stick:current . && %q doctor\n' "$app" "$launcher"
       break ;;
     *) echo "Please enter Y or N." >&2 ;;
   esac

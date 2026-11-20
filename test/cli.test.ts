@@ -598,3 +598,124 @@ if (has('config')) {
 	assert.equal(read(join(runPath, "outputs/sec.md")), "Security findings\n");
 	assert.equal(read(join(runPath, "outputs/perf.md")), "Perf findings\n");
 });
+
+test("two concurrent runs execute simultaneously with isolated workspaces and locks", async (t) => {
+	const { app, tmp, bin, source, ok, stub, env } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	ok(["create", "action", "echo"]);
+	writeJson(join(app, "actions/echo/action.json"), {
+		name: "echo",
+		model: "openai-codex/gpt-6.2-sol",
+		orchestrator: { instructions: "instructions.md", mode: "read-write" },
+	});
+	const piDir = join(tmp, ".pi/agent");
+	fs.mkdirSync(piDir, { recursive: true });
+	writeJson(join(piDir, "models-store.json"), { "openai-codex": { models: [{ id: "gpt-6.2-sol" }] } });
+	writeJson(join(piDir, "auth.json"), { "openai-codex": { type: "oauth" } });
+	stub("pi", `console.log('tok')`);
+
+	const gateDir = join(tmp, "gates");
+	fs.mkdirSync(gateDir, { recursive: true });
+	const releaseFile = join(gateDir, "release");
+	stub(
+		"docker",
+		`const fs = require('node:fs');
+const a = process.argv.slice(2);
+const has = s => a.includes(s);
+if (has('config')) {
+  console.log(JSON.stringify({
+    services: { runner: { volumes: [{ type: 'volume', source: 'source', target: '/workspace' }] } },
+    volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
+    networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
+  }));
+} else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
+  const repoMount = a.find(x => x.endsWith(':/workspace')).slice(0, -':/workspace'.length);
+  const rl = require('node:readline').createInterface({ input: process.stdin });
+  rl.once('line', line => {
+    const job = JSON.parse(line);
+    fs.writeFileSync(${JSON.stringify(gateDir)} + '/' + job.id + '.ready', '');
+    fs.writeFileSync(repoMount + '/marker.txt', job.prompt + '\\n');
+    const iv = setInterval(() => {
+      if (fs.existsSync(${JSON.stringify(releaseFile)})) {
+        clearInterval(iv);
+        process.stdout.write(JSON.stringify({ report: 'done:' + job.prompt }) + '\\n');
+        rl.close();
+      }
+    }, 25);
+  });
+}`,
+	);
+
+	const run1 = spawn(join(bin, "pi-stick"), ["run", "demo", "echo", "task-one"], {
+		env,
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	const run2 = spawn(join(bin, "pi-stick"), ["run", "demo", "echo", "task-two"], {
+		env,
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	let out1 = "";
+	let out2 = "";
+	run1.stdout.on("data", (d) => {
+		out1 += d.toString();
+	});
+	run2.stdout.on("data", (d) => {
+		out2 += d.toString();
+	});
+	const done1 = closed(run1);
+	const done2 = closed(run2);
+	try {
+		const deadline = Date.now() + 10_000;
+		while (fs.readdirSync(gateDir).filter((f) => f.endsWith(".ready")).length < 2 && Date.now() < deadline) {
+			await new Promise((r) => setTimeout(r, 25));
+		}
+		const readyIds = fs
+			.readdirSync(gateDir)
+			.filter((f) => f.endsWith(".ready"))
+			.map((f) => f.replace(/\.ready$/, ""));
+		assert.equal(readyIds.length, 2, "both runs should be active concurrently");
+		const activeOut = ok(["runs"]);
+		for (const id of readyIds) assert.match(activeOut, new RegExp(id));
+	} finally {
+		fs.writeFileSync(releaseFile, "go");
+	}
+	assert.equal((await done1)[0], 0, out1);
+	assert.equal((await done2)[0], 0, out2);
+	assert.match(out1, /done:task-one/);
+	assert.match(out2, /done:task-two/);
+});
+
+test("stage-release.sh packages updated runtime files and excludes removed legacy files", (t) => {
+	const tmp = fs.mkdtempSync(join(tmpdir(), "pi-stick-stage-"));
+	t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+	const repoRoot = join(import.meta.dirname, "..");
+	const r = spawnSync("bash", [join(repoRoot, "scripts/stage-release.sh"), tmp], {
+		cwd: repoRoot,
+		encoding: "utf8",
+	});
+	assert.equal(r.status, 0, r.stderr);
+	for (const rel of [
+		"share/agent-runtime.ts",
+		"share/action.schema.json",
+		"share/Dockerfile",
+		"share/.dockerignore",
+		"share/package.json",
+		"share/package-lock.json",
+		"share/project-template/Dockerfile",
+		"share/project-template/compose.yaml",
+		"share/project-template/setup-project",
+		"share/project-template/AGENTS.md",
+		"README.md",
+		"CHANGELOG.md",
+	]) {
+		assert.ok(fs.existsSync(join(tmp, rel)), `missing staged file: ${rel}`);
+	}
+	for (const removed of [
+		"share/reviewer.ts",
+		"share/review-method.md",
+		"share/compose.yaml",
+		"share/project-template/test-file",
+	]) {
+		assert.ok(!fs.existsSync(join(tmp, removed)), `stale legacy file still staged: ${removed}`);
+	}
+});

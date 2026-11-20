@@ -13,7 +13,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 const { name, version, engines, type } = JSON.parse(readFileSync("package.json"));
 writeFileSync(process.argv[2] + "/package.json", JSON.stringify({
   name, version, engines, type, os: ["linux"], bin: { "pi-stick": "pi-stick.js" },
-  description: "Local Docker project workspaces and private GitHub PR reviews",
+  description: "Isolated Docker project workspaces and extensible multi-agent tasks",
   repository: "github:Riddlerrr/pi-stick"
 }, null, 2) + "\n");
 JS

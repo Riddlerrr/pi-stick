@@ -1,4 +1,0 @@
-#!/bin/sh
-# Replace this with your test runner command. "$1" is one repository-relative path.
-echo "Configure test-file in the project recipe before requesting tests." >&2
-exit 2

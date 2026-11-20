@@ -1,181 +1,134 @@
 # pi-stick
 
-A standalone CLI for local Docker project workspaces and private GitHub PR reviews.
-Like [Pi's coding agent](https://github.com/earendil-works/pi/tree/main/packages/coding-agent),
-it has a thin executable that passes arguments to a separate command dispatcher.
-Progress is plain text so pipes and reattached terminals see the same review.
+A Linux CLI platform for running independent, isolated AI tasks against local Docker project workspaces with the full project environment up and running.
 
-A fresh installation has no projects. Creating one clones source but does not
-build images, start containers, or call a model.
+- **Full local fidelity**: Every task runs against its own isolated repository copy and its own running Docker Compose stack, so agents can verify anything a developer can verify locally (tests, linters, APIs, databases, browsers, logs).
+- **Container isolation**: The agent runtime runs in a hardened ephemeral container (`docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true`) attached to the task's Docker network, with scoped mounts for only that task. No Docker socket is ever mounted into any container.
+- **Zero built-in actions**: `pi-stick` ships no opinionated workflows out of the box. You author your own actions—from single-agent scripts to multi-agent orchestrations with parallel subagents, per-agent models, and per-agent permissions.
+- **Plain-text durable execution**: Tasks run in detached background workers backed by Pi Durable SQLite sessions. Pipes, reattached terminals, `follow`, `resume`, and `continue` all share the same plain-text stream.
 
 ## Development
 
-Run `npm run check` for Biome linting, formatting and TypeScript checks.
-Use `npm run lint -- --write` to apply Biome's safe fixes.
-
-Run `mise install bun` from the checkout to use the same Bun version as release CI.
-On Linux, `npm run build:binary` uses Bun to compile for the host architecture
-(x64 or arm64) and writes `dist/pi-stick-linux-<arch>.tar.gz`. Pushing a
-`v*` tag builds and tests both archives before publishing a GitHub release.
+- `npm run check` — Biome lint/format check (warnings are errors) and `tsc --noEmit`.
+- `npm run lint -- --write` — Apply safe Biome fixes.
+- `npm test` — Run `node --test test/*.test.ts`.
+- `npm run build:binary` / `npm run pack:npm` — Build Linux release archive or npm package (uses Bun pinned in `mise.toml`).
 
 ## Install
 
-Needs Linux, Git, util-linux `flock`, tar, and Docker with Compose/Buildx. For reviews, install and
-authenticate gh and Pi (model `openai-codex/gpt-6.2-sol`). The default images
-assume host UID 1000. npm is needed for reviewer upgrades.
+Requires Linux, Git, util-linux `flock`, Docker with Compose/Buildx, and Pi (`pi auth`) for model credentials. The default images assume host UID 1000. `npm` is needed for `pi-stick update`.
 
 ### Interactive Linux installer
 
-From this checkout, run `./scripts/install.sh` as your normal user (no sudo). Press Enter
-to reuse the directory recorded by a previous installer run, or `~/pi-stick`
-on first install. An explicit `PI_STICK_HOME` overrides the suggested path.
-The installer downloads the latest released Linux binary. It takes runtime files
-(Dockerfile, Compose, reviewer, manifests and project template) from the checkout
-containing `scripts/install.sh`, including uncommitted edits. It
-creates the projects and private state directories, and installs a launcher
-in `~/.local/bin` that sets `PI_STICK_HOME` for you. Put that directory on
-your PATH. On reruns, identical files are ignored. For missing or changed
-files, choose **replace all** (default), **skip all**, or **per-file**. Replacing
-a file overwrites edits in the install directory. Projects, review state and
-unmanaged files are never replaced. At the reviewer prompt, press Enter to build and start the container,
-then run `pi-stick doctor`. Answer `n` to skip both. A failed startup or check
-returns a nonzero status and leaves the installation in place. No data is migrated.
-
-### Linux binary via mise
-
-The release binary needs neither Node nor Bun on the host. On a fresh install:
-
-```sh
-mise use -g github:Riddlerrr/pi-stick@latest
-export PI_STICK_HOME="$HOME/pi-stick"
-install -d -m 700 "$PI_STICK_HOME"
-cp -R "$(dirname "$(mise which pi-stick)")/share/." "$PI_STICK_HOME/"
-pi-stick --help
-```
-
-Release 0.1.0 defaults to `~/.local/share/pi-stick`; newer builds default to
-`~/pi-stick`. No data is moved on upgrade. To keep using an existing directory,
-persist an absolute `PI_STICK_HOME` in your environment. This directory holds
-the editable runtime files, default projects and review state; it is not tied
-to a mise version. On upgrade, merge changes from the new `share/` while idle
-rather than overwriting local recipes or reviewer upgrades. Run reviewer
-Compose commands from `$PI_STICK_HOME`.
-
-### npm package (Linux, Node.js 24.12+)
-
-Install with `npm install -g pi-stick`. Follow the same fresh-install steps as
-for mise, copying from `$(npm root -g)/pi-stick/share/.` instead. The CLI
-has no npm runtime dependencies; reviewer dependencies stay inside Docker.
-
-For maintainers: `npm run pack:npm` builds the public CLI tarball. Publish the
-tested tarball with `npm publish ./dist/pi-stick-<version>.tgz --access public`.
-The checkout's manifest stays private because it also builds the reviewer image.
+From this checkout, run `./scripts/install.sh` as your normal user (no sudo). It installs the CLI and runtime files into `~/pi-stick` (or `$PI_STICK_HOME`), creates `projects/`, `actions/`, and `state/`, installs a launcher in `~/.local/bin/pi-stick`, and offers to build `pi-stick:current` and run `pi-stick doctor`. Projects, actions, and run state are never overwritten on upgrade.
 
 ### Source install (Node.js 24.12+)
 
-On this host, edit the Git checkout at `~/workspace/pi-stick`. Run the CLI and
-Compose from the installed copy at `~/workspace/homelab/pi-stick`, not from
-the checkout. To install or refresh the application files while idle:
+The host CLI runs directly from TypeScript using Node built-ins only (no host npm runtime dependencies). Dependencies for `agent-runtime.ts` (`@earendil-works/*`) live inside the Docker image:
 
 ```sh
-cd ~/workspace/pi-stick
-dest=~/workspace/homelab/pi-stick
-mkdir -p "$dest"
-npm ci && npm run check && npm test
-rsync -a pi-stick src Dockerfile compose.yaml .dockerignore package*.json \
-  reviewer.ts review-method.md project-template README.md "$dest/"
-cd "$dest"
-install -d -m 700 state state/{projects,runs,sessions}
-ln -s "$PWD/pi-stick" ~/.local/bin/pi-stick   # fresh install only
-docker compose up -d --build                 # reviewer only
+docker build -t pi-stick:current .
+ln -s "$PWD/pi-stick" ~/.local/bin/pi-stick
 pi-stick doctor
 ```
-
-This copy does not include pi-stick's Git metadata and leaves `projects/` and
-`state/` in place. If you used `pi-stick update`, reconcile the installed
-Dockerfile and npm manifests with the source checkout before copying again.
-
-The host CLI runs directly from TypeScript using Node built-ins; no build or
-host runtime package install is needed. The image installs the Pi Durable SDK
-for the reviewer. The launcher resolves its own path, so the symlink works
-from any directory. Upgrading an existing installation does not require a
-state migration. Remove obsolete launcher modules from the install directory
-only, not from any project workspace.
 
 ## Create a project
 
 ```sh
-pi-stick create project my-app               # prompts for Git URL
-# Or, without a prompt:
-pi-stick create project another --repo https://github.com/OWNER/REPO.git
+pi-stick create project my-app               # prompts for Git URL or local path
+pi-stick create project my-app --repo https://github.com/OWNER/REPO.git
 ```
 
-By default workspaces live under `projects/` in the app directory (beside the
-source launcher unless `PI_STICK_HOME` is set), regardless of the current directory. To override, put this object in
-`~/.config/pi-stick/settings.json`:
+By default workspaces live under `$PI_STICK_HOME/projects/`. To override, create `~/.config/pi-stick/settings.json`:
 
 ```json
-{"projects_dir": "/srv/pi-stick/projects"}
+{
+  "projects_dir": "/srv/pi-stick/projects",
+  "default_model": "openai-codex/gpt-6.2-sol"
+}
 ```
 
-Use a dedicated absolute path or `~/...`. Changing it changes discovery only;
-nothing is moved or deleted. Back up your recipes and unpushed work separately.
-Do not put credentials in clone URLs.
+Each project contains `repo/` (your local Git clone), `project.json`, `Dockerfile`, `compose.yaml`, `compose.override.yaml`, `setup-project`, and `AGENTS.md`.
 
-The tracked `project-template/` directory is the standard scaffold. Edit it to
-change future projects; creation recursively copies it (including dotfiles).
-Existing workspaces are never refreshed or overwritten.
+- Edit `compose.yaml`, `Dockerfile`, and `setup-project` so `runner` and any companion services (`web`, `db`, `redis`, etc.) bring up your full local dev environment.
+- Keep host bind mounts and published host ports in `compose.override.yaml` (dev-only). Tasks use only the base `compose.yaml` with isolated per-task mounts and networks.
+- Document build, test, and local service URLs in `AGENTS.md`; it is automatically included in agent instructions.
 
-Each workspace contains `repo/` (source and its own .git), `project.json`
-(GitHub owner/repo, or null for development only), `Dockerfile`, Compose files,
-`setup-project`, `test-file`, and `AGENTS.md`. GitHub registration is inferred
-from the clone URL; for another clone source set `github` in the manifest
-manually to enable GitHub PR commands. No central project list.
+## Author actions
+
+A fresh install has no actions. Create global actions (`$PI_STICK_HOME/actions/<name>/`) or project-specific actions (`projects/<project>/actions/<name>/`, which override global actions of the same name):
 
 ```sh
-cd projects/my-app                 # or the path printed at creation
-docker compose up -d --build
-docker compose exec runner setup-project
-docker compose exec runner sh       # /workspace/repo is your writable clone
-docker compose down
+pi-stick create action my-action
+pi-stick create action my-action --project my-app
+pi-stick actions --project my-app
 ```
 
-Customize the toolchain, setup script, one-file test command and agent notes
-for each project. The starter test command deliberately reports “not configured”.
-Keep credentials outside build contexts, Git and model-facing notes/logs.
-Recipes are trusted Docker configuration: do not copy them from an untrusted PR.
+Each action directory contains `action.json` (validated against `action.schema.json`), Markdown instruction files, and optional trusted host hooks (`prepare`, `after`). Action configs inside an untrusted `repo/` are never auto-loaded.
 
-## Review a PR
+### Multi-agent `action.json` example
+
+```json
+{
+  "$schema": "../../action.schema.json",
+  "name": "deep-check",
+  "description": "Parallel specialist analysis followed by orchestrator synthesis",
+  "model": "openai-codex/gpt-6.2-sol",
+  "hooks": {
+    "prepare": "hooks/prepare.sh",
+    "after": "hooks/after.sh"
+  },
+  "orchestrator": {
+    "instructions": "orchestrator.md",
+    "mode": "read-write",
+    "tools": ["read", "write", "edit", "grep", "find", "codemode", "exec", "logs", "ps", "restart", "delegate"],
+    "allowedServices": ["runner"]
+  },
+  "agents": {
+    "security": {
+      "description": "Audit auth, input validation, and secrets",
+      "model": "anthropic/claude-sonnet-4-5",
+      "instructions": "agents/security.md",
+      "mode": "read-only",
+      "tools": ["read", "write", "grep", "find", "codemode", "exec", "logs", "ps"],
+      "allowedServices": ["runner"]
+    },
+    "tests": {
+      "description": "Verify behavior against the running stack",
+      "instructions": "agents/tests.md",
+      "mode": "read-only",
+      "tools": ["read", "write", "grep", "find", "codemode", "exec", "logs", "ps"],
+      "allowedServices": ["runner"]
+    }
+  },
+  "stages": [
+    {
+      "name": "analyze",
+      "parallel": ["security", "tests"],
+      "prompt": "Investigate the codebase and report verified findings."
+    }
+  ]
+}
+```
+
+- **Orchestration modes**: Configure static `stages` (parallel fan-out feeding into `orchestrator`) and/or enable `delegate` on `orchestrator` so it can dynamically spawn subagents in parallel across multiple rounds.
+- **Permissions & scratch isolation**: All agents in a task share `/workspace` and the running project stack. `read-only` agents cannot modify `/workspace` via file tools, but each agent gets its own writable `/scratch/<agent-name>` directory (visible in both the agent container and `runner`) for ad-hoc test scripts and experiments. Repository cleanliness is checked after `read-only` rounds.
+- **Trusted host hooks**: `prepare` runs on the host before starting the project stack (and can write read-only files into `$PI_STICK_CONTEXT`, mounted at `/context:ro`). `after` runs after completion with paths to the report and `changes.patch`.
+- **Models & auth**: Each agent can specify any `provider/modelId` supported by local Pi. Tokens are fetched dynamically via `pi auth print-bearer-token` and passed to the ephemeral container strictly over stdin.
+
+## Run and manage tasks
 
 ```sh
-pi-stick pull https://github.com/OWNER/REPO/pull/123     # prepare only
-pi-stick review https://github.com/OWNER/REPO/pull/123
-pi-stick review --follow RUN_ID                        # Ctrl-C detaches
-pi-stick review --resume RUN_ID                        # interrupted prepared run
-pi-stick cleanup --dry-run                             # inactive for 7 days
-pi-stick cleanup --days 14                             # confirm before deletion
-pi-stick update                                        # confirm before upgrade
+pi-stick run my-app my-action [--ref BRANCH_OR_SHA] [--input KEY=VALUE]... [--keep-up] ["Prompt"]
+pi-stick runs [--all]                    # list active (or all) runs
+pi-stick follow RUN_ID                   # stream progress (Ctrl-C detaches)
+pi-stick continue RUN_ID "Follow-up"     # send another turn in the same session & workspace
+pi-stick resume RUN_ID                   # resume an interrupted or failed run
+pi-stick diff RUN_ID                     # show changes made in the task workspace
+pi-stick stop RUN_ID                     # stop a --keep-up task's project containers
+pi-stick cleanup [--dry-run] [--days 7]  # delete old finished runs, stacks, volumes & sessions
+pi-stick doctor                          # check Docker, image self-check, auth, recipes & actions
+pi-stick update [--yes]                  # rebuild pi-stick:current with latest dependencies
 ```
 
-Only registered GitHub repositories are accepted. The host fetches a separate
-PR snapshot, builds the trusted base `compose.yaml`, and copies source to a
-PR-scoped volume. Keep a `runner` service with a writable `source:/workspace`
-volume; it must provide sh, tar, timeout, and the two scripts from the template.
-Both scripts run inside the runner with `/workspace/repo` as cwd. The test
-script receives one committed path as an argument: **validate that it is a
-supported test**, quote it, and never evaluate it as shell code. Use the
-development override for host mounts or ports; it is never loaded for reviews.
-
-The reviewer reads committed files and can request tests. It has no Docker
-socket, shell tool, or host GitHub credentials. Private source and context go
-to the configured model provider. There is one active operation at a time.
-Reports/logs: `state/runs/RUN_ID/`; transcripts: `state/sessions/`.
-Cleanup targets scratch stacks in `state/projects/`, never project workspaces.
-
-**Recovery/upgrades:** follow before retrying. Resume requires the original
-prepared snapshot and a known test outcome. If setup was interrupted, the DB
-lost or a recipe changed, preserve state and inspect the private log first.
-Old-format stacks and runs are not migrated; archive needed data before
-confirmed cleanup. Existing private secrets files are not imported or injected.
-Rebuild the reviewer with `docker compose up -d --build` when idle after code
-changes. `pi-stick update` upgrades only the reviewer dependencies/image.
+Multiple tasks can run concurrently across the same or different projects. When a run finishes, its project containers are stopped (`docker compose stop`) to free CPU/RAM while preserving workspace files, volumes, `report.md`, `outputs/*.md`, `changes.patch`, and the Pi Durable SQLite session until `pi-stick cleanup` (pass `--keep-up` to keep containers running).
