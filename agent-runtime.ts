@@ -1,3 +1,5 @@
+import * as fs from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Api, Credential, Model } from "@earendil-works/pi-ai";
@@ -6,22 +8,41 @@ import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import {
 	AssistantEntry,
+	type ConversationId,
 	createRegistry,
 	defineExtension,
 	defineTool,
 	GenerationTask,
 	Harness,
 	hook,
+	ROOT_CONVERSATION_ID,
+	type ToolRegistration,
 	ToolTask,
 } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
 const SESSIONS_DIR = process.env.PI_STICK_SESSIONS_DIR ?? "/sessions";
+const WORKSPACE_DIR = process.env.PI_STICK_WORKSPACE_DIR ?? "/workspace";
+const SCRATCH_DIR = process.env.PI_STICK_SCRATCH_DIR ?? "/scratch";
+const CONTEXT_DIR = process.env.PI_STICK_CONTEXT_DIR ?? "/context";
+const MAX_READ_CHARS = 32_000;
+const MAX_FIND_RESULTS = 500;
+const SKIP_DIRS = new Set([".git", "node_modules"]);
 
 interface CredentialPayload {
 	token: string;
 	authType?: "oauth" | "api_key";
+}
+
+interface AgentRuntimeSpec {
+	name: string;
+	description?: string;
+	model: { provider: string; modelId: string };
+	instructions: string;
+	mode: "read-only" | "read-write";
+	tools: string[];
+	maxTurns?: number;
 }
 
 interface Job {
@@ -29,16 +50,21 @@ interface Job {
 	check?: boolean;
 	models?: Record<string, Model<Api>[]>;
 	credentials?: Record<string, CredentialPayload>;
-	model?: { provider: string; modelId: string };
-	instructions?: string;
+	orchestrator?: AgentRuntimeSpec;
 	prompt?: string;
 	requestId?: string;
-	allowedServices?: string[];
+	continueRun?: boolean;
 }
 
 interface RpcResponseMessage {
 	rpc: number;
 	result?: { text: string; error?: boolean };
+}
+
+interface AgentContext {
+	name: string;
+	mode: "read-only" | "read-write";
+	scratchDir: string;
 }
 
 const send = (data: unknown) => {
@@ -100,6 +126,107 @@ function callHostRpc(
 	});
 }
 
+function canonicalBase(dir: string): string {
+	return fs.existsSync(dir) ? fs.realpathSync(dir) : resolve(dir);
+}
+
+function nearestExistingRealpath(target: string): string {
+	let cur = target;
+	const tail: string[] = [];
+	while (!fs.existsSync(cur)) {
+		const parent = dirname(cur);
+		if (parent === cur) break;
+		tail.unshift(cur.slice(parent.length + (parent.endsWith("/") ? 0 : 1)));
+		cur = parent;
+	}
+	const real = fs.existsSync(cur) ? fs.realpathSync(cur) : cur;
+	return tail.length ? join(real, ...tail) : real;
+}
+
+function assertWithin(target: string, root: string, label: string): string {
+	const realRoot = canonicalBase(root);
+	const resolved = nearestExistingRealpath(target);
+	const rel = relative(realRoot, resolved);
+	if (rel.startsWith("..") || isAbsolute(rel)) throw Error(`Path escapes allowed ${label} directory`);
+	return resolved;
+}
+
+function resolveAgentPath(rawPath: string, agentCtx: AgentContext, forWrite: boolean): string {
+	if (!rawPath || rawPath.includes("\0") || rawPath.length > 2048) throw Error("Invalid path");
+	if (rawPath === "/context" || rawPath.startsWith("/context/")) {
+		if (forWrite) throw Error("/context is read-only");
+		const sub = rawPath === "/context" ? "" : rawPath.slice("/context/".length);
+		return assertWithin(resolve(CONTEXT_DIR, sub), CONTEXT_DIR, "context");
+	}
+	if (rawPath === "/scratch" || rawPath.startsWith("/scratch/")) {
+		const sub = rawPath === "/scratch" ? "" : rawPath.slice("/scratch/".length);
+		const candidate = resolve(SCRATCH_DIR, sub);
+		if (forWrite) {
+			fs.mkdirSync(agentCtx.scratchDir, { recursive: true });
+			return assertWithin(candidate, agentCtx.scratchDir, `agent scratch (/scratch/${agentCtx.name})`);
+		}
+		return assertWithin(candidate, SCRATCH_DIR, "scratch");
+	}
+	const sub =
+		rawPath === "/workspace" ? "" : rawPath.startsWith("/workspace/") ? rawPath.slice("/workspace/".length) : rawPath;
+	if (isAbsolute(sub)) throw Error("Absolute paths must be under /workspace, /scratch, or /context");
+	if (forWrite && agentCtx.mode === "read-only") {
+		throw Error(
+			`Write/edit in /workspace is disabled in read-only mode. Write temporary files under /scratch/${agentCtx.name} instead.`,
+		);
+	}
+	return assertWithin(resolve(WORKSPACE_DIR, sub), WORKSPACE_DIR, "workspace");
+}
+
+function isBinary(buf: Buffer): boolean {
+	const len = Math.min(buf.length, 4096);
+	for (let i = 0; i < len; i++) {
+		if (buf[i] === 0) return true;
+	}
+	return false;
+}
+
+function globToRegExp(pattern: string): RegExp {
+	let re = "";
+	for (let i = 0; i < pattern.length; i++) {
+		const ch = pattern[i];
+		if (ch === "*" && pattern[i + 1] === "*") {
+			re += ".*";
+			i++;
+			if (pattern[i + 1] === "/") i++;
+		} else if (ch === "*") {
+			re += "[^/]*";
+		} else if (ch === "?") {
+			re += "[^/]";
+		} else if ("\\^$+?.()|[]{}".includes(ch)) {
+			re += `\\${ch}`;
+		} else {
+			re += ch;
+		}
+	}
+	return new RegExp(`^${re}$`);
+}
+
+function walkFiles(dir: string, root: string, out: string[], limit: number) {
+	if (out.length >= limit) return;
+	let entries: fs.Dirent[];
+	try {
+		entries = fs.readdirSync(dir, { withFileTypes: true });
+	} catch {
+		return;
+	}
+	entries.sort((a, b) => a.name.localeCompare(b.name));
+	for (const entry of entries) {
+		if (out.length >= limit) return;
+		if (entry.isDirectory()) {
+			if (SKIP_DIRS.has(entry.name)) continue;
+			walkFiles(join(dir, entry.name), root, out, limit);
+		} else if (entry.isFile()) {
+			out.push(relative(root, join(dir, entry.name)));
+		}
+	}
+}
+
 const job = await readInitialJob();
 if (!/^[0-9a-f]{32}$/.test(job.id)) throw Error("Invalid run ID");
 
@@ -126,7 +253,6 @@ for (const [providerId, payload] of Object.entries(job.credentials ?? {})) {
 		});
 	}
 }
-// Clear raw tokens from job payload immediately.
 delete job.credentials;
 
 const models = createModels({
@@ -159,13 +285,272 @@ for (const provider of allProviders) {
 	}
 }
 
+const agentByConv = new Map<ConversationId, AgentContext>();
+const defaultAgentCtx: AgentContext = {
+	name: "orchestrator",
+	mode: job.orchestrator?.mode ?? "read-write",
+	scratchDir: join(SCRATCH_DIR, "orchestrator"),
+};
+agentByConv.set(ROOT_CONVERSATION_ID, defaultAgentCtx);
+
+function getAgentCtx(conversationId: ConversationId): AgentContext {
+	return agentByConv.get(conversationId) ?? defaultAgentCtx;
+}
+
 const probeEvents: string[] = [];
 const emitProgress = (line: string, agent?: string) => {
 	if (job.check) probeEvents.push(agent ? `[${agent}] ${line}` : line);
 	else send({ progress: line, ...(agent ? { agent } : {}) });
 };
 
-const registry = createRegistry();
+const readTool = defineTool({
+	name: "read",
+	description:
+		"Read a UTF-8 file or list a directory. Paths default to /workspace; /scratch/... and /context/... are also readable.",
+	parameters: {
+		type: "object",
+		properties: {
+			path: { type: "string", description: "File or directory path." },
+			offset: { type: "integer", minimum: 0, description: "Character offset to start reading from." },
+			limit: { type: "integer", minimum: 1, maximum: 100000, description: "Max characters to return." },
+		},
+		required: ["path"],
+		additionalProperties: false,
+	},
+	replay: "safe",
+	execute: async (args, api) => {
+		const {
+			path,
+			offset = 0,
+			limit = MAX_READ_CHARS,
+		} = args as {
+			path: string;
+			offset?: number;
+			limit?: number;
+		};
+		try {
+			const resolved = resolveAgentPath(path, getAgentCtx(api.conversationId), false);
+			const stat = fs.statSync(resolved);
+			if (stat.isDirectory()) {
+				const entries = fs
+					.readdirSync(resolved, { withFileTypes: true })
+					.sort((a, b) => a.name.localeCompare(b.name))
+					.map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
+					.join("\n");
+				return { output: [{ type: "text" as const, text: entries || "(empty directory)" }] };
+			}
+			const buf = fs.readFileSync(resolved);
+			if (isBinary(buf))
+				return { output: [{ type: "text" as const, text: "Binary file cannot be read as text." }], isError: true };
+			const text = buf.toString("utf8");
+			const end = offset + Math.min(limit, 100_000);
+			const slice = text.slice(offset, end) + (text.length > end ? `\n[more at offset ${end}]` : "");
+			return { output: [{ type: "text" as const, text: slice }] };
+		} catch (err) {
+			return {
+				output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
+				isError: true,
+			};
+		}
+	},
+});
+
+const writeTool = defineTool({
+	name: "write",
+	description:
+		"Create or overwrite a UTF-8 file. In read-only mode, writes are restricted to your agent scratch directory (/scratch/<agent>).",
+	parameters: {
+		type: "object",
+		properties: {
+			path: { type: "string", description: "Destination file path." },
+			content: { type: "string", description: "Full UTF-8 file contents." },
+		},
+		required: ["path", "content"],
+		additionalProperties: false,
+	},
+	callers: ["model"],
+	execute: async (args, api) => {
+		const { path, content } = args as { path: string; content: string };
+		try {
+			const resolved = resolveAgentPath(path, getAgentCtx(api.conversationId), true);
+			fs.mkdirSync(dirname(resolved), { recursive: true });
+			fs.writeFileSync(resolved, content, "utf8");
+			return { output: [{ type: "text" as const, text: `Wrote ${content.length} chars to ${path}` }] };
+		} catch (err) {
+			return {
+				output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
+				isError: true,
+			};
+		}
+	},
+});
+
+const editTool = defineTool({
+	name: "edit",
+	description:
+		"Replace an exact target string in an existing file. In read-only mode, edits are restricted to /scratch/<agent>.",
+	parameters: {
+		type: "object",
+		properties: {
+			path: { type: "string", description: "File path to modify." },
+			target: { type: "string", description: "Exact substring to replace." },
+			replacement: { type: "string", description: "Replacement text." },
+			replaceAll: { type: "boolean", description: "Replace all occurrences instead of requiring a unique match." },
+		},
+		required: ["path", "target", "replacement"],
+		additionalProperties: false,
+	},
+	callers: ["model"],
+	execute: async (args, api) => {
+		const {
+			path,
+			target,
+			replacement,
+			replaceAll = false,
+		} = args as {
+			path: string;
+			target: string;
+			replacement: string;
+			replaceAll?: boolean;
+		};
+		try {
+			if (!target.length) throw Error("target must not be empty");
+			const resolved = resolveAgentPath(path, getAgentCtx(api.conversationId), true);
+			const original = fs.readFileSync(resolved, "utf8");
+			const first = original.indexOf(target);
+			if (first < 0) throw Error("Target text not found in file");
+			if (!replaceAll && original.indexOf(target, first + 1) >= 0)
+				throw Error("Target text appears multiple times; provide more surrounding context or set replaceAll: true");
+			const updated = replaceAll
+				? original.replaceAll(target, () => replacement)
+				: original.replace(target, () => replacement);
+			fs.writeFileSync(resolved, updated, "utf8");
+			return { output: [{ type: "text" as const, text: `Edited ${path}` }] };
+		} catch (err) {
+			return {
+				output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
+				isError: true,
+			};
+		}
+	},
+});
+
+const grepTool = defineTool({
+	name: "grep",
+	description: "Search files for a literal substring or regular expression. Skips .git and node_modules.",
+	parameters: {
+		type: "object",
+		properties: {
+			pattern: { type: "string", description: "Substring (or regex when regex=true) to match." },
+			path: { type: "string", description: "Optional directory or file path (defaults to /workspace)." },
+			regex: { type: "boolean", description: "Interpret pattern as a regular expression." },
+			offset: { type: "integer", minimum: 0, description: "Character offset into results." },
+		},
+		required: ["pattern"],
+		additionalProperties: false,
+	},
+	replay: "safe",
+	execute: async (args, api) => {
+		const {
+			pattern,
+			path = "/workspace",
+			regex = false,
+			offset = 0,
+		} = args as {
+			pattern: string;
+			path?: string;
+			regex?: boolean;
+			offset?: number;
+		};
+		try {
+			const resolved = resolveAgentPath(path, getAgentCtx(api.conversationId), false);
+			const matcher = regex ? new RegExp(pattern) : null;
+			const matches: string[] = [];
+			const stat = fs.statSync(resolved);
+			const files = stat.isDirectory() ? [] : [""];
+			if (stat.isDirectory()) walkFiles(resolved, resolved, files, 5000);
+			for (const rel of files) {
+				const full = rel ? join(resolved, rel) : resolved;
+				let buf: Buffer;
+				try {
+					const st = fs.statSync(full);
+					if (st.size > 2 * 1024 * 1024) continue;
+					buf = fs.readFileSync(full);
+				} catch {
+					continue;
+				}
+				if (isBinary(buf)) continue;
+				const lines = buf.toString("utf8").split("\n");
+				const label = rel || path;
+				for (let i = 0; i < lines.length; i++) {
+					const line = lines[i];
+					if (matcher ? matcher.test(line) : line.includes(pattern)) {
+						matches.push(`${label}:${i + 1}:${line.slice(0, 400)}`);
+						if (matches.length >= 2000) break;
+					}
+				}
+				if (matches.length >= 2000) break;
+			}
+			const text = matches.join("\n") || "(no matches)";
+			const end = offset + MAX_READ_CHARS;
+			const slice = text.slice(offset, end) + (text.length > end ? `\n[more at offset ${end}]` : "");
+			return { output: [{ type: "text" as const, text: slice }] };
+		} catch (err) {
+			return {
+				output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
+				isError: true,
+			};
+		}
+	},
+});
+
+const findTool = defineTool({
+	name: "find",
+	description: "List files under a directory (defaults to /workspace), optionally matching a glob or substring.",
+	parameters: {
+		type: "object",
+		properties: {
+			path: { type: "string", description: "Directory to search (defaults to /workspace)." },
+			query: { type: "string", description: "Optional glob pattern (e.g. '**/*.ts') or substring filter." },
+			maxResults: { type: "integer", minimum: 1, maximum: 2000, description: "Max files to return (default 500)." },
+		},
+		additionalProperties: false,
+	},
+	replay: "safe",
+	execute: async (args, api) => {
+		const {
+			path = "/workspace",
+			query,
+			maxResults = MAX_FIND_RESULTS,
+		} = args as {
+			path?: string;
+			query?: string;
+			maxResults?: number;
+		};
+		try {
+			const resolved = resolveAgentPath(path, getAgentCtx(api.conversationId), false);
+			const files: string[] = [];
+			walkFiles(resolved, resolved, files, 10_000);
+			let filtered = files;
+			if (query) {
+				if (/[*?]/.test(query)) {
+					const re = globToRegExp(query);
+					filtered = files.filter((f) => re.test(f));
+				} else {
+					filtered = files.filter((f) => f.includes(query));
+				}
+			}
+			const sliced = filtered.slice(0, maxResults);
+			const suffix = filtered.length > maxResults ? `\n[${filtered.length - maxResults} more files omitted]` : "";
+			return { output: [{ type: "text" as const, text: (sliced.join("\n") || "(no files)") + suffix }] };
+		} catch (err) {
+			return {
+				output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
+				isError: true,
+			};
+		}
+	},
+});
 
 const execTool = defineTool({
 	name: "exec",
@@ -182,9 +567,10 @@ const execTool = defineTool({
 		required: ["command"],
 		additionalProperties: false,
 	},
-	callers: ["model", "tools"],
-	execute: async (args) => {
-		const res = await callHostRpc("exec", args as Record<string, unknown>);
+	callers: ["model"],
+	execute: async (args, api) => {
+		const agentCtx = getAgentCtx(api.conversationId);
+		const res = await callHostRpc("exec", args as Record<string, unknown>, agentCtx.name);
 		return { output: [{ type: "text" as const, text: res.text }], isError: !!res.error };
 	},
 });
@@ -201,8 +587,9 @@ const logsTool = defineTool({
 		additionalProperties: false,
 	},
 	replay: "safe",
-	execute: async (args) => {
-		const res = await callHostRpc("logs", args as Record<string, unknown>);
+	execute: async (args, api) => {
+		const agentCtx = getAgentCtx(api.conversationId);
+		const res = await callHostRpc("logs", args as Record<string, unknown>, agentCtx.name);
 		return { output: [{ type: "text" as const, text: res.text }], isError: !!res.error };
 	},
 });
@@ -216,8 +603,9 @@ const psTool = defineTool({
 		additionalProperties: false,
 	},
 	replay: "safe",
-	execute: async () => {
-		const res = await callHostRpc("ps", {});
+	execute: async (_args, api) => {
+		const agentCtx = getAgentCtx(api.conversationId);
+		const res = await callHostRpc("ps", {}, agentCtx.name);
 		return { output: [{ type: "text" as const, text: res.text }], isError: !!res.error };
 	},
 });
@@ -234,41 +622,74 @@ const restartTool = defineTool({
 		additionalProperties: false,
 	},
 	callers: ["model"],
-	execute: async (args) => {
-		const res = await callHostRpc("restart", args as Record<string, unknown>);
+	execute: async (args, api) => {
+		const agentCtx = getAgentCtx(api.conversationId);
+		const res = await callHostRpc("restart", args as Record<string, unknown>, agentCtx.name);
 		return { output: [{ type: "text" as const, text: res.text }], isError: !!res.error };
 	},
 });
 
-registry.install(
-	defineExtension({
-		name: "pi-stick",
-		hooks: [
-			hook(GenerationTask, {
-				afterResponse(message) {
-					if (message.content.some((b) => b.type === "toolCall")) {
-						for (const b of message.content) {
-							if (b.type === "text" && b.text.trim()) emitProgress(b.text.trim());
-						}
+const toolMap = new Map<string, ToolRegistration>([
+	["read", readTool],
+	["write", writeTool],
+	["edit", editTool],
+	["grep", grepTool],
+	["find", findTool],
+	["exec", execTool],
+	["logs", logsTool],
+	["ps", psTool],
+	["restart", restartTool],
+]);
+
+const registry = createRegistry();
+const mainExtension = defineExtension({
+	name: "pi-stick",
+	hooks: [
+		hook(GenerationTask, {
+			afterResponse(message, api) {
+				const agentName = getAgentCtx(api.conversationId).name;
+				if (message.content.some((b) => b.type === "toolCall")) {
+					for (const b of message.content) {
+						if (b.type === "text" && b.text.trim()) emitProgress(b.text.trim(), agentName);
 					}
-				},
-			}),
-			hook(ToolTask, {
-				beforeTool(call) {
-					if (call.parent) return;
-					if (call.name === "codemode") emitProgress("codemode");
-					else if (call.name === "exec" && typeof call.arguments?.command === "string")
-						emitProgress(`exec: ${JSON.stringify(call.arguments.command.slice(0, 200))}`);
-					else emitProgress(`${call.name}`);
-				},
-			}),
-		],
-		tools: [execTool, logsTool, psTool, restartTool],
-	}),
-);
+				}
+			},
+		}),
+		hook(ToolTask, {
+			beforeTool(call, api) {
+				if (call.parent) return;
+				const agentName = getAgentCtx(api.conversationId).name;
+				if (call.name === "codemode") emitProgress("codemode", agentName);
+				else if (call.name === "exec" && typeof call.arguments?.command === "string")
+					emitProgress(`exec: ${JSON.stringify(call.arguments.command.slice(0, 200))}`, agentName);
+				else if (typeof call.arguments?.path === "string")
+					emitProgress(`${call.name}: ${JSON.stringify(call.arguments.path.slice(0, 200))}`, agentName);
+				else emitProgress(call.name, agentName);
+			},
+		}),
+	],
+	tools: [...toolMap.values()],
+});
+registry.install(mainExtension);
 
 const sandbox = new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 });
-registry.install(createCodemodeExtension({ sandbox, models: false }));
+const codemodeExtension = createCodemodeExtension({ sandbox, models: false });
+registry.install(codemodeExtension);
+
+function selectToolsAndExtensions(toolNames: string[]) {
+	const wantCodemode = toolNames.includes("codemode");
+	const extensions = wantCodemode ? [mainExtension, codemodeExtension] : [mainExtension];
+	const selectedTools: ToolRegistration[] = [];
+	for (const name of toolNames) {
+		const t = toolMap.get(name);
+		if (t) selectedTools.push(t);
+	}
+	if (wantCodemode) {
+		const cm = codemodeExtension.tools?.[0];
+		if (cm) selectedTools.push(cm);
+	}
+	return { extensions, tools: selectedTools };
+}
 
 const h = await Harness.open(
 	await openNodeSqliteStorage(`${SESSIONS_DIR}/${job.id}.sqlite`),
@@ -313,13 +734,24 @@ try {
 		const message = answer?.model?.[0];
 		if (message?.role !== "assistant" || !message.content.some((b) => b.type === "text" && b.text === "ready"))
 			throw Error("Offline self-check did not produce expected answer");
-		if (JSON.stringify(probeEvents) !== JSON.stringify(["Probing runtime.", "codemode"]))
+		if (
+			JSON.stringify(probeEvents) !== JSON.stringify(["[orchestrator] Probing runtime.", "[orchestrator] codemode"])
+		)
 			throw Error(`Unexpected probe progress events: ${JSON.stringify(probeEvents)}`);
 		send({ ready: true });
 	} else {
-		if (!job.model || !job.prompt) throw Error("Missing model or prompt in job configuration");
+		const spec = job.orchestrator;
+		if (!spec || !job.prompt) throw Error("Missing orchestrator configuration or prompt");
+		fs.mkdirSync(defaultAgentCtx.scratchDir, { recursive: true });
+		const { extensions, tools } = selectToolsAndExtensions(spec.tools);
 		const root = await h.root(ctx, {
-			agent: { model: job.model, instructions: job.instructions },
+			agent: {
+				model: spec.model,
+				instructions: spec.instructions,
+				extensions,
+				tools,
+				...(spec.maxTurns ? { maxTurns: spec.maxTurns } : {}),
+			},
 		});
 		const sub = await root.submit({ type: "input", content: job.prompt, requestId: job.requestId ?? job.id }, ctx);
 		const settled = await sub.wait(ctx);

@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Riddlerrr/pi-stick/action.schema.json",
+  "title": "pi-stick Action Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["orchestrator"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "description": { "type": "string" },
+    "model": {
+      "type": "string",
+      "description": "Default provider/modelId for agents in this action."
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "description": { "type": "string" },
+          "required": { "type": "boolean" },
+          "default": { "type": "string" }
+        }
+      }
+    },
+    "hooks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prepare": {
+          "type": "string",
+          "description": "Relative path inside the action directory to an executable host hook run before starting the project stack."
+        },
+        "after": {
+          "type": "string",
+          "description": "Relative path inside the action directory to an executable host hook run after task completion."
+        }
+      }
+    },
+    "orchestrator": { "$ref": "#/$defs/agentConfig" },
+    "agents": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"
+      },
+      "additionalProperties": { "$ref": "#/$defs/agentConfig" }
+    },
+    "stages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "parallel"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$"
+          },
+          "parallel": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" }
+          },
+          "prompt": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "agentConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "model": {
+          "type": "string",
+          "description": "Model in provider/modelId format."
+        },
+        "instructions": {
+          "type": "string",
+          "description": "Relative path inside the action directory to a Markdown instruction file."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["read-only", "read-write"],
+          "default": "read-only"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["read", "write", "edit", "grep", "find", "codemode", "exec", "logs", "ps", "restart", "delegate"]
+          }
+        },
+        "allowedServices": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "maxTurns": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

@@ -21,7 +21,15 @@ function fixture(t: TestContext) {
 	const binary = process.env.PI_STICK_TEST_BINARY;
 	if (binary) fs.cpSync(join(dirname(binary), "share"), app, { recursive: true });
 	else {
-		for (const name of ["src", "pi-stick", "package.json", "project-template", "agent-runtime.ts", "Dockerfile"])
+		for (const name of [
+			"src",
+			"pi-stick",
+			"package.json",
+			"project-template",
+			"agent-runtime.ts",
+			"Dockerfile",
+			"action.schema.json",
+		])
 			fs.cpSync(join(import.meta.dirname, "..", name), join(app, name), { recursive: true });
 	}
 	const cli = join(bin, "pi-stick");
@@ -273,4 +281,174 @@ test("doctor stops early when Docker daemon is unavailable", (t) => {
 	assert.equal(res.status, 1);
 	assert.match(res.stdout, /FAIL Docker daemon/);
 	assert.doesNotMatch(res.stdout, /Agent image/);
+});
+
+test("actions system starts empty, supports global/project override, and rejects traversal", (t) => {
+	const { app, source, ok, fail } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	assert.match(ok(["actions"]), /No actions configured/);
+
+	ok(["create", "action", "audit"]);
+	assert.match(ok(["actions"]), /audit\s+global/);
+	fail(["create", "action", "audit"], /already exists/);
+
+	ok(["create", "action", "audit", "--project", "demo"]);
+	assert.match(ok(["actions", "--project", "demo"]), /audit\s+project \(overrides global\)/);
+
+	// Running without any model configured fails clearly
+	fail(["run", "demo", "audit"], /No model configured/);
+
+	// Path traversal in instructions must be rejected when loading/validating
+	const projAction = join(app, "projects/demo/actions/audit/action.json");
+	const manifest = JSON.parse(read(projAction));
+	manifest.model = "openai-codex/gpt-6.2-sol";
+	manifest.orchestrator.instructions = "../../compose.yaml";
+	writeJson(projAction, manifest);
+	fail(["run", "demo", "audit"], /escapes the action directory/);
+});
+
+test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async (t) => {
+	const { app, tmp, source, ok, fail, stub } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	ok(["create", "action", "fix"]);
+
+	const actionDir = join(app, "actions/fix");
+	const hooksDir = join(actionDir, "hooks");
+	fs.mkdirSync(hooksDir, { recursive: true });
+	const prepareScript = join(hooksDir, "prepare.sh");
+	const afterScript = join(hooksDir, "after.sh");
+	const afterMarker = join(tmp, "after-called.json");
+	fs.writeFileSync(
+		prepareScript,
+		`#!/usr/bin/env bash\nset -euo pipefail\nprintf 'ticket=%s\\n' "$PI_STICK_INPUTS_JSON" > "$PI_STICK_CONTEXT/ticket.txt"\n`,
+		{ mode: 0o700 },
+	);
+	fs.writeFileSync(
+		afterScript,
+		`#!/usr/bin/env bash\nset -euo pipefail\nprintf '{"code":%s,"report":"%s","patch":"%s"}\n' "$PI_STICK_EXIT_CODE" "$PI_STICK_REPORT_FILE" "\${PI_STICK_PATCH_FILE:-}" > ${JSON.stringify(afterMarker)}\n`,
+		{ mode: 0o700 },
+	);
+
+	writeJson(join(actionDir, "action.json"), {
+		name: "fix",
+		description: "Fix and verify issue",
+		model: "openai-codex/gpt-6.2-sol",
+		inputs: {
+			ticket: { required: true },
+		},
+		hooks: {
+			prepare: "hooks/prepare.sh",
+			after: "hooks/after.sh",
+		},
+		orchestrator: {
+			instructions: "instructions.md",
+			mode: "read-write",
+			tools: ["read", "write", "edit", "grep", "find", "codemode", "exec", "logs", "ps"],
+			allowedServices: ["runner"],
+		},
+	});
+
+	const piDir = join(tmp, ".pi/agent");
+	fs.mkdirSync(piDir, { recursive: true });
+	writeJson(join(piDir, "models-store.json"), { "openai-codex": { models: [{ id: "gpt-6.2-sol" }] } });
+	writeJson(join(piDir, "auth.json"), { "openai-codex": { type: "oauth" } });
+	stub("pi", `console.log('secret-fixture-token')`);
+
+	const dockerLog = join(tmp, "docker-calls.log");
+	stub(
+		"docker",
+		`const fs = require('node:fs');
+const a = process.argv.slice(2);
+const has = s => a.includes(s);
+fs.appendFileSync(${JSON.stringify(dockerLog)}, a.join(' ') + '\\n');
+if (has('config')) {
+  console.log(JSON.stringify({
+    services: { runner: { volumes: [{ type: 'volume', source: 'source', target: '/workspace' }] } },
+    volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
+    networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
+  }));
+} else if (has('exec') && has('sh') && has('-lc')) {
+  console.log('exec-ok:' + a.at(-1));
+} else if (has('logs')) {
+  console.log('service-log-line');
+} else if (has('ps')) {
+  console.log('[{"Service":"runner","State":"running"}]');
+} else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
+  const repoMount = a.find(x => x.endsWith(':/workspace')).slice(0, -':/workspace'.length);
+  const ctxMount = a.find(x => x.endsWith(':/context:ro')).slice(0, -':/context:ro'.length);
+  const rl = require('node:readline').createInterface({ input: process.stdin });
+  const send = x => process.stdout.write(JSON.stringify(x) + '\\n');
+  let got = 0;
+  let job = null;
+  rl.on('line', line => {
+    const m = JSON.parse(line);
+    if (!job) {
+      job = m;
+      if (job.credentials['openai-codex'].token !== 'secret-fixture-token') process.exit(3);
+      if (!fs.readFileSync(ctxMount + '/ticket.txt', 'utf8').includes('ISSUE-42')) process.exit(4);
+      if (job.continueRun) {
+        fs.appendFileSync(repoMount + '/example.txt', 'followup\\n');
+        send({ progress: 'Applying follow-up', agent: 'orchestrator' });
+        send({ report: 'Follow-up complete' });
+        rl.close();
+        return;
+      }
+      fs.writeFileSync(repoMount + '/example.txt', 'updated\\n');
+      // Fire 2 concurrent RPC calls + 1 disallowed restart call
+      send({ rpc: 1, method: 'exec', params: { command: 'echo hi' }, agent: 'orchestrator' });
+      send({ rpc: 2, method: 'logs', params: { tail: 10 }, agent: 'orchestrator' });
+      send({ rpc: 3, method: 'restart', params: { service: 'runner' }, agent: 'orchestrator' });
+      return;
+    }
+    if (m.rpc === 1 && !m.result.error && m.result.text.includes('exec-ok:echo hi')) got |= 1;
+    else if (m.rpc === 2 && !m.result.error && m.result.text.includes('service-log-line')) got |= 2;
+    else if (m.rpc === 3 && m.result.error && m.result.text.includes('not permitted')) got |= 4;
+    else process.exit(5);
+    if (got === 7) {
+      send({ progress: 'All checks passed', agent: 'orchestrator' });
+      send({ report: 'Initial report' });
+      rl.close();
+    }
+  });
+}`,
+	);
+
+	// Missing required input fails fast before spawning worker
+	fail(["run", "demo", "fix"], /Missing required input 'ticket'/);
+
+	const runOut = ok(["run", "demo", "fix", "--input", "ticket=ISSUE-42", "Fix the bug"]);
+	const idMatch = /Run: ([0-9a-f]{32})/.exec(runOut);
+	assert.ok(idMatch, runOut);
+	const id = idMatch[1];
+	assert.match(runOut, /\[orchestrator\] All checks passed/);
+	assert.match(runOut, /\[orchestrator\] Initial report/);
+	assert.match(runOut, /Patch:/);
+
+	const runPath = join(app, "state/runs", id);
+	assert.equal(read(join(runPath, "report.md")), "Initial report\n");
+	assert.match(read(join(runPath, "changes.patch")), /\+updated/);
+	assert.match(ok(["diff", id]), /\+updated/);
+	// After hook ran with report & patch paths
+	const afterData = JSON.parse(read(afterMarker));
+	assert.equal(afterData.code, 0);
+	assert.equal(afterData.report, join(runPath, "report.md"));
+	assert.equal(afterData.patch, join(runPath, "changes.patch"));
+	// Project stack was stopped after completion
+	assert.match(read(dockerLog), /compose .* stop/);
+	// Secret bearer token must never be persisted in run directory files
+	for (const f of fs.readdirSync(runPath)) {
+		const p = join(runPath, f);
+		if (fs.statSync(p).isFile()) assert.ok(!read(p).includes("secret-fixture-token"), `Token leaked in ${f}`);
+	}
+
+	// Continue run with follow-up prompt
+	const contOut = ok(["continue", id, "Also add followup line"]);
+	assert.match(contOut, /Follow-up complete/);
+	assert.match(ok(["diff", id]), /\+followup/);
+
+	// Resume refuses on already-succeeded run, works after simulated failure
+	fail(["resume", id], /already completed/);
+	fs.writeFileSync(join(runPath, "exit"), "1");
+	const resOut = ok(["resume", id]);
+	assert.match(resOut, /Follow-up complete/);
 });

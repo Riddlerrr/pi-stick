@@ -4,11 +4,26 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
-import { closed, isLocked, json, prompt, read, STATE, touch, tryLock, writeJson } from "./platform.ts";
-import { ephemeralArgs } from "./system.ts";
+import { type LoadedAction, loadAction, type ResolvedAgentSpec, resolveInputs, runHook } from "./actions.ts";
+import {
+	closed,
+	compiled,
+	gitCommand,
+	isLocked,
+	json,
+	output,
+	prompt,
+	read,
+	runId,
+	STATE,
+	touch,
+	tryLock,
+	writeJson,
+} from "./platform.ts";
+import { ephemeralArgs, parseModelSpec, resolveModels } from "./system.ts";
 import type { RpcPolicy } from "./tasks.ts";
 import { TaskEnv } from "./tasks.ts";
-import { getProject } from "./workspace.ts";
+import { getProject, type ProjectInfo } from "./workspace.ts";
 
 export const VALID_ID = /^[0-9a-f]{32}$/;
 
@@ -22,6 +37,18 @@ export interface RunMeta {
 	createdAt: string;
 	updatedAt: string;
 	status: "preparing" | "running" | "done" | "failed";
+}
+
+export interface RunConfig {
+	project: string;
+	action: string;
+	ref?: string;
+	inputs: Record<string, string>;
+	prompt: string;
+	keepUp: boolean;
+	requestId: string;
+	mode: "run" | "resume" | "continue";
+	prepared?: boolean;
 }
 
 export function runDir(id: string) {
@@ -65,6 +92,339 @@ export function status(dir: string, msg: string, agent?: string) {
 		);
 	});
 	fs.appendFileSync(join(dir, "progress"), `${safe}\n`);
+}
+
+function composeInstructions(
+	agent: ResolvedAgentSpec,
+	project: ProjectInfo,
+	services: string[],
+	contextFiles: string[],
+): string {
+	const parts: string[] = [
+		`You are agent '${agent.name}' running inside an isolated Docker container for project '${project.name}'.`,
+		`Repository workspace: /workspace (mode: ${agent.mode}).`,
+		`Your writable scratch directory: /scratch/${agent.name} (shared with project runner at /scratch/${agent.name}).`,
+	];
+	if (agent.mode === "read-only") {
+		parts.push(
+			"Read-only workspace policy: do not modify repository files in /workspace. Put temporary scripts, tests, or experiments in your scratch directory.",
+		);
+	}
+	if (services.length) {
+		parts.push(
+			`Running project Compose services on your Docker network: ${services.join(", ")}. You can reach them directly over the network or use exec/logs/ps/restart as permitted.`,
+		);
+	}
+	if (contextFiles.length) {
+		parts.push(`Read-only prepared context files in /context: ${contextFiles.join(", ")}.`);
+	}
+	const agentsMd = join(project.folder, "AGENTS.md");
+	if (fs.existsSync(agentsMd)) {
+		const notes = read(agentsMd).trim();
+		if (notes) parts.push(`Project notes (AGENTS.md):\n${notes}`);
+	}
+	if (agent.instructions.trim()) {
+		parts.push(`Action instructions:\n${agent.instructions.trim()}`);
+	}
+	return parts.join("\n\n");
+}
+
+function buildInitialPrompt(action: LoadedAction, userPrompt: string, inputs: Record<string, string>): string {
+	const lines: string[] = [];
+	if (userPrompt.trim()) lines.push(userPrompt.trim());
+	else if (action.description) lines.push(action.description);
+	else lines.push(`Execute action '${action.name}'.`);
+	const inputEntries = Object.entries(inputs);
+	if (inputEntries.length) {
+		lines.push(`\nAction inputs:\n${inputEntries.map(([k, v]) => `- ${k}: ${v}`).join("\n")}`);
+	}
+	return lines.join("\n");
+}
+
+function policyForAgent(action: LoadedAction, agentName?: string): RpcPolicy {
+	const spec = !agentName || agentName === "orchestrator" ? action.orchestrator : action.agents[agentName];
+	if (!spec) return { allowExec: false, allowLogs: false, allowPs: false, allowRestart: false };
+	return {
+		allowedServices: spec.allowedServices,
+		allowExec: spec.tools.includes("exec"),
+		allowLogs: spec.tools.includes("logs"),
+		allowPs: spec.tools.includes("ps"),
+		allowRestart: spec.tools.includes("restart"),
+	};
+}
+
+async function spawnWorker(id: string, fd: number) {
+	const dir = runDir(id);
+	const log = fs.openSync(join(dir, "worker.log"), "a");
+	try {
+		const args = ["_worker", id];
+		if (!compiled) args.unshift(process.argv[1]);
+		const child = spawn(process.execPath, args, {
+			detached: true,
+			stdio: ["ignore", log, log, fd],
+		});
+		await once(child, "spawn");
+		child.unref();
+	} finally {
+		fs.closeSync(log);
+	}
+}
+
+export interface LaunchRunOptions {
+	projectName: string;
+	actionName: string;
+	ref?: string;
+	rawInputs: string[];
+	promptText: string;
+	keepUp: boolean;
+}
+
+export async function launchRun(opts: LaunchRunOptions): Promise<string> {
+	const project = getProject(opts.projectName);
+	const action = loadAction(opts.actionName, project, true);
+	const inputs = resolveInputs(action, opts.rawInputs);
+	const id = runId();
+	const task = new TaskEnv(id, project);
+	task.validateBase();
+
+	fs.mkdirSync(task.dir, { recursive: true, mode: 0o700 });
+	touch(join(task.dir, "progress"));
+	const fd = fs.openSync(runLock(id), "a");
+	try {
+		if (!tryLock(fd)) throw Error("Could not acquire run lock");
+		const now = new Date().toISOString();
+		writeMeta(id, {
+			id,
+			project: project.name,
+			action: action.name,
+			ref: opts.ref,
+			keepUp: opts.keepUp,
+			createdAt: now,
+			updatedAt: now,
+			status: "preparing",
+		});
+		writeJson(join(task.dir, "run-config.json"), {
+			project: project.name,
+			action: action.name,
+			ref: opts.ref,
+			inputs,
+			prompt: buildInitialPrompt(action, opts.promptText, inputs),
+			keepUp: opts.keepUp,
+			requestId: id,
+			mode: "run",
+			prepared: false,
+		} satisfies RunConfig);
+		await spawnWorker(id, fd);
+	} finally {
+		fs.closeSync(fd);
+	}
+	console.log(`Run: ${id}\nFollow: pi-stick follow ${id}`);
+	return id;
+}
+
+export async function launchResume(id: string): Promise<string> {
+	const dir = runDir(id);
+	const exitFile = join(dir, "exit");
+	const cfgFile = join(dir, "run-config.json");
+	if (!fs.existsSync(cfgFile)) throw Error(`Unknown run: ${id}`);
+	if (fs.existsSync(exitFile) && read(exitFile).trim() === "0")
+		throw Error("Run already completed; use 'pi-stick continue' for follow-up instructions");
+	const fd = fs.openSync(runLock(id), "a");
+	try {
+		if (!tryLock(fd)) throw Error(`Run ${id} is currently active; use 'pi-stick follow ${id}'`);
+		const cfg = json(cfgFile) as RunConfig;
+		cfg.mode = "resume";
+		writeJson(cfgFile, cfg);
+		fs.rmSync(exitFile, { force: true });
+		await spawnWorker(id, fd);
+	} finally {
+		fs.closeSync(fd);
+	}
+	console.log(`Resuming: ${id}\nFollow: pi-stick follow ${id}`);
+	return id;
+}
+
+export async function launchContinue(id: string, promptText: string, keepUp?: boolean): Promise<string> {
+	if (!promptText.trim()) throw Error("Follow-up prompt cannot be empty");
+	const dir = runDir(id);
+	const cfgFile = join(dir, "run-config.json");
+	const exitFile = join(dir, "exit");
+	if (!fs.existsSync(cfgFile)) throw Error(`Unknown run: ${id}`);
+	const fd = fs.openSync(runLock(id), "a");
+	try {
+		if (!tryLock(fd)) throw Error(`Run ${id} is currently active; wait for it to finish first`);
+		const cfg = json(cfgFile) as RunConfig;
+		const project = getProject(cfg.project);
+		const task = new TaskEnv(id, project);
+		if (!fs.existsSync(task.repo)) throw Error(`Workspace for run ${id} is no longer present`);
+		cfg.mode = "continue";
+		cfg.prompt = promptText.trim();
+		cfg.requestId = runId();
+		if (keepUp !== undefined) cfg.keepUp = keepUp;
+		writeJson(cfgFile, cfg);
+		fs.rmSync(exitFile, { force: true });
+		await spawnWorker(id, fd);
+	} finally {
+		fs.closeSync(fd);
+	}
+	console.log(`Continuing: ${id}\nFollow: pi-stick follow ${id}`);
+	return id;
+}
+
+export async function worker(id: string): Promise<number> {
+	const dir = runDir(id);
+	const cfgFile = join(dir, "run-config.json");
+	const cfg = json(cfgFile) as RunConfig;
+	const meta = readMeta(id);
+	const project = getProject(cfg.project);
+	const action = loadAction(cfg.action, project, true);
+	const task = new TaskEnv(id, project);
+	let code = 1;
+	let stackStarted = false;
+
+	try {
+		let services: string[];
+		if (cfg.mode === "continue") {
+			status(dir, `Starting project stack for follow-up on ${project.name}…`);
+			if (!fs.existsSync(task.composeFile)) task.materializeCompose();
+			services = task.services();
+			try {
+				task.start();
+			} catch {
+				task.up(false);
+			}
+			stackStarted = true;
+		} else if (cfg.mode === "resume" && cfg.prepared) {
+			status(dir, `Resuming run on ${project.name}…`);
+			if (!fs.existsSync(task.composeFile)) task.materializeCompose();
+			services = task.services();
+			task.up(false);
+			stackStarted = true;
+		} else {
+			status(dir, `Preparing isolated workspace for ${project.name}…`);
+			const { baseHead } = task.prepareWorkspace(cfg.ref);
+			meta.baseHead = baseHead;
+			writeMeta(id, meta);
+
+			if (action.hooks.prepare) {
+				status(dir, "Running prepare hook…");
+				runHook(action.hooks.prepare, {
+					runId: id,
+					project,
+					action,
+					runDir: dir,
+					repoDir: task.repo,
+					scratchDir: task.scratch,
+					contextDir: task.context,
+					ref: cfg.ref,
+					baseHead: meta.baseHead,
+					prompt: cfg.prompt,
+					inputs: cfg.inputs,
+				});
+				meta.baseHead = output([...gitCommand(task.repo), "rev-parse", "HEAD"]);
+				writeMeta(id, meta);
+			}
+
+			status(dir, "Starting project Compose stack…");
+			const mat = task.materializeCompose();
+			services = mat.services;
+			task.up(true);
+			stackStarted = true;
+			cfg.prepared = true;
+			writeJson(cfgFile, cfg);
+		}
+
+		const contextFiles = fs.existsSync(task.context) ? fs.readdirSync(task.context).sort() : [];
+		const modelSpecs = [action.orchestrator.model, ...Object.values(action.agents).map((a) => a.model)];
+		const auth = resolveModels(modelSpecs);
+		const orchModel = parseModelSpec(action.orchestrator.model);
+
+		meta.status = "running";
+		meta.keepUp = cfg.keepUp;
+		writeMeta(id, meta);
+		status(dir, `Starting action '${action.name}' (${action.orchestrator.model})…`);
+
+		const jobPayload: Record<string, unknown> = {
+			id,
+			models: auth.models,
+			credentials: auth.credentials,
+			orchestrator: {
+				name: "orchestrator",
+				model: { provider: orchModel.provider, modelId: orchModel.modelId },
+				instructions: composeInstructions(action.orchestrator, project, services, contextFiles),
+				mode: action.orchestrator.mode,
+				tools: action.orchestrator.tools,
+				maxTurns: action.orchestrator.maxTurns,
+			},
+			prompt: cfg.prompt,
+			requestId: cfg.requestId,
+			continueRun: cfg.mode === "continue",
+		};
+
+		const result = await executeAgentContainer(
+			task,
+			jobPayload,
+			(agentName) => policyForAgent(action, agentName),
+			(line, agentName) => status(dir, line, agentName),
+		);
+
+		const reportFile = join(dir, "report.md");
+		fs.writeFileSync(reportFile, `${result.report}\n`);
+		const outputsDir = join(dir, "outputs");
+		if (result.outputs && Object.keys(result.outputs).length) {
+			fs.mkdirSync(outputsDir, { recursive: true, mode: 0o700 });
+			for (const [name, content] of Object.entries(result.outputs)) {
+				if (/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) {
+					fs.writeFileSync(join(outputsDir, `${name}.md`), `${content}\n`);
+				}
+			}
+		}
+
+		const { patch, untracked } = task.captureDiff(meta.baseHead);
+		status(dir, result.report, "orchestrator");
+		status(dir, `Wrote: ${reportFile}`);
+		if (patch.trim()) status(dir, `Patch: ${join(dir, "changes.patch")}`);
+		if (untracked.length) status(dir, `Untracked files: ${untracked.length}`);
+		code = 0;
+
+		if (action.hooks.after) {
+			status(dir, "Running after hook…");
+			runHook(action.hooks.after, {
+				runId: id,
+				project,
+				action,
+				runDir: dir,
+				repoDir: task.repo,
+				scratchDir: task.scratch,
+				contextDir: task.context,
+				ref: cfg.ref,
+				baseHead: meta.baseHead,
+				prompt: cfg.prompt,
+				inputs: cfg.inputs,
+				exitCode: code,
+				reportFile,
+				patchFile: patch.trim() ? join(dir, "changes.patch") : undefined,
+				outputsDir: fs.existsSync(outputsDir) ? outputsDir : undefined,
+			});
+		}
+	} catch (err) {
+		status(dir, `Failed; see private log: ${join(dir, "worker.log")}`);
+		console.error(err);
+	} finally {
+		if (stackStarted && !cfg.keepUp) {
+			try {
+				task.stop();
+			} catch (err) {
+				console.error("Failed to stop project stack:", err);
+			}
+		}
+		meta.status = code === 0 ? "done" : "failed";
+		writeMeta(id, meta);
+		touch(join(dir, "last-used"));
+		fs.writeFileSync(join(dir, "exit.tmp"), String(code));
+		fs.renameSync(join(dir, "exit.tmp"), join(dir, "exit"));
+	}
+	return code;
 }
 
 export async function follow(id: string) {
