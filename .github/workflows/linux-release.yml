@@ -26,12 +26,12 @@ jobs:
         run: |
           npm run pack:npm
           npm install --prefix "$RUNNER_TEMP/npm" --offline ./dist/pi-stick-*.tgz
-          PI_STICK_TEST_BINARY="$RUNNER_TEMP/npm/node_modules/pi-stick/pi-stick.js" npm test
+          PI_STICK_TEST_BINARY="$RUNNER_TEMP/npm/node_modules/pi-stick/pistick.js" npm test
       - run: npm run build:binary
       - name: Test extracted binary
         run: |
           tar -xzf dist/pi-stick-linux-${{ matrix.arch }}.tar.gz -C "$RUNNER_TEMP"
-          PI_STICK_TEST_BINARY="$RUNNER_TEMP/pi-stick/pi-stick" npm test
+          PI_STICK_TEST_BINARY="$RUNNER_TEMP/pi-stick/pistick" npm test
       - uses: actions/upload-artifact@v4
         with:
           name: linux-${{ matrix.arch }}

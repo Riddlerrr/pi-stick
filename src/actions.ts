@@ -279,7 +279,7 @@ export function loadAction(name: string, project?: ProjectInfo, requireModel = t
 	if (fs.lstatSync(globDir, { throwIfNoEntry: false })?.isDirectory())
 		return loadActionFromDir(name, globDir, "global", requireModel);
 	throw Error(
-		`Unknown action '${name}'; create one with: pi-stick create action ${name}${project ? ` --project ${project.name}` : ""}`,
+		`Unknown action '${name}'; create one with: pistick create action ${name}${project ? ` --project ${project.name}` : ""}`,
 	);
 }
 

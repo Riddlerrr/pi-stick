@@ -229,7 +229,7 @@ export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 	} finally {
 		fs.closeSync(fd);
 	}
-	console.log(`Run: ${id}\nFollow: pi-stick follow ${id}`);
+	console.log(`Run: ${id}\nFollow: pistick follow ${id}`);
 	return id;
 }
 
@@ -239,10 +239,10 @@ export async function launchResume(id: string): Promise<string> {
 	const cfgFile = join(dir, "run-config.json");
 	if (!fs.existsSync(cfgFile)) throw Error(`Unknown run: ${id}`);
 	if (fs.existsSync(exitFile) && read(exitFile).trim() === "0")
-		throw Error("Run already completed; use 'pi-stick continue' for follow-up instructions");
+		throw Error("Run already completed; use 'pistick continue' for follow-up instructions");
 	const fd = fs.openSync(runLock(id), "a");
 	try {
-		if (!tryLock(fd)) throw Error(`Run ${id} is currently active; use 'pi-stick follow ${id}'`);
+		if (!tryLock(fd)) throw Error(`Run ${id} is currently active; use 'pistick follow ${id}'`);
 		const cfg = json(cfgFile) as RunConfig;
 		cfg.mode = "resume";
 		writeJson(cfgFile, cfg);
@@ -251,7 +251,7 @@ export async function launchResume(id: string): Promise<string> {
 	} finally {
 		fs.closeSync(fd);
 	}
-	console.log(`Resuming: ${id}\nFollow: pi-stick follow ${id}`);
+	console.log(`Resuming: ${id}\nFollow: pistick follow ${id}`);
 	return id;
 }
 
@@ -278,7 +278,7 @@ export async function launchContinue(id: string, promptText: string, keepUp?: bo
 	} finally {
 		fs.closeSync(fd);
 	}
-	console.log(`Continuing: ${id}\nFollow: pi-stick follow ${id}`);
+	console.log(`Continuing: ${id}\nFollow: pistick follow ${id}`);
 	return id;
 }
 

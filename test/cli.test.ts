@@ -23,8 +23,8 @@ function fixture(t: TestContext) {
 	else {
 		for (const name of [
 			"src",
-			"pi-stick",
-			"pi-stick-dev",
+			"pistick",
+			"pistick-dev",
 			"package.json",
 			"project-template",
 			"agent-runtime.ts",
@@ -33,8 +33,8 @@ function fixture(t: TestContext) {
 		])
 			fs.cpSync(join(import.meta.dirname, "..", name), join(app, name), { recursive: true });
 	}
-	const cli = join(bin, "pi-stick");
-	fs.symlinkSync(binary ?? join(app, "pi-stick"), cli);
+	const cli = join(bin, "pistick");
+	fs.symlinkSync(binary ?? join(app, "pistick"), cli);
 	const env = {
 		...process.env,
 		HOME: tmp,
@@ -76,7 +76,7 @@ test("version reports the CLI package version without creating state", (t) => {
 	const { app, ok, fail } = fixture(t);
 	const { version } = JSON.parse(read(join(import.meta.dirname, "..", "package.json")));
 	assert.equal(ok(["version"]), `${version}\n`);
-	fail(["version", "extra"], /Usage: pi-stick version/);
+	fail(["version", "extra"], /Usage: pistick version/);
 	assert.ok(!fs.existsSync(join(app, "state")));
 });
 
@@ -650,11 +650,11 @@ if (has('config')) {
 }`,
 	);
 
-	const run1 = spawn(join(bin, "pi-stick"), ["run", "demo", "echo", "task-one"], {
+	const run1 = spawn(join(bin, "pistick"), ["run", "demo", "echo", "task-one"], {
 		env,
 		stdio: ["ignore", "pipe", "pipe"],
 	});
-	const run2 = spawn(join(bin, "pi-stick"), ["run", "demo", "echo", "task-two"], {
+	const run2 = spawn(join(bin, "pistick"), ["run", "demo", "echo", "task-two"], {
 		env,
 		stdio: ["ignore", "pipe", "pipe"],
 	});
@@ -724,7 +724,7 @@ test("stage-release.sh packages updated runtime files and excludes removed legac
 	}
 });
 
-test("dev mode isolates data, settings, and image from installed home via auto-dev, --dev, and pi-stick-dev", (t) => {
+test("dev mode isolates data, settings, and image from installed home via auto-dev, --dev, and pistick-dev", (t) => {
 	const { app, tmp, bin, source, stub, env } = fixture(t);
 	stub("docker", `process.exit(1);`);
 	// Put a production settings.json that must NOT leak into dev mode
@@ -734,22 +734,22 @@ test("dev mode isolates data, settings, and image from installed home via auto-d
 	const devHome = join(tmp, "pi-stick-dev");
 
 	// 1. --dev flag overrides PI_STICK_HOME (e.g. from launcher) and uses ~/pi-stick-dev + pi-stick:dev
-	const flagDoc = spawnSync(join(bin, "pi-stick"), ["--dev", "doctor"], { env, cwd: tmp, encoding: "utf8" });
+	const flagDoc = spawnSync(join(bin, "pistick"), ["--dev", "doctor"], { env, cwd: tmp, encoding: "utf8" });
 	assert.match(flagDoc.stdout, /Mode: dev/);
 	assert.match(flagDoc.stdout, new RegExp(`Home: ${devHome}`));
 	assert.match(flagDoc.stdout, new RegExp(`Settings: ${join(devHome, "settings.json")}`));
 	assert.match(flagDoc.stdout, /Image: pi-stick:dev/);
 
-	// 2. Uncompiled ./pi-stick without PI_STICK_HOME auto-enters dev mode, keeping checkout clean
+	// 2. Uncompiled ./pistick without PI_STICK_HOME auto-enters dev mode, keeping checkout clean
 	if (!process.env.PI_STICK_TEST_BINARY) {
 		const noHomeEnv = { ...env, PI_STICK_HOME: undefined };
-		const autoDoc = spawnSync(join(app, "pi-stick"), ["doctor"], { env: noHomeEnv, cwd: tmp, encoding: "utf8" });
+		const autoDoc = spawnSync(join(app, "pistick"), ["doctor"], { env: noHomeEnv, cwd: tmp, encoding: "utf8" });
 		assert.match(autoDoc.stdout, /Mode: dev/);
 		assert.match(autoDoc.stdout, new RegExp(`Home: ${devHome}`));
 		assert.match(autoDoc.stdout, new RegExp(`Assets: ${app}`));
 
-		// 3. ./pi-stick-dev wrapper forces dev mode even when PI_STICK_HOME is set
-		const wrapCreate = spawnSync(join(app, "pi-stick-dev"), ["create", "project", "dev-proj", "--repo", source], {
+		// 3. ./pistick-dev wrapper forces dev mode even when PI_STICK_HOME is set
+		const wrapCreate = spawnSync(join(app, "pistick-dev"), ["create", "project", "dev-proj", "--repo", source], {
 			env,
 			cwd: tmp,
 			encoding: "utf8",
@@ -761,7 +761,7 @@ test("dev mode isolates data, settings, and image from installed home via auto-d
 
 		// 4. PI_STICK_DEV_HOME overrides the dev data folder
 		const customDev = join(tmp, "custom-dev");
-		const customDoc = spawnSync(join(app, "pi-stick-dev"), ["doctor"], {
+		const customDoc = spawnSync(join(app, "pistick-dev"), ["doctor"], {
 			env: { ...env, PI_STICK_DEV_HOME: customDev },
 			cwd: tmp,
 			encoding: "utf8",

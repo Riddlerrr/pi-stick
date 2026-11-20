@@ -57,7 +57,7 @@ export function getProject(name: string): ProjectInfo {
 	if (!validName.test(name)) throw Error("Use a project name with lowercase letters, digits and hyphens");
 	const folder = join(projectsDir(), name);
 	if (!fs.lstatSync(folder, { throwIfNoEntry: false })?.isDirectory())
-		throw Error(`Unknown project ${name}; use pi-stick create project ${name}`);
+		throw Error(`Unknown project ${name}; use pistick create project ${name}`);
 	if (!fs.lstatSync(join(folder, "compose.yaml"), { throwIfNoEntry: false })?.isFile())
 		throw Error(`Project ${name} is missing compose.yaml`);
 	return { name, folder, repo: join(folder, "repo") };

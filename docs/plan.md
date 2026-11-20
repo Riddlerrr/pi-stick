@@ -15,7 +15,7 @@
 
 ```mermaid
 flowchart LR
-    Host["Host CLI (pi-stick)\n- Task & lock manager\n- Git checkout & patch export\n- Trusted hooks (prepare / after)\n- Pi auth token broker\n- Multiplexed JSON-RPC broker"]
+    Host["Host CLI (pistick)\n- Task & lock manager\n- Git checkout & patch export\n- Trusted hooks (prepare / after)\n- Pi auth token broker\n- Multiplexed JSON-RPC broker"]
 
     subgraph TaskEnv["Per-Task Isolated Environment"]
         Agent["Ephemeral Agent Container\n(docker run --rm, read-only rootfs,\ncap_drop: ALL, no Docker socket)\n- Pi Durable SDK + Codemode\n- Orchestrator + Subagents\n- Native file tools (/workspace, /scratch)\n- Direct access to project network"]
@@ -59,11 +59,11 @@ flowchart LR
 - **Concurrent tasks**: Multiple independent tasks can run simultaneously (across the same or different projects). Locking moves from a global lock file to per-run lock files, with `update` and `cleanup` checking active locks safely.
 - **Mutable workspace with clean export**: Tasks may modify files inside their own `/workspace`. On completion, `pi-stick` captures `git diff` / `changes.patch` alongside the run report and artifacts.
 - **Container lifecycle (`stop` by default)**:
-  - When a run finishes, `pi-stick` runs `docker compose stop` on the task's project stack to release CPU/RAM while preserving workspace files, Docker volumes (dependencies, DB state), reports, patches, and durable SQLite sessions until `pi-stick cleanup`.
+  - When a run finishes, `pi-stick` runs `docker compose stop` on the task's project stack to release CPU/RAM while preserving workspace files, Docker volumes (dependencies, DB state), reports, patches, and durable SQLite sessions until `pistick cleanup`.
   - Passing `--keep-up` leaves the task stack running for immediate manual inspection.
 - **Autonomous execution + `continue`**:
-  - Runs execute in a detached background worker with plain-text progress logs (`pi-stick follow <run-id>`, `pi-stick resume <run-id>` after interruption).
-  - `pi-stick continue <run-id> "<prompt>"` starts the stopped project stack (`compose start`), launches a new ephemeral agent container against the existing durable SQLite session and workspace, runs the follow-up turn, and stops the stack again.
+  - Runs execute in a detached background worker with plain-text progress logs (`pistick follow <run-id>`, `pistick resume <run-id>` after interruption).
+  - `pistick continue <run-id> "<prompt>"` starts the stopped project stack (`compose start`), launches a new ephemeral agent container against the existing durable SQLite session and workspace, runs the follow-up turn, and stops the stack again.
 
 ### 3.4 Actions System
 - **Two-tier trusted discovery**:
@@ -73,7 +73,7 @@ flowchart LR
   - Project notes from `projects/<project>/AGENTS.md` are automatically made available as project context.
 - **Declarative format + optional hooks**:
   - Each action is a folder containing `action.json` (validated against a shipped JSON Schema, keeping host CLI zero-dependency), Markdown instruction/rule files (e.g., `orchestrator.md`, `agents/*.md`), and optional host hook scripts (`prepare`, `after`).
-  - `pi-stick create action <name> [--project <project>]` scaffolds a starter action folder.
+  - `pistick create action <name> [--project <project>]` scaffolds a starter action folder.
 - **Host hooks (`prepare` / `after`)**:
   - `prepare` runs on the host (where user tools like `gh`, SSH, or issue-tracker CLIs live) before starting the project stack and agent. It can adjust the task checkout (e.g., fetch a PR or branch) and write read-only context files into `$PI_STICK_CONTEXT` (mounted at `/context` in the agent container).
   - `after` runs on the host after task completion with access to the run's report, patch, and metadata for user-defined post-processing.
@@ -107,24 +107,24 @@ flowchart LR
 
 ```sh
 # Workspace & action scaffolding
-pi-stick create project NAME [--repo URL]
-pi-stick create action NAME [--project PROJECT]
-pi-stick actions [--project PROJECT]
+pistick create project NAME [--repo URL]
+pistick create action NAME [--project PROJECT]
+pistick actions [--project PROJECT]
 
 # Running & managing tasks
-pi-stick run PROJECT ACTION [--ref REF] [--input KEY=VALUE]... [--keep-up] [PROMPT]
-pi-stick runs [--all]
-pi-stick follow RUN_ID
-pi-stick resume RUN_ID
-pi-stick continue RUN_ID PROMPT [--keep-up]
-pi-stick stop RUN_ID
-pi-stick diff RUN_ID
+pistick run PROJECT ACTION [--ref REF] [--input KEY=VALUE]... [--keep-up] [PROMPT]
+pistick runs [--all]
+pistick follow RUN_ID
+pistick resume RUN_ID
+pistick continue RUN_ID PROMPT [--keep-up]
+pistick stop RUN_ID
+pistick diff RUN_ID
 
 # Maintenance
-pi-stick cleanup [--dry-run] [--days DAYS]
-pi-stick doctor
-pi-stick update [--yes]
-pi-stick version
+pistick cleanup [--dry-run] [--days DAYS]
+pistick doctor
+pistick update [--yes]
+pistick version
 ```
 
 ---
@@ -144,7 +144,7 @@ pi-stick version
 ### Phase 2: Actions System, Hooks & Task Lifecycle CLI
 *Goal: Enable users to create and run single-agent custom actions end-to-end.*
 1. Define the `action.json` manifest specification and JSON Schema (inputs, defaults, hooks, agent definitions, permissions).
-2. Implement two-tier action discovery (`projects/<project>/actions/` overriding `$PI_STICK_HOME/actions/`), `pi-stick actions`, and `pi-stick create action`.
+2. Implement two-tier action discovery (`projects/<project>/actions/` overriding `$PI_STICK_HOME/actions/`), `pistick actions`, and `pistick create action`.
 3. Implement trusted host hooks (`prepare` with `/context:ro` output and `after` post-processing).
 4. Build the generic container entrypoint (`agent-runtime.ts`) with native file tools (`read`, `write`, `edit`, `grep`, `find`), Codemode, and host-brokered tools.
 5. Implement `run`, `runs`, `follow`, `resume`, `continue`, `stop`, and `diff`, plus automatic `changes.patch` and `report.md` artifact generation.

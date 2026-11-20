@@ -10,9 +10,9 @@ case "$(uname -s)-$(uname -m)" in
 esac
 
 bin="$HOME/.local/bin"
-launcher="$bin/pi-stick"
+launcher="$bin/pistick"
 write_launcher() {
-  printf '#!/usr/bin/env bash\nexport PI_STICK_HOME=%q\nexec "$PI_STICK_HOME/pi-stick" "$@"\n' "$1"
+  printf '#!/usr/bin/env bash\nexport PI_STICK_HOME=%q\nexec "$PI_STICK_HOME/pistick" "$@"\n' "$1"
 }
 previous=''
 if [[ -f $launcher && ! -L $launcher ]]; then
@@ -37,7 +37,7 @@ if [[ -e $app ]]; then
   reuse=true
 fi
 if ! $reuse && [[ $app != "$previous" && ( -e $launcher || -L $launcher ) ]]; then
-  [[ -L $launcher && $(readlink -- "$launcher") == "$app/pi-stick" ]] ||
+  [[ -L $launcher && $(readlink -- "$launcher") == "$app/pistick" ]] ||
     die "Move the existing $launcher aside first."
 fi
 
@@ -47,8 +47,8 @@ trap 'rm -rf -- "$tmp"' EXIT
 asset="pi-stick-linux-$arch.tar.gz"
 curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
   "https://github.com/Riddlerrr/pi-stick/releases/latest/download/$asset" -o "$tmp/$asset"
-tar -xzf "$tmp/$asset" -C "$tmp" --no-same-owner pi-stick/pi-stick
-binary="$tmp/pi-stick/pi-stick"
+tar -xzf "$tmp/$asset" -C "$tmp" --no-same-owner pi-stick/pistick
+binary="$tmp/pi-stick/pistick"
 [[ -f $binary && -x $binary ]] || die "Missing release binary."
 (cd "$repo" && ./scripts/stage-release.sh "$tmp/checkout")
 files="$tmp/checkout/share"
@@ -63,7 +63,7 @@ if $reuse; then
     fi
   done
   shopt -u nullglob
-  mv -- "$binary" "$files/pi-stick"
+  mv -- "$binary" "$files/pistick"
   changed=()
   shopt -s globstar dotglob
   for src in "$files"/**/*; do
@@ -104,7 +104,7 @@ else
   mkdir -p -- "$(dirname "$app")" "$bin"
   mkdir -- "$app"
   cp -R -- "$files/." "$app/"
-  install -m 755 -- "$binary" "$app/pi-stick"
+  install -m 755 -- "$binary" "$app/pistick"
   mkdir -p -- "$app/projects" "$app/actions" "$app/state/"{runs,sessions}
   write_launcher "$app" > "$tmp/launcher"
   chmod 755 "$tmp/launcher"
@@ -112,7 +112,7 @@ else
   printf 'Installed %s. Add %s to PATH if needed.\n' "$launcher" "$bin"
 fi
 while true; do
-  printf 'Build the pi-stick agent Docker image and run pi-stick doctor? [Y/n] ' >&2
+  printf 'Build the pi-stick agent Docker image and run pistick doctor? [Y/n] ' >&2
   IFS= read -r answer || die "No input received. Image not built."
   case ${answer,,} in
     ''|y|yes)

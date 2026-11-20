@@ -14,7 +14,7 @@ trap 'rm -rf "$stage"' EXIT
 ./scripts/stage-release.sh "$stage/pi-stick"
 bun build --compile --target="$target" --define PI_STICK_COMPILED=true \
   --no-compile-autoload-bunfig --no-compile-autoload-dotenv \
-  src/cli.ts --outfile "$stage/pi-stick/pi-stick"
+  src/cli.ts --outfile "$stage/pi-stick/pistick"
 archive="pi-stick-linux-$arch.tar.gz"
 tar -czf "$stage/$archive" -C "$stage" pi-stick
 mv "$stage/$archive" dist/

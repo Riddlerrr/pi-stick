@@ -8,7 +8,7 @@ export HOME="$tmp" LC_ALL=C
 unset PI_STICK_HOME
 app="$HOME/custom install"
 mkdir -p "$HOME/.local/bin"
-ln -s "$app/pi-stick" "$HOME/.local/bin/pi-stick"
+ln -s "$app/pistick" "$HOME/.local/bin/pistick"
 export PATH="$HOME/.local/bin:$PATH"
 printf '%s\n' '#!/usr/bin/env bash' 'echo "$PWD: $*" >> "$HOME/docker.log"' '[[ $1 == compose ]]' > "$HOME/.local/bin/docker"
 chmod +x "$HOME/.local/bin/docker"
@@ -22,12 +22,12 @@ echo '# local checkout' >> "$repo/Dockerfile"
 printf '%s\nn\n' "$app" | "$repo/scripts/install.sh"
 cmp "$repo/Dockerfile" "$app/Dockerfile"
 test ! -e "$HOME/docker.log"
-"$HOME/.local/bin/pi-stick" cleanup --dry-run
+"$HOME/.local/bin/pistick" cleanup --dry-run
 test -f "$app/state/lock"
 test -f "$app/project-template/.dockerignore"
 test -f "$app/.dockerignore"
 # Blank input rediscovers a custom directory. Identical files are not listed or rewritten.
-unchanged=$(stat -c '%i:%y' "$app/pi-stick")
+unchanged=$(stat -c '%i:%y' "$app/pistick")
 rerun() { printf '%b' "$1" | "$repo/scripts/install.sh" > "$tmp/log" 2>&1; }
 rerun '\nn\n'
 grep -F 'Installed files are unchanged.' "$tmp/log"
@@ -48,8 +48,8 @@ if grep -Fx 'local edit' "$app/compose.yaml"; then exit 1; fi
 test -f "$app/projects/keep"
 test -f "$app/state/keep"
 test -f "$app/keep"
-test "$(stat -c '%i:%y' "$app/pi-stick")" = "$unchanged"
-if grep -E '(Changed|Missing): pi-stick$|Install new copy of pi-stick\?' "$tmp/log"; then exit 1; fi
+test "$(stat -c '%i:%y' "$app/pistick")" = "$unchanged"
+if grep -E '(Changed|Missing): pistick$|Install new copy of pistick\?' "$tmp/log"; then exit 1; fi
 if rerun "$tmp\n"; then exit 1; fi
 
 # Default yes starts Compose; doctor must report the missing reviewer and fail the install.

@@ -39,7 +39,7 @@ const usage = {
 const help =
 	"Isolated Docker project workspaces and extensible multi-agent tasks\n\nUsage:\n" +
 	Object.values(usage)
-		.map((s) => `  pi-stick [--dev] ${s}`)
+		.map((s) => `  pistick [--dev] ${s}`)
 		.join("\n");
 
 type Command =
@@ -161,7 +161,7 @@ function parse(cmd: string, args: string[]): Command {
 			break;
 		}
 	}
-	throw Error(Object.hasOwn(usage, cmd) ? `Usage: pi-stick ${usage[cmd as keyof typeof usage]}` : help);
+	throw Error(Object.hasOwn(usage, cmd) ? `Usage: pistick ${usage[cmd as keyof typeof usage]}` : help);
 }
 
 export async function main(rawArgs: string[]) {
@@ -172,7 +172,7 @@ export async function main(rawArgs: string[]) {
 		return 0;
 	}
 	if (Object.hasOwn(usage, cmd) && args.some((s) => s === "--help" || s === "-h")) {
-		console.log(`Usage: pi-stick ${usage[cmd as keyof typeof usage]}`);
+		console.log(`Usage: pistick ${usage[cmd as keyof typeof usage]}`);
 		return 0;
 	}
 	if (cmd === "version" && !args.length) {
@@ -202,7 +202,7 @@ export async function main(rawArgs: string[]) {
 			const project = action.project ? getProject(action.project) : undefined;
 			const items = listActions(project);
 			if (!items.length) {
-				console.log("No actions configured. Create one with: pi-stick create action NAME");
+				console.log("No actions configured. Create one with: pistick create action NAME");
 				return 0;
 			}
 			for (const item of items) {
