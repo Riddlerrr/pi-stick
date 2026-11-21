@@ -769,3 +769,91 @@ test("dev mode isolates data, settings, and image from installed home via auto-d
 		assert.match(customDoc.stdout, new RegExp(`Home: ${customDev}`));
 	}
 });
+
+test("install-dev.sh prepares dev folder, suggests Pi default model, supports fresh wipe with teardown, and enforces safety guards", (t) => {
+	const tmp = fs.mkdtempSync(join(tmpdir(), "pi-stick-install-dev-"));
+	t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+	const repoRoot = join(import.meta.dirname, "..");
+	const script = join(repoRoot, "scripts/install-dev.sh");
+	const bin = join(tmp, "bin");
+	fs.mkdirSync(bin);
+	const dockerLog = join(tmp, "docker.log");
+	fs.writeFileSync(
+		join(bin, "docker"),
+		`#!/usr/bin/env node\nconst fs = require('node:fs');\nfs.appendFileSync(${JSON.stringify(dockerLog)}, process.argv.slice(2).join(' ') + '\\n');\nif (process.argv[2] === 'info') process.exit(1);\n`,
+		{ mode: 0o700 },
+	);
+
+	// Pi settings with defaultProvider + defaultModel should be suggested
+	const piDir = join(tmp, ".pi/agent");
+	fs.mkdirSync(piDir, { recursive: true });
+	writeJson(join(piDir, "settings.json"), { defaultProvider: "openai-codex", defaultModel: "smart" });
+
+	const env = {
+		...process.env,
+		HOME: tmp,
+		PI_STICK_HOME: undefined,
+		PI_STICK_DEV_HOME: undefined,
+		PATH: `${bin}:${process.env.PATH}`,
+	};
+	const runScript = (args: string[], input?: string) =>
+		spawnSync("bash", [script, ...args], { env, cwd: repoRoot, encoding: "utf8", input });
+
+	// 1. Initial interactive setup: default path, accept Pi suggested model, skip docker build
+	const devDir = join(tmp, "pi-stick-dev");
+	const first = runScript([], "\n\nn\n");
+	assert.equal(first.status, 0, first.stderr);
+	assert.match(first.stderr, /openai-codex\/smart from Pi settings/);
+	assert.ok(fs.existsSync(join(devDir, "projects")));
+	assert.ok(fs.existsSync(join(devDir, "actions")));
+	assert.ok(fs.existsSync(join(devDir, "state/runs")));
+	assert.ok(fs.existsSync(join(devDir, "state/sessions")));
+	assert.ok(fs.existsSync(join(devDir, ".pi-stick-dev")));
+	assert.deepEqual(JSON.parse(read(join(devDir, "settings.json"))), { default_model: "openai-codex/smart" });
+	assert.ok(!fs.existsSync(join(tmp, ".local/bin")), "should not install launcher into ~/.local/bin");
+	assert.ok(!fs.existsSync(dockerLog), "should skip docker build when answered n");
+
+	// 2. Keep mode preserves existing state and allows overriding default_model
+	fs.writeFileSync(join(devDir, "projects/keep-marker"), "present");
+	const keep = runScript([], "\nn\nanthropic/claude-sonnet-4-5\nn\n");
+	assert.equal(keep.status, 0, keep.stderr);
+	assert.equal(read(join(devDir, "projects/keep-marker")), "present");
+	assert.deepEqual(JSON.parse(read(join(devDir, "settings.json"))), { default_model: "anthropic/claude-sonnet-4-5" });
+
+	// 3. Active run lock blocks --fresh wipe
+	const activeId = "a".repeat(32);
+	const activeRunDir = join(devDir, "state/runs", activeId);
+	fs.mkdirSync(activeRunDir, { recursive: true });
+	writeJson(join(activeRunDir, "meta.json"), { id: activeId, project: "demo" });
+	fs.writeFileSync(join(activeRunDir, "compose.yaml"), "services: {}\n");
+	const fd = fs.openSync(join(activeRunDir, "lock"), "a");
+	try {
+		assert.ok(tryLock(fd));
+		const blocked = runScript(["--fresh", "--yes", "--no-build"]);
+		assert.equal(blocked.status, 1);
+		assert.match(blocked.stderr, /active task run/);
+		assert.equal(read(join(devDir, "projects/keep-marker")), "present");
+	} finally {
+		fs.closeSync(fd);
+	}
+
+	// 4. Unlocked --fresh tears down Compose stack, removes old files, and recreates fresh dev dir with Pi suggestion
+	const freshRes = runScript(["--fresh", "--yes", "--no-build"]);
+	assert.equal(freshRes.status, 0, freshRes.stderr);
+	assert.ok(!fs.existsSync(join(devDir, "projects/keep-marker")), "old marker should be removed on fresh install");
+	assert.deepEqual(JSON.parse(read(join(devDir, "settings.json"))), { default_model: "openai-codex/smart" });
+	assert.match(read(dockerLog), new RegExp(`compose -p pi-stick-demo-${"a".repeat(12)} -f .* down --volumes`));
+
+	// 5. Refuses dangerous and unrecognized directories
+	const homeGuard = runScript(["--dir", tmp, "--fresh", "--yes", "--no-build"]);
+	assert.equal(homeGuard.status, 1);
+	assert.match(homeGuard.stderr, /unsafe dev directory/);
+
+	const foreignDir = join(tmp, "unrelated");
+	fs.mkdirSync(foreignDir);
+	fs.writeFileSync(join(foreignDir, "important.txt"), "do not delete");
+	const foreignGuard = runScript(["--dir", foreignDir, "--fresh", "--yes", "--no-build"]);
+	assert.equal(foreignGuard.status, 1);
+	assert.match(foreignGuard.stderr, /Not a recognized pi-stick dev directory/);
+	assert.equal(read(join(foreignDir, "important.txt")), "do not delete");
+});
