@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import schema from "../action.schema.json" with { type: "json" };
 import { ASSETS, json, ROOT, read, run, userSettings, writeJson } from "./platform.ts";
 import { parseModelSpec } from "./system.ts";
 import { isValidName, type ProjectInfo } from "./workspace.ts";
@@ -84,8 +85,66 @@ export interface LoadedAction {
 	stages: StageConfig[];
 }
 
-const AGENT_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
-const TOOL_SET = new Set<string>(ALL_TOOLS);
+// Only the schema shipped with the CLI is trusted; never load a manifest's $schema URL.
+interface Field {
+	type?: string;
+	$ref?: string;
+	enum?: string[];
+	pattern?: string;
+	minimum?: number;
+	minItems?: number;
+	items?: Field;
+	properties?: Record<string, Field>;
+	propertyNames?: Field;
+	required?: string[];
+	additionalProperties?: Field | boolean;
+}
+
+function validateField(value: unknown, field: Field, path: string): void {
+	if (field.$ref === "#/$defs/agentConfig") {
+		validateField(value, schema.$defs.agentConfig, path);
+		return;
+	}
+	switch (field.type) {
+		case "object": {
+			if (!value || typeof value !== "object" || Array.isArray(value)) throw Error(`${path}: expected object`);
+			for (const key of field.required ?? [])
+				if (!Object.hasOwn(value, key)) throw Error(`${path}.${key}: required field`);
+			for (const [key, item] of Object.entries(value)) {
+				const at = `${path}.${key}`;
+				if (field.propertyNames) validateField(key, field.propertyNames, at);
+				const child =
+					field.properties && Object.hasOwn(field.properties, key)
+						? field.properties[key]
+						: field.additionalProperties;
+				if (child === false) throw Error(`${at}: unknown field`);
+				if (typeof child === "object") validateField(item, child, at);
+			}
+			break;
+		}
+		case "array":
+			if (!Array.isArray(value) || value.length < (field.minItems ?? 0))
+				throw Error(`${path}: expected array with at least ${field.minItems ?? 0} items`);
+			if (field.items) for (const [i, item] of value.entries()) validateField(item, field.items, `${path}[${i}]`);
+			break;
+		case "integer":
+			if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (field.minimum ?? -Infinity))
+				throw Error(`${path}: expected integer >= ${field.minimum}`);
+			break;
+		case "boolean":
+			if (typeof value !== "boolean") throw Error(`${path}: expected boolean`);
+			break;
+		case undefined: // propertyNames supplies only a pattern.
+		case "string":
+			if (typeof value !== "string") throw Error(`${path}: expected string`);
+			if (field.pattern && !new RegExp(field.pattern).test(value)) throw Error(`${path}: invalid name`);
+			if (field.enum && !field.enum.includes(value))
+				throw Error(`${path}: expected one of ${field.enum.join(", ")}`);
+			break;
+		default:
+			throw Error(`Unsupported action schema type: ${field.type}`);
+	}
+}
 const DEFAULT_RW_TOOLS: ToolName[] = [
 	"read",
 	"write",
@@ -129,10 +188,7 @@ function resolveAgent(
 	hasSubagents: boolean,
 	requireModel: boolean,
 ): ResolvedAgentSpec {
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw Error(`Invalid agent config for '${name}'`);
 	const mode: AgentMode = raw.mode ?? (isOrchestrator ? "read-write" : "read-only");
-	if (mode !== "read-only" && mode !== "read-write")
-		throw Error(`Agent '${name}' mode must be 'read-only' or 'read-write'`);
 	const model = raw.model ?? fallbackModel ?? "";
 	if (model) parseModelSpec(model);
 	else if (requireModel)
@@ -141,16 +197,11 @@ function resolveAgent(
 		);
 	let instructions = "";
 	if (raw.instructions !== undefined) {
-		if (typeof raw.instructions !== "string") throw Error(`Agent '${name}' instructions must be a file path`);
 		instructions = read(resolveInside(actionDir, raw.instructions, `Agent '${name}' instructions`));
 	}
 	let tools: ToolName[];
 	if (raw.tools !== undefined) {
-		if (!Array.isArray(raw.tools)) throw Error(`Agent '${name}' tools must be an array`);
-		for (const t of raw.tools) {
-			if (typeof t !== "string" || !TOOL_SET.has(t)) throw Error(`Agent '${name}' references unknown tool '${t}'`);
-		}
-		tools = [...new Set(raw.tools as ToolName[])];
+		tools = [...new Set(raw.tools)];
 	} else {
 		tools = mode === "read-write" ? [...DEFAULT_RW_TOOLS] : [...DEFAULT_RO_TOOLS];
 		if (isOrchestrator && hasSubagents) tools.push("delegate");
@@ -158,13 +209,11 @@ function resolveAgent(
 	if (!isOrchestrator && tools.includes("delegate"))
 		throw Error(`Subagent '${name}' cannot enable 'delegate'; only the orchestrator may delegate`);
 	const allowedServices = raw.allowedServices ?? ["runner"];
-	if (!Array.isArray(allowedServices) || allowedServices.some((s) => typeof s !== "string" || !s.length))
+	if (allowedServices.some((s) => !s.length))
 		throw Error(`Agent '${name}' allowedServices must be an array of service names`);
-	if (raw.maxTurns !== undefined && (!Number.isSafeInteger(raw.maxTurns) || raw.maxTurns < 1))
-		throw Error(`Agent '${name}' maxTurns must be a positive integer`);
 	return {
 		name,
-		description: typeof raw.description === "string" ? raw.description : undefined,
+		description: raw.description,
 		model,
 		instructions,
 		mode,
@@ -184,25 +233,19 @@ export function loadActionFromDir(
 	if (!fs.lstatSync(manifestFile, { throwIfNoEntry: false })?.isFile())
 		throw Error(`Action '${name}' is missing action.json in ${dir}`);
 	const manifest = json(manifestFile) as ActionManifest;
-	if (!manifest || typeof manifest !== "object" || Array.isArray(manifest))
-		throw Error(`Expected JSON object in ${manifestFile}`);
+	validateField(manifest, schema, "action.json");
 	if (manifest.name !== undefined && manifest.name !== name)
 		throw Error(`Action manifest name '${manifest.name}' does not match directory '${name}'`);
-	if (!manifest.orchestrator || typeof manifest.orchestrator !== "object")
-		throw Error(`Action '${name}' must define an 'orchestrator' object in action.json`);
 
 	const settings = userSettings();
 	const fallbackModel = manifest.model ?? settings.default_model;
 	if (manifest.model) parseModelSpec(manifest.model);
 
 	const rawAgents = manifest.agents ?? {};
-	if (typeof rawAgents !== "object" || Array.isArray(rawAgents))
-		throw Error(`Action '${name}' agents must be an object`);
 	const agentNames = Object.keys(rawAgents);
-	const agents: Record<string, ResolvedAgentSpec> = {};
+	const agents: Record<string, ResolvedAgentSpec> = Object.create(null);
 	for (const agentName of agentNames) {
-		if (!AGENT_NAME.test(agentName) || agentName === "orchestrator")
-			throw Error(`Invalid subagent name '${agentName}' in action '${name}'`);
+		if (agentName === "orchestrator") throw Error(`Invalid subagent name '${agentName}' in action '${name}'`);
 		agents[agentName] = resolveAgent(agentName, rawAgents[agentName], dir, fallbackModel, false, false, requireModel);
 	}
 
@@ -218,48 +261,38 @@ export function loadActionFromDir(
 
 	const stages: StageConfig[] = [];
 	if (manifest.stages !== undefined) {
-		if (!Array.isArray(manifest.stages)) throw Error(`Action '${name}' stages must be an array`);
-		for (const stage of manifest.stages) {
-			if (!stage || typeof stage !== "object" || typeof stage.name !== "string" || !AGENT_NAME.test(stage.name))
-				throw Error(`Invalid stage name in action '${name}'`);
-			if (!Array.isArray(stage.parallel) || !stage.parallel.length)
-				throw Error(`Stage '${stage.name}' in action '${name}' must list at least one agent in 'parallel'`);
+		const names = new Set<string>();
+		for (const [i, stage] of manifest.stages.entries()) {
+			if (names.has(stage.name)) throw Error(`stages[${i}].name: duplicate stage '${stage.name}'`);
+			names.add(stage.name);
 			let rwCount = 0;
 			for (const ref of stage.parallel) {
-				if (typeof ref !== "string" || !agents[ref])
-					throw Error(`Stage '${stage.name}' references undefined agent '${ref}'`);
+				if (!Object.hasOwn(agents, ref)) throw Error(`Stage '${stage.name}' references undefined agent '${ref}'`);
 				if (agents[ref].mode === "read-write") rwCount++;
 			}
 			if (rwCount > 1)
 				throw Error(
 					`Stage '${stage.name}' cannot run multiple read-write agents in parallel; use read-only agents or separate stages`,
 				);
-			stages.push({
-				name: stage.name,
-				parallel: stage.parallel,
-				prompt: typeof stage.prompt === "string" ? stage.prompt : undefined,
-			});
+			stages.push(stage);
 		}
 	}
 
 	const hooks: { prepare?: string; after?: string } = {};
 	if (manifest.hooks) {
-		if (typeof manifest.hooks !== "object" || Array.isArray(manifest.hooks))
-			throw Error(`Action '${name}' hooks must be an object`);
 		if (manifest.hooks.prepare)
 			hooks.prepare = resolveInside(dir, manifest.hooks.prepare, `Action '${name}' prepare hook`);
 		if (manifest.hooks.after) hooks.after = resolveInside(dir, manifest.hooks.after, `Action '${name}' after hook`);
 	}
 
 	const inputs = manifest.inputs ?? {};
-	if (typeof inputs !== "object" || Array.isArray(inputs)) throw Error(`Action '${name}' inputs must be an object`);
 
 	return {
 		name,
 		scope,
 		dir: fs.realpathSync(dir),
 		manifest,
-		description: typeof manifest.description === "string" ? manifest.description : "",
+		description: manifest.description ?? "",
 		inputs,
 		hooks,
 		orchestrator,
@@ -334,15 +367,14 @@ export function validateAllActions(projects: ProjectInfo[]) {
 }
 
 export function resolveInputs(action: LoadedAction, rawPairs: string[]): Record<string, string> {
-	const provided: Record<string, string> = {};
+	const resolved: Record<string, string> = Object.create(null);
 	for (const pair of rawPairs) {
 		const eq = pair.indexOf("=");
 		if (eq <= 0) throw Error(`Expected --input KEY=VALUE, got: ${pair}`);
 		const key = pair.slice(0, eq);
-		const value = pair.slice(eq + 1);
-		provided[key] = value;
+		if (!Object.hasOwn(action.inputs, key)) throw Error(`Unknown --input '${key}' for action '${action.name}'`);
+		resolved[key] = pair.slice(eq + 1);
 	}
-	const resolved: Record<string, string> = { ...provided };
 	for (const [key, spec] of Object.entries(action.inputs)) {
 		if (resolved[key] === undefined) {
 			if (spec.default !== undefined) resolved[key] = spec.default;

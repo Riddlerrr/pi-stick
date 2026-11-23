@@ -91,7 +91,7 @@ pistick create action my-action --project my-app
 pistick actions --project my-app
 ```
 
-Each action directory contains `action.json` (validated against `action.schema.json`), Markdown instruction files, and optional trusted host hooks (`prepare`, `after`). Action configs inside an untrusted `repo/` are never auto-loaded.
+Each action directory contains `action.json` (validated against `action.schema.json`), Markdown instruction files, and optional trusted host hooks (`prepare`, `after`). Unknown manifest fields, duplicate stage names and undeclared `--input` keys are rejected. On launch, each `allowedServices` entry must name a service in the selected project or be `*`. Action configs inside an untrusted `repo/` are never auto-loaded.
 
 ### Multi-agent `action.json` example
 

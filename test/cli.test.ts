@@ -485,6 +485,36 @@ test("doctor stops early when Docker daemon is unavailable", (t) => {
 	assert.doesNotMatch(res.stdout, /Agent image/);
 });
 
+test("action validation reports the invalid field before creating a run", (t) => {
+	const { app, source, ok, fail } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	ok(["create", "action", "check"]);
+	const file = join(app, "actions/check/action.json");
+	const base = { model: "test/model", orchestrator: { allowedServices: ["*"] }, agents: { audit: {} } };
+	const stage = { name: "pass", parallel: ["audit"] };
+	for (const [fields, reason] of [
+		[{ instruction: "x" }, /action\.json\.instruction: unknown field/],
+		[{ orchestrator: { max_turns: 3 } }, /orchestrator\.max_turns: unknown field/],
+		[{ agents: { audit: { description: 2 } } }, /agents\.audit\.description: expected string/],
+		[{ hooks: { before: "x" } }, /hooks\.before: unknown field/],
+		[{ inputs: { ticket: { require: true } } }, /inputs\.ticket\.require: unknown field/],
+		[{ inputs: { ticket: { required: "false" } } }, /inputs\.ticket\.required: expected boolean/],
+		[{ inputs: { ticket: null } }, /inputs\.ticket: expected object/],
+		[{ stages: [{ ...stage, promp: "x" }] }, /stages\[0\]\.promp: unknown field/],
+		[{ stages: [stage, stage] }, /stages\[1\]\.name: duplicate stage/],
+		[
+			{ agents: { audit: { allowedServices: ["missing"] } } },
+			/agents\.audit\.allowedServices: unknown service 'missing'/,
+		],
+	] as const) {
+		writeJson(file, { ...base, ...fields });
+		fail(["run", "demo", "check"], reason);
+	}
+	writeJson(file, { ...base, inputs: { ticket: { default: "none" } } });
+	fail(["run", "demo", "check", "--input", "typo=1"], /Unknown --input 'typo'/);
+	assert.deepEqual(fs.readdirSync(join(app, "state/runs")), []);
+});
+
 test("actions system starts empty, supports global/project override, and rejects traversal", (t) => {
 	const { app, source, ok, fail } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);
@@ -945,7 +975,7 @@ test("multi-agent action validates stages, resolves multi-provider auth, enforce
 			instructions: "instructions.md",
 			mode: "read-write",
 			tools: ["read", "write", "edit", "grep", "find", "codemode", "exec", "logs", "ps", "restart", "delegate"],
-			allowedServices: ["runner", "web"],
+			allowedServices: ["*"],
 		},
 		agents: {
 			sec: {

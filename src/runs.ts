@@ -207,7 +207,15 @@ export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 	const inputs = resolveInputs(action, opts.rawInputs);
 	const id = runId();
 	const task = new TaskEnv(id, project);
-	task.validateBase();
+	const { services } = task.validateBase();
+	for (const agent of [action.orchestrator, ...Object.values(action.agents)]) {
+		for (const service of agent.allowedServices) {
+			if (service !== "*" && !Object.hasOwn(services, service)) {
+				const path = agent === action.orchestrator ? "orchestrator" : `agents.${agent.name}`;
+				throw Error(`${path}.allowedServices: unknown service '${service}' in project '${project.name}'`);
+			}
+		}
+	}
 
 	fs.mkdirSync(task.dir, { recursive: true, mode: 0o700 });
 	touch(join(task.dir, "progress"));
