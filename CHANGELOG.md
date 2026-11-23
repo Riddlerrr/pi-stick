@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added `pistick kill RUN_ID` to interrupt an active task while preserving its workspace and session for inspection or resume.
+
 - Moved `pistick stop` and `pistick update` to `pistick containers stop` and `pistick containers update`. The old top-level commands are no longer accepted.
 
 - Agent file tools and runner `exec` now share the checkout path `/workspace/repo`. Rebuild locally built agent images and update any custom agent instructions that use absolute `/workspace/<file>` paths. Repo-relative paths are unchanged.

@@ -9,6 +9,7 @@ import {
 	cleanup,
 	diffRun,
 	follow,
+	killRun,
 	launchContinue,
 	launchResume,
 	launchRun,
@@ -26,6 +27,7 @@ const usage = {
 	run: "run PROJECT ACTION [--ref REF] [--input KEY=VALUE]... [--keep-up] [PROMPT]",
 	runs: "runs [--all]",
 	follow: "follow RUN_ID",
+	kill: "kill RUN_ID",
 	resume: "resume RUN_ID [--retry-hook]",
 	continue: "continue RUN_ID PROMPT [--keep-up]",
 	containers: "containers (stop RUN_ID | update [--yes])",
@@ -55,7 +57,7 @@ type Command =
 			prompt: string;
 	  }
 	| { cmd: "runs"; all: boolean }
-	| { cmd: "follow"; id: string }
+	| { cmd: "follow" | "kill"; id: string }
 	| { cmd: "resume"; id: string; retryHook: boolean }
 	| { cmd: "continue"; id: string; prompt: string; keepUp?: boolean }
 	| { cmd: "stop"; id: string }
@@ -108,9 +110,10 @@ function parse(cmd: string, args: string[]): Command {
 			if (!p.length) return { cmd: "runs", all: v.all === true };
 			break;
 		}
+		case "kill":
 		case "follow": {
 			const { positionals: p } = flags({});
-			if (p.length === 1) return { cmd: "follow", id: p[0] };
+			if (p.length === 1) return { cmd, id: p[0] };
 			break;
 		}
 		case "resume": {
@@ -234,6 +237,9 @@ export async function main(rawArgs: string[]) {
 			const id = await launchContinue(action.id, action.prompt, action.keepUp);
 			return follow(id);
 		}
+		case "kill":
+			await killRun(action.id);
+			return 0;
 		case "stop":
 			stopRun(action.id);
 			return 0;

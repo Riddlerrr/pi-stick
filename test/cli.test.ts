@@ -561,6 +561,36 @@ test("failed Compose startup or setup stops the task stack unless --keep-up was 
 	}
 });
 
+test("kill interrupts a blocked prepare hook before any agent container exists", async (t) => {
+	const { app, bin, env, tmp, source, ok, fail, stub } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	ok(["create", "action", "wait"]);
+	const action = join(app, "actions/wait");
+	writeJson(join(action, "action.json"), {
+		model: "test/model",
+		hooks: { prepare: "wait.sh" },
+		orchestrator: { instructions: "instructions.md" },
+	});
+	const ready = join(tmp, "hook-ready");
+	fs.writeFileSync(
+		join(action, "wait.sh"),
+		`#!/bin/sh\nprintf '%s' "$PI_STICK_RUN_ID" > "${ready}"\nexec sleep 15\n`,
+		{ mode: 0o700 },
+	);
+	stub(
+		"docker",
+		`if (process.argv.includes('config')) console.log(JSON.stringify({services:{runner:{networks:{default:null},volumes:[{type:'volume',source:'source',target:'/workspace'}]}}}));`,
+	);
+	const child = spawn(join(bin, "pistick"), ["run", "demo", "wait"], { env, stdio: "ignore" });
+	const done = closed(child);
+	const deadline = Date.now() + 8000;
+	while (!fs.existsSync(ready) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+	const id = read(ready);
+	assert.match(ok(["kill", id]), /Killed run/);
+	assert.equal((await done)[0], 1);
+	fail(["resume", id], /prepare hook unknown/);
+});
+
 test("resume may initialize a session only before the first agent launch attempt", (t) => {
 	const { app, tmp, source, ok, fail, invoke, stub } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);
@@ -1000,7 +1030,7 @@ if (has('config')) {
 	assert.equal(read(join(runPath, "outputs/perf.md")), "Perf findings\n");
 });
 
-test("two concurrent runs execute simultaneously with isolated workspaces and locks", async (t) => {
+test("kill interrupts only the selected concurrent run and preserves its workspace", async (t) => {
 	const { app, tmp, bin, source, ok, stub, env } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);
 	ok(["create", "action", "echo"]);
@@ -1083,12 +1113,18 @@ if (has('config')) {
 			assert.match(activeOut, new RegExp(id));
 			assert.deepEqual(fs.readdirSync(join(app, "state/runs", id, "session")), [`${id}.sqlite`]);
 		}
+		const target = readyIds.find(
+			(id) => read(join(app, "state/runs", id, "session", `${id}.sqlite`)) === "task-one",
+		)!;
+		assert.match(ok(["kill", target]), /Killed run/);
+		assert.match(ok(["runs", "--all"]), new RegExp(`${target}  interrupted`));
+		assert.equal(read(join(app, "state/runs", target, "workspace/repo/marker.txt")), "task-one\n");
+		assert.equal(spawnSync(join(bin, "pistick"), ["kill", target], { env }).status, 1);
 	} finally {
 		fs.writeFileSync(releaseFile, "go");
 	}
-	assert.equal((await done1)[0], 0, out1);
+	assert.equal((await done1)[0], 1, out1);
 	assert.equal((await done2)[0], 0, out2);
-	assert.match(out1, /done:task-one/);
 	assert.match(out2, /done:task-two/);
 });
 

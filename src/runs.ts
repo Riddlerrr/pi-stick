@@ -9,6 +9,7 @@ import { type LoadedAction, loadAction, type ResolvedAgentSpec, resolveInputs, r
 import { agentName } from "./container.ts";
 import {
 	closed,
+	command,
 	compiled,
 	devMode,
 	isLocked,
@@ -170,18 +171,23 @@ function policyForAgent(action: Pick<LoadedAction, "agents" | "orchestrator">, a
 
 async function spawnWorker(id: string, fd: number) {
 	const dir = runDir(id);
+	const fifo = join(dir, "kill.fifo");
+	fs.rmSync(fifo, { force: true });
+	command(["mkfifo", "-m", "600", fifo]);
+	const control = fs.openSync(fifo, fs.constants.O_RDWR);
 	const log = fs.openSync(join(dir, "worker.log"), "a");
 	try {
 		const args = ["_worker", id];
 		if (!compiled) args.unshift(process.argv[1]);
 		const child = spawn(process.execPath, args, {
 			detached: true,
-			stdio: ["ignore", log, log, fd],
+			stdio: ["ignore", log, log, fd, control],
 			env: { ...process.env, ...(devMode ? { PI_STICK_DEV: "1" } : {}) },
 		});
 		await once(child, "spawn");
 		child.unref();
 	} finally {
+		fs.closeSync(control);
 		fs.closeSync(log);
 	}
 }
@@ -318,6 +324,28 @@ export async function launchContinue(id: string, promptText: string, keepUp?: bo
 
 export async function worker(id: string): Promise<number> {
 	const dir = runDir(id);
+	const fifo = join(dir, "kill.fifo");
+	const inherited = fs.fstatSync(4);
+	const control = fs.statSync(fifo);
+	const group = read("/proc/self/stat").split(") ").at(-1)?.split(" ")[2];
+	if (
+		Number(group) !== process.pid ||
+		!inherited.isFIFO() ||
+		inherited.ino !== control.ino ||
+		inherited.dev !== control.dev
+	)
+		throw Error("Invalid worker control channel");
+	// A synchronous host hook can block Node's event loop. This reader can still kill its own detached group.
+	const reader = fs.openSync(fifo, "r");
+	try {
+		const guard = spawn("/bin/sh", ["-c", 'if read -r cmd && [ "$cmd" = kill ]; then kill -KILL 0; fi'], {
+			stdio: [reader, "ignore", "inherit"],
+		});
+		await once(guard, "spawn");
+		guard.unref();
+	} finally {
+		fs.closeSync(reader);
+	}
 	const cfgFile = join(dir, "run-config.json");
 	const cfg = json(cfgFile) as RunConfig;
 	const meta = readMeta(id);
@@ -735,6 +763,39 @@ function removeOrphanAgent(id: string) {
 		return;
 	}
 	if (lookup()) throw Error(`Agent container for run ${id} still exists`);
+}
+
+export async function killRun(id: string) {
+	const meta = readMeta(id);
+	const dir = runDir(id);
+	const fifo = join(dir, "kill.fifo");
+	const lock = fs.openSync(runLock(id), "r+");
+	try {
+		if (tryLock(lock)) throw Error(`Run ${id} is not active`);
+		const { O_WRONLY, O_NONBLOCK, O_NOFOLLOW } = fs.constants;
+		const pipe = fs.openSync(fifo, O_WRONLY | O_NONBLOCK | O_NOFOLLOW);
+		try {
+			const attempt = fs.fstatSync(pipe);
+			if (!attempt.isFIFO()) throw Error("Invalid worker control channel");
+			fs.writeSync(pipe, "kill\n");
+			const deadline = Date.now() + 10_000;
+			while (!tryLock(lock)) {
+				if (Date.now() >= deadline) throw Error("Worker did not release the run lock; inspect the run");
+				await sleep(50);
+			}
+			const current = fs.statSync(fifo);
+			if (attempt.dev !== current.dev || attempt.ino !== current.ino || fs.existsSync(join(dir, "exit")))
+				throw Error("Run attempt already ended; not stopping its containers");
+			removeOrphanAgent(id);
+			new TaskEnv(id, getProject(meta.project)).stop();
+			status(dir, "Killed by operator; workspace and session retained.");
+			console.log(`Killed run ${id}.`);
+		} finally {
+			fs.closeSync(pipe);
+		}
+	} finally {
+		fs.closeSync(lock);
+	}
 }
 
 export function stopRun(id: string) {

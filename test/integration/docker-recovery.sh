@@ -95,7 +95,7 @@ interrupt() {
       sleep 0.1
     done
   else
-    docker kill "$agent" >/dev/null
+    "$cli" kill "$id"
   fi
   local rc=0; wait "$pid" || rc=$?; pid=
   [[ $rc == 1 ]]
