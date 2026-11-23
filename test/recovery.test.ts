@@ -10,7 +10,10 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { closed, runId } from "../src/platform.ts";
 
-function stageFixture(t: TestContext, failure: "interrupt-stage" | "fail-stage" | "fail-root" = "interrupt-stage") {
+function stageFixture(
+	t: TestContext,
+	failure: "interrupt-stage" | "interrupt-third" | "fail-stage" | "fail-root" = "interrupt-stage",
+) {
 	const dir = fs.mkdtempSync(join(tmpdir(), "pi-stick-recovery-"));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	const stub = join(dir, "model.mjs");
@@ -20,11 +23,12 @@ function stageFixture(t: TestContext, failure: "interrupt-stage" | "fail-stage" 
 		globalThis.fetch = async (_url, init) => {
 			const messages = JSON.parse(init.body).messages;
 			const task = messages.at(-1).content;
-			const stage = messages.some(m => m.role === 'system' && m.content.includes('Sibling instructions')) ? 'sibling' : task.startsWith('first') ? 'A' : task.startsWith('second') ? 'B' : 'root';
+			const stage = messages.some(m => m.role === 'system' && m.content.includes('Sibling instructions')) ? 'sibling' : task.startsWith('first') ? 'A' : task.startsWith('second') ? 'B' : task.startsWith('third') ? 'C' : 'root';
 			fs.writeFileSync(stage + '-prompt', task);
 			const seen = fs.existsSync('requests') ? fs.readFileSync('requests', 'utf8') : '';
 			fs.appendFileSync('requests', stage + '\\n');
 			if (${failure === "fail-stage"} && stage === 'A' && !seen.includes('A')) return new Response('invalid request', {status: 400});
+			if (${failure === "interrupt-third"} && stage === 'C' && !seen.includes('C')) process.kill(process.pid, 'SIGKILL');
 			if (${failure === "interrupt-stage"} && stage === 'B' && !seen.includes('B')) process.kill(process.pid, 'SIGKILL');
 			if (${failure === "fail-root"} && stage === 'root') {
 				if (messages.filter(m => m.role === 'user').length !== 1) throw Error('Duplicated root prompt');
@@ -155,6 +159,23 @@ test("after process death, resume restores the first stage's output and complete
 	assert.equal(result.outputs.worker, "answer-A\n\n---\n\nanswer-B");
 	assert.equal(fs.readFileSync(join(dir, "requests"), "utf8"), "A\nB\nB\nroot\n");
 });
+
+for (const stageContext of [undefined, "all"] as const) {
+	test(`resume hands the third stage ${stageContext ?? "previous"} results without rerunning earlier stages`, async (t) => {
+		const { job, run, dir } = stageFixture(t, "interrupt-third");
+		if (stageContext) Object.assign(job, { stageContext });
+		job.stages.push({ name: "third", prompt: "third", parallel: ["worker"] });
+		assert.equal((await run()).signal, "SIGKILL");
+		const resumed = await run();
+		assert.equal(resumed.status, 0, resumed.stderr);
+		const prompt = fs.readFileSync(join(dir, "C-prompt"), "utf8");
+		assert.match(prompt, /Task context:\ntask[\s\S]*answer-B/);
+		if (stageContext === "all") assert.match(prompt, /answer-A[\s\S]*answer-B/);
+		else assert.doesNotMatch(prompt, /answer-A/);
+		assert.match(fs.readFileSync(join(dir, "root-prompt"), "utf8"), /answer-A[\s\S]*answer-B[\s\S]*answer-C/);
+		assert.equal(fs.readFileSync(join(dir, "requests"), "utf8"), "A\nB\nC\nC\nroot\n");
+	});
+}
 
 test("resume retries an unanswered root once and reattaches after interruption without replaying stages", async (t) => {
 	const { run, dir } = stageFixture(t, "fail-root");

@@ -6,7 +6,10 @@ import type { LoadedAction } from "./actions.ts";
 const hookNames = ["prepare", "after"] as const;
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
-type Snapshot = Pick<LoadedAction, "name" | "scope" | "dir" | "orchestrator" | "agents" | "stages" | "hooks"> & {
+type Snapshot = Pick<
+	LoadedAction,
+	"name" | "scope" | "dir" | "orchestrator" | "agents" | "stageContext" | "stages" | "hooks"
+> & {
 	version: 1;
 	projectNotes: string | null;
 	hookHashes: Partial<Record<(typeof hookNames)[number], string>>;
@@ -34,6 +37,7 @@ export function saveActionSnapshot(runDir: string, action: LoadedAction, project
 		dir: sourceDir,
 		orchestrator,
 		agents,
+		stageContext: action.stageContext,
 		stages,
 		hooks,
 		hookHashes,

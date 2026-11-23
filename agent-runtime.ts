@@ -59,6 +59,7 @@ interface Job {
 	credentials?: Record<string, CredentialPayload>;
 	orchestrator?: AgentRuntimeSpec;
 	agents?: Record<string, AgentRuntimeSpec>;
+	stageContext?: "previous" | "all";
 	stages?: StageRuntimeSpec[];
 	prompt?: string;
 	requestId?: string;
@@ -1062,7 +1063,10 @@ try {
 			for (const [index, stage] of job.stages.entries()) {
 				emitProgress(`Starting parallel stage '${stage.name}': ${stage.parallel.join(", ")}`, "orchestrator");
 				let stagePrompt = stage.prompt ? `${stage.prompt}\n\nTask context:\n${job.prompt}` : job.prompt;
-				if (index > 0) stagePrompt += `\n\n# Previous stage results\n\n${stageSections[index - 1]}`;
+				if (index > 0) {
+					const prior = job.stageContext === "all" ? stageSections.join("\n\n") : stageSections[index - 1];
+					stagePrompt += `\n\n# Previous stage results\n\n${prior}`;
+				}
 				const batch = stage.parallel.map((agentName) => {
 					const agentSpec = activeSubagents[agentName];
 					if (!agentSpec) throw Error(`Stage '${stage.name}' references missing agent '${agentName}'`);

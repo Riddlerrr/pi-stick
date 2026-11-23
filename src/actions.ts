@@ -58,6 +58,7 @@ export interface ActionManifest {
 	hooks?: ActionHooks;
 	orchestrator: AgentConfig;
 	agents?: Record<string, AgentConfig>;
+	stageContext?: "previous" | "all";
 	stages?: StageConfig[];
 }
 
@@ -82,6 +83,7 @@ export interface LoadedAction {
 	hooks: { prepare?: string; after?: string };
 	orchestrator: ResolvedAgentSpec;
 	agents: Record<string, ResolvedAgentSpec>;
+	stageContext?: ActionManifest["stageContext"];
 	stages: StageConfig[];
 }
 
@@ -297,6 +299,7 @@ export function loadActionFromDir(
 		hooks,
 		orchestrator,
 		agents,
+		stageContext: manifest.stageContext,
 		stages,
 	};
 }

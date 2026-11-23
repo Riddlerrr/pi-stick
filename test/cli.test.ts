@@ -522,6 +522,7 @@ test("action validation reports the invalid field before creating a run", (t) =>
 		[{ inputs: { ticket: { required: "false" } } }, /inputs\.ticket\.required: expected boolean/],
 		[{ inputs: { ticket: null } }, /inputs\.ticket: expected object/],
 		[{ stages: [{ ...stage, promp: "x" }] }, /stages\[0\]\.promp: unknown field/],
+		[{ stageContext: "latest" }, /stageContext: expected one of previous, all/],
 		[{ stages: [stage, stage] }, /stages\[1\]\.name: duplicate stage/],
 		[
 			{ agents: { audit: { allowedServices: ["missing"] } } },
@@ -1015,6 +1016,7 @@ test("multi-agent action validates stages, resolves multi-provider auth, enforce
 	writeJson(join(actionDir, "action.json"), {
 		name: "deep-check",
 		description: "Multi-agent parallel analysis",
+		stageContext: "all",
 		orchestrator: {
 			model: "openai-codex/gpt-6.2-sol",
 			instructions: "instructions.md",
@@ -1084,7 +1086,7 @@ if (has('config')) {
       if (job.credentials['anthropic'].token !== 'anthropic-key-fixture') process.exit(5);
       if (job.credentials['anthropic'].authType !== 'api_key') process.exit(6);
       if (!job.orchestrator.instructions.includes('Security specialist')) process.exit(7);
-      if (job.stages.length !== 1 || job.stages[0].parallel.join(',') !== 'sec,perf') process.exit(8);
+      if (job.stageContext !== 'all' || job.stages.length !== 1 || job.stages[0].parallel.join(',') !== 'sec,perf') process.exit(8);
       // Test per-agent host RPC policy: sec cannot exec on 'web', orchestrator can exec on 'web', perf cannot exec at all
       send({ rpc: 1, method: 'exec', params: { service: 'web', command: 'echo 1' }, agent: 'sec' });
       send({ rpc: 2, method: 'exec', params: { service: 'web', command: 'echo 2' }, agent: 'orchestrator' });

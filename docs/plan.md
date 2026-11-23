@@ -80,7 +80,7 @@ flowchart LR
 
 ### 3.5 Multi-Agent Orchestration & Permissions
 - **Unified multi-agent runtime** built on Pi Durable conversations within the run's SQLite database, supporting two composable patterns in `action.json`:
-  1. **Declarative stages (fan-out / fan-in)**: Run each configured group of agents in parallel. Pass its results to the next group only on success; pass all groups’ results to the final orchestrator.
+  1. **Declarative stages (fan-out / fan-in)**: Run each configured group of agents in parallel. After success, pass its results to the next group (or all later groups with `stageContext: "all"`); pass all groups’ results to the final orchestrator.
   2. **Dynamic orchestration**: The orchestrator agent can invoke configured subagents (individually or in parallel batches) via a delegation tool across multiple rounds as it investigates and verifies results.
 - **Shared workspace, per-agent permissions**:
   - All agents in a task share the task's `/workspace/repo` and running project stack.

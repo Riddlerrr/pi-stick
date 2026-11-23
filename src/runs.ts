@@ -478,6 +478,7 @@ export async function worker(id: string): Promise<number> {
 					maxTurns: action.orchestrator.maxTurns,
 				},
 				agents: subagentPayloads,
+				stageContext: action.stageContext,
 				stages: action.stages,
 				prompt: cfg.prompt,
 				requestId: cfg.requestId,
