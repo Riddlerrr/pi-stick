@@ -10,10 +10,8 @@ import {
 	closed,
 	compiled,
 	devMode,
-	gitCommand,
 	isLocked,
 	json,
-	output,
 	prompt,
 	read,
 	run,
@@ -229,6 +227,7 @@ export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 			requestId: id,
 			mode: "run",
 			prepared: false,
+			prepareDone: false,
 			agentLaunchAttempted: false,
 			actionDigest,
 		} satisfies RunConfig);
@@ -339,6 +338,8 @@ export async function worker(id: string): Promise<number> {
 		} else {
 			status(dir, `Preparing isolated workspace for ${project.name}…`);
 			if (!cfg.prepareDone && !cfg.hookPending) {
+				if (cfg.prepareDone === undefined && fs.existsSync(task.workspace))
+					throw Error("Cannot safely repeat checkout preparation for this legacy run; start a new run");
 				meta.baseHead = task.prepareWorkspace(cfg.ref).baseHead;
 				writeMeta(id, meta);
 			}
@@ -360,9 +361,11 @@ export async function worker(id: string): Promise<number> {
 					prompt: cfg.prompt,
 					inputs: cfg.inputs,
 				});
-				meta.baseHead = output([...gitCommand(task.repo), "rev-parse", "HEAD"]);
+				meta.baseHead = task.inspectGit("rev-parse", "HEAD").trim();
 				writeMeta(id, meta);
 				delete cfg.hookPending;
+			}
+			if (!cfg.prepareDone) {
 				cfg.prepareDone = true;
 				writeJson(cfgFile, cfg);
 			}

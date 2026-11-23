@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { IMAGE, isolatedRun } from "./container.ts";
 import {
 	ASSETS,
 	closed,
@@ -20,8 +21,6 @@ import {
 } from "./platform.ts";
 import { CONTAINER_REPO_DIR, validateCompose } from "./tasks.ts";
 import { listProjects } from "./workspace.ts";
-
-export const IMAGE = process.env.PI_STICK_IMAGE || (devMode ? "pi-stick:dev" : "pi-stick:current");
 
 export interface ModelSpec {
 	provider: string;
@@ -109,32 +108,9 @@ export interface EphemeralContainerOptions {
 }
 
 export function ephemeralArgs(opts: EphemeralContainerOptions): string[] {
-	const uid = process.getuid?.();
-	const gid = process.getgid?.();
-	if (!uid || gid === undefined) throw Error("Refusing to launch agent container as root");
-	const args = [
-		"docker",
-		"run",
-		"--rm",
-		"-i",
-		"--init",
-		"--read-only",
-		"--cap-drop",
-		"ALL",
-		"--security-opt",
-		"no-new-privileges:true",
-		"--tmpfs",
-		"/tmp:rw,nosuid,nodev,size=512m",
-		"--memory",
-		"2g",
-		"--pids-limit",
-		"128",
-		"--user",
-		`${uid}:${gid}`,
-		"--network",
-		opts.network,
-	];
+	const args = isolatedRun(opts.network);
 	if (opts.tmpfsProbe) {
+		const uid = process.getuid?.();
 		args.push(
 			"--tmpfs",
 			`${CONTAINER_REPO_DIR}:rw,uid=${uid},mode=0700`,

@@ -146,9 +146,6 @@ test("TaskEnv validates base compose, materializes bind mounts, and isolates rep
 	fs.writeFileSync(join(task.repo, "example.txt"), "task edit\n");
 	// Original project repo remains untouched
 	assert.equal(read(join(folder, "repo/example.txt")), "committed\n");
-	const { patch } = task.captureDiff(baseHead);
-	assert.match(patch, /\+task edit/);
-	assert.match(read(join(task.dir, "changes.patch")), /\+task edit/);
 
 	const composePath = join(folder, "compose.yaml");
 	fs.writeFileSync(composePath, read(composePath).replace("source:/workspace", "./repo:/workspace"));
@@ -434,6 +431,20 @@ test("failed Compose startup or setup stops the task stack unless --keep-up was 
 		const id = /Run: ([0-9a-f]{32})/.exec(result.stdout)?.[1];
 		assert.ok(id, result.stdout);
 		assert.equal(JSON.parse(read(join(app, "state/runs", id, "meta.json"))).status, "failed");
+		if (keepUp) {
+			stub("git", "process.exit(97)");
+			fs.writeFileSync(calls, "");
+			assert.equal(invoke(["resume", id]).status, 1);
+			assert.equal(read(calls), "up\nexec\n", "resume must reach setup without host Git");
+			const config = join(app, "state/runs", id, "run-config.json");
+			const legacy = JSON.parse(read(config));
+			delete legacy.prepareDone;
+			writeJson(config, legacy);
+			fs.writeFileSync(calls, "");
+			assert.equal(invoke(["resume", id]).status, 1);
+			assert.match(read(join(app, "state/runs", id, "worker.log")), /legacy run/);
+			assert.equal(read(calls), "");
+		}
 	}
 });
 
@@ -451,7 +462,7 @@ test("resume may initialize a session only before the first agent launch attempt
 		`const fs = require('node:fs');
 		const args = process.argv.slice(2);
 		if (args.includes('config')) console.log(JSON.stringify({services:{runner:{volumes:[{type:'volume',source:'source',target:'/workspace'}]}}}));
-		if (args[0] === 'run') {
+		if (args[0] === 'run' && args.includes('/app/agent-runtime.ts')) {
 			const session = args.find(a => a.endsWith(':/sessions')).slice(0, -':/sessions'.length);
 			const config = JSON.parse(fs.readFileSync(session + '/../run-config.json'));
 			if (config.agentLaunchAttempted !== true) process.exit(2);
@@ -543,13 +554,25 @@ test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async
 	stub("pi", `console.log('secret-fixture-token')`);
 
 	const dockerLog = join(tmp, "docker-calls.log");
+	const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+	stub(
+		"git",
+		`const fs = require('node:fs');
+		if (fs.existsSync(${JSON.stringify(dockerLog)}) && fs.readFileSync(${JSON.stringify(dockerLog)}, 'utf8').includes('/usr/local/bin/setup-project')) process.exit(97);
+		require('node:child_process').execFileSync(${JSON.stringify(realGit)}, process.argv.slice(2), {stdio:'inherit'});`,
+	);
 	stub(
 		"docker",
 		`const fs = require('node:fs');
 const a = process.argv.slice(2);
 const has = s => a.includes(s);
 fs.appendFileSync(${JSON.stringify(dockerLog)}, a.join(' ') + '\\n');
-if (has('config')) {
+if (has('git') && a[0] === 'run') {
+  const mounts = a.filter((_, i) => a[i - 1] === '-v');
+  if (mounts.length !== 1 || !mounts[0].endsWith(':/workspace:ro') || a[a.indexOf('--network') + 1] !== 'none' || !has('--read-only')) process.exit(14);
+  const cwd = mounts[0].slice(0, -':/workspace:ro'.length) + '/repo';
+  require('node:child_process').execFileSync(${JSON.stringify(realGit)}, a.slice(a.indexOf('--no-optional-locks')), {cwd, stdio:'inherit'});
+} else if (has('config')) {
   // Base validation runs after launcher resolution but before the first worker.
   const override = ${JSON.stringify(join(projectDir, "actions/fix"))};
   fs.mkdirSync(override, {recursive:true});
@@ -598,7 +621,7 @@ if (has('config')) {
       }
       fs.writeFileSync(db, job.id);
       fs.writeFileSync(repoMount + '/example.txt', 'updated\\n');
-      // Fire 2 concurrent RPC calls + 1 disallowed restart call
+      send({ rpc: 4, method: 'check_clean', params: {} });
       send({ rpc: 1, method: 'exec', params: { command: 'echo hi' }, agent: 'orchestrator' });
       send({ rpc: 2, method: 'logs', params: { tail: 10 }, agent: 'orchestrator' });
       send({ rpc: 3, method: 'restart', params: { service: 'runner' }, agent: 'orchestrator' });
@@ -607,8 +630,9 @@ if (has('config')) {
     if (m.rpc === 1 && !m.result.error && m.result.text.includes('exec-ok:echo hi')) got |= 1;
     else if (m.rpc === 2 && !m.result.error && m.result.text.includes('service-log-line')) got |= 2;
     else if (m.rpc === 3 && m.result.error && m.result.text.includes('not permitted')) got |= 4;
+    else if (m.rpc === 4 && !m.result.error && m.result.text.includes(' M example.txt')) got |= 8;
     else process.exit(5);
-    if (got === 7) {
+    if (got === 15) {
       send({ progress: 'All checks passed', agent: 'orchestrator' });
       send({ report: 'Initial report' });
       rl.close();

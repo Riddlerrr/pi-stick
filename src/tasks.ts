@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import { join, posix } from "node:path";
+import { IMAGE, isolatedRun } from "./container.ts";
 import { closed, command, gitCommand, output, run, STATE, touch } from "./platform.ts";
 import type { ProjectInfo } from "./workspace.ts";
 
@@ -276,18 +277,27 @@ export class TaskEnv {
 		run([...this.compose, "down", "--volumes"]);
 	}
 
+	inspectGit(...args: string[]): string {
+		// Mount the trusted parent: the runner can replace entries inside workspace, including repo.
+		return command([
+			...isolatedRun("none"),
+			"-v",
+			`${this.workspace}:/workspace:ro`,
+			IMAGE,
+			...gitCommand(CONTAINER_REPO_DIR),
+			"--no-optional-locks",
+			...args,
+		]).toString("utf8");
+	}
+
 	trackedStatus(): string {
 		if (!fs.existsSync(this.repo)) return "";
-		return command([...gitCommand(this.repo), "status", "--porcelain", "--untracked-files=no"]).toString("utf8");
+		return this.inspectGit("status", "--porcelain", "--untracked-files=no");
 	}
 
 	captureDiff(baseHead?: string): { patch: string; untracked: string[] } {
-		const git = gitCommand(this.repo);
-		const ref = baseHead || "HEAD";
-		const patch = command([...git, "diff", ref]).toString("utf8");
-		const untrackedRaw = command([...git, "ls-files", "--others", "--exclude-standard"])
-			.toString("utf8")
-			.trim();
+		const patch = this.inspectGit("diff", "--no-ext-diff", "--no-textconv", baseHead || "HEAD", "--");
+		const untrackedRaw = this.inspectGit("ls-files", "--others", "--exclude-standard").trim();
 		const untracked = untrackedRaw ? untrackedRaw.split("\n") : [];
 		const patchFile = join(this.dir, "changes.patch");
 		if (patch.trim()) fs.writeFileSync(patchFile, patch);
