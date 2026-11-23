@@ -328,6 +328,44 @@ test("actions system starts empty, supports global/project override, and rejects
 	fail(["run", "demo", "audit"], /escapes the action directory/);
 });
 
+test("failed Compose startup or setup stops the task stack unless --keep-up was requested", (t) => {
+	const { app, tmp, source, ok, invoke, stub } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	ok(["create", "action", "check"]);
+	writeJson(join(app, "actions/check/action.json"), {
+		model: "test/model",
+		orchestrator: { instructions: "instructions.md" },
+	});
+	const calls = join(tmp, "compose-calls");
+	for (const [failAt, keepUp] of [
+		["up", false],
+		["exec", false],
+		["exec", true],
+	] as const) {
+		fs.writeFileSync(calls, "");
+		stub(
+			"docker",
+			`const args = process.argv.slice(2);
+			if (args.includes('config')) console.log(JSON.stringify({services:{runner:{volumes:[{type:'volume',source:'source',target:'/workspace'}]}}}));
+			else {
+				const cmd = args.find(arg => ['up','exec','stop'].includes(arg));
+				require('node:fs').appendFileSync(${JSON.stringify(calls)}, cmd + '\\n');
+				if (cmd === '${failAt}') process.exit(1);
+			}`,
+		);
+		const result = invoke(["run", "demo", "check", ...(keepUp ? ["--keep-up"] : [])]);
+		assert.equal(result.status, 1, result.stdout + result.stderr);
+		assert.deepEqual(read(calls).trim().split("\n"), [
+			"up",
+			...(failAt === "exec" ? ["exec"] : []),
+			...(keepUp ? [] : ["stop"]),
+		]);
+		const id = /Run: ([0-9a-f]{32})/.exec(result.stdout)?.[1];
+		assert.ok(id, result.stdout);
+		assert.equal(JSON.parse(read(join(app, "state/runs", id, "meta.json"))).status, "failed");
+	}
+});
+
 test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async (t) => {
 	const { app, tmp, source, ok, fail, stub, invoke } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);
@@ -388,6 +426,8 @@ if (has('config')) {
     volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
     networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
   }));
+} else if (has('stop') && fs.existsSync(${JSON.stringify(join(tmp, "fail-stop"))})) {
+  process.exit(9);
 } else if (has('exec') && has('sh') && has('-lc')) {
   console.log('exec-ok:' + a.at(-1));
 } else if (has('logs')) {
@@ -471,7 +511,14 @@ if (has('config')) {
 	assert.equal(invoke(["resume", id]).status, 1);
 	fail(["resume", id], /after hook unknown/);
 	fs.writeFileSync(afterScript, script);
-	ok(["resume", id, "--retry-hook"]);
+	const stopFailure = join(tmp, "fail-stop");
+	fs.writeFileSync(stopFailure, "");
+	const stopResult = invoke(["resume", id, "--retry-hook"]);
+	assert.equal(stopResult.status, 1);
+	assert.match(stopResult.stdout, /Failed to stop project stack/);
+	assert.equal(JSON.parse(read(join(runPath, "meta.json"))).status, "failed");
+	fs.unlinkSync(stopFailure);
+	ok(["resume", id]);
 	assert.equal(read(join(runPath, "report.md")), "Follow-up complete\n");
 	assert.equal(read(join(runPath, "workspace/repo/example.txt")), "updated\nfollowup\n");
 	assert.match(ok(["diff", id]), /\+followup/);

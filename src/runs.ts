@@ -306,7 +306,7 @@ export async function worker(id: string): Promise<number> {
 	const action = loadAction(cfg.action, project, true);
 	const task = new TaskEnv(id, project);
 	let code = 1;
-	let stackStarted = false;
+	let stackStartAttempted = false;
 
 	try {
 		if (cfg.hookPending && !action.hooks[cfg.hookPending]) throw Error(`Pending ${cfg.hookPending} hook is missing`);
@@ -315,18 +315,18 @@ export async function worker(id: string): Promise<number> {
 			status(dir, `Starting project stack for follow-up on ${project.name}…`);
 			if (!fs.existsSync(task.composeFile)) task.materializeCompose();
 			services = task.services();
+			stackStartAttempted = true;
 			try {
 				task.start();
 			} catch {
 				task.up(false);
 			}
-			stackStarted = true;
 		} else if (cfg.prepared) {
 			status(dir, `Resuming run on ${project.name}…`);
 			if (!fs.existsSync(task.composeFile)) task.materializeCompose();
 			services = task.services();
+			stackStartAttempted = true;
 			task.up(false);
-			stackStarted = true;
 		} else {
 			status(dir, `Preparing isolated workspace for ${project.name}…`);
 			if (!cfg.prepareDone && !cfg.hookPending) {
@@ -361,8 +361,8 @@ export async function worker(id: string): Promise<number> {
 			status(dir, "Starting project Compose stack…");
 			const mat = task.materializeCompose();
 			services = mat.services;
+			stackStartAttempted = true;
 			task.up(true);
-			stackStarted = true;
 			cfg.prepared = true;
 			writeJson(cfgFile, cfg);
 		}
@@ -471,10 +471,12 @@ export async function worker(id: string): Promise<number> {
 		status(dir, `Failed; see private log: ${join(dir, "worker.log")}`);
 		console.error(err);
 	} finally {
-		if (stackStarted && !cfg.keepUp) {
+		if (stackStartAttempted && !cfg.keepUp) {
 			try {
 				task.stop();
 			} catch (err) {
+				code = 1;
+				status(dir, `Failed to stop project stack; see private log: ${join(dir, "worker.log")}`);
 				console.error("Failed to stop project stack:", err);
 			}
 		}
