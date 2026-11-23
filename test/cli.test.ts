@@ -515,6 +515,7 @@ test("action validation reports the invalid field before creating a run", (t) =>
 	const stage = { name: "pass", parallel: ["audit"] };
 	for (const [fields, reason] of [
 		[{ instruction: "x" }, /action\.json\.instruction: unknown field/],
+		[{ agents: { audit: { thinkingLevel: "hgh" } } }, /agents\.audit\.thinkingLevel: expected one of/],
 		[{ orchestrator: { max_turns: 3 } }, /orchestrator\.max_turns: unknown field/],
 		[{ agents: { audit: { description: 2 } } }, /agents\.audit\.description: expected string/],
 		[{ hooks: { before: "x" } }, /hooks\.before: unknown field/],
@@ -755,6 +756,7 @@ test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async
 			after: "hooks/after.sh",
 		},
 		orchestrator: {
+			thinkingLevel: "high",
 			instructions: "instructions.md",
 			mode: "read-write",
 			tools: ["read", "write", "edit", "grep", "find", "codemode", "exec", "logs", "ps"],
@@ -836,7 +838,7 @@ if (has('git') && a[0] === 'run') {
     if (!job) {
       job = m;
       if (job.credentials['openai-codex'].token !== (job.continueRun ? 'fresh-token' : 'secret-fixture-token')) process.exit(3);
-      if (job.orchestrator.model.modelId !== 'gpt-6.2-sol' || !job.orchestrator.instructions.includes('PINNED PROJECT NOTES') || !job.orchestrator.instructions.includes('PINNED INSTRUCTIONS') || job.orchestrator.tools.includes('restart')) process.exit(10);
+      if (job.orchestrator.thinkingLevel !== 'high' || job.orchestrator.model.modelId !== 'gpt-6.2-sol' || !job.orchestrator.instructions.includes('PINNED PROJECT NOTES') || !job.orchestrator.instructions.includes('PINNED INSTRUCTIONS') || job.orchestrator.tools.includes('restart')) process.exit(10);
       if (job.continueRun && !job.orchestrator.instructions.includes('updated-context.md')) process.exit(11);
       if (!job.orchestrator.instructions.includes('Repository workspace: /workspace/repo')) process.exit(12);
       if (!fs.readFileSync(ctxMount + '/ticket.txt', 'utf8').includes('ISSUE-42')) process.exit(4);
@@ -1032,6 +1034,7 @@ test("multi-agent action validates stages, resolves multi-provider auth, enforce
 			sec: {
 				description: "Security specialist",
 				model: "anthropic/claude-sonnet-4-5",
+				thinkingLevel: "medium",
 				instructions: "agents/sec.md",
 				mode: "read-only",
 				tools: ["read", "grep", "find", "exec", "logs"],
@@ -1094,7 +1097,7 @@ if (has('config')) {
         rl.close();
         return;
       }
-      if (!job.orchestrator.instructions.includes('Security specialist')) process.exit(7);
+      if (job.agents.sec.thinkingLevel !== 'medium' || !job.orchestrator.instructions.includes('Security specialist')) process.exit(7);
       if (job.stageContext !== 'all' || job.stages.length !== 1 || job.stages[0].parallel.join(',') !== 'sec,perf') process.exit(8);
       // Test per-agent host RPC policy: sec cannot exec on 'web', orchestrator can exec on 'web', perf cannot exec at all
       send({ rpc: 1, method: 'exec', params: { service: 'web', command: 'echo 1' }, agent: 'sec' });

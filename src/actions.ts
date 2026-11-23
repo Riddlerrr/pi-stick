@@ -35,6 +35,7 @@ export interface AgentConfig {
 	mode?: AgentMode;
 	tools?: ToolName[];
 	allowedServices?: string[];
+	thinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	maxTurns?: number;
 }
 
@@ -70,6 +71,7 @@ export interface ResolvedAgentSpec {
 	mode: AgentMode;
 	tools: ToolName[];
 	allowedServices: string[];
+	thinkingLevel?: AgentConfig["thinkingLevel"];
 	maxTurns?: number;
 }
 
@@ -221,6 +223,7 @@ function resolveAgent(
 		mode,
 		tools,
 		allowedServices,
+		thinkingLevel: raw.thinkingLevel,
 		maxTurns: raw.maxTurns,
 	};
 }

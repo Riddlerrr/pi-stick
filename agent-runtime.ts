@@ -2,8 +2,8 @@ import * as fs from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import type { Api, Model } from "@earendil-works/pi-ai";
-import { createModels } from "@earendil-works/pi-ai/models";
+import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { createModels, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import {
@@ -43,6 +43,7 @@ interface AgentRuntimeSpec {
 	instructions: string;
 	mode: "read-only" | "read-write";
 	tools: string[];
+	thinkingLevel?: ModelThinkingLevel;
 	maxTurns?: number;
 }
 
@@ -275,8 +276,18 @@ for (const provider of allProviders) {
 }
 
 for (const spec of [job.orchestrator, ...Object.values(job.agents ?? {})]) {
-	if (spec && !models.getModel(spec.model.provider, spec.model.modelId))
+	if (!spec) continue;
+	const model = models.getModel(spec.model.provider, spec.model.modelId);
+	if (!model)
 		throw Error(`Configured model unavailable for ${spec.name}: ${spec.model.provider}/${spec.model.modelId}`);
+	if (spec.thinkingLevel !== undefined) {
+		const supported = getSupportedThinkingLevels(model);
+		if (!supported.includes(spec.thinkingLevel)) {
+			const message = `${spec.name}: ${model.provider}/${model.id} does not support thinkingLevel "${spec.thinkingLevel}" (supported: ${supported.join(", ")})`;
+			send({ progress: message });
+			throw Error(message);
+		}
+	}
 }
 
 const agentByConv = new Map<ConversationId, AgentContext>();
@@ -350,6 +361,8 @@ async function runSubagent(
 						instructions: spec.instructions,
 						extensions,
 						tools,
+						// Clear the owner’s setting for delegated agents without an explicit level.
+						thinkingLevel: spec.thinkingLevel ?? null,
 						maxTurns: spec.maxTurns ?? null,
 					},
 				},
@@ -1127,6 +1140,7 @@ async function runAction(): Promise<string> {
 			instructions: spec.instructions,
 			extensions,
 			tools,
+			thinkingLevel: spec.thinkingLevel,
 			...(spec.maxTurns ? { maxTurns: spec.maxTurns } : {}),
 		},
 	});

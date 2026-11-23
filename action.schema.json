@@ -111,6 +111,11 @@
           "type": "array",
           "items": { "type": "string" }
         },
+        "thinkingLevel": {
+          "type": "string",
+          "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+          "description": "Requested reasoning level. If set, the model catalog must support it."
+        },
         "maxTurns": {
           "type": "integer",
           "minimum": 1

@@ -463,6 +463,7 @@ export async function worker(id: string): Promise<number> {
 					),
 					mode: spec.mode,
 					tools: spec.tools,
+					thinkingLevel: spec.thinkingLevel,
 					maxTurns: spec.maxTurns,
 				};
 			};

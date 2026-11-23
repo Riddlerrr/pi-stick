@@ -21,7 +21,8 @@ function stageFixture(
 		stub,
 		`import fs from 'node:fs';
 		globalThis.fetch = async (_url, init) => {
-			const messages = JSON.parse(init.body).messages;
+			const { messages, reasoning_effort } = JSON.parse(init.body);
+			if (reasoning_effort) fs.appendFileSync('effort', reasoning_effort + '\\n');
 			const task = messages.at(-1).content;
 			const stage = messages.some(m => m.role === 'system' && m.content.includes('Sibling instructions')) ? 'sibling' : task.startsWith('first') ? 'A' : task.startsWith('second') ? 'B' : task.startsWith('third') ? 'C' : 'root';
 			fs.writeFileSync(stage + '-prompt', task);
@@ -87,12 +88,16 @@ test("resume aborts an interrupted delegate; only a fresh delegation runs", asyn
 	const { run, dir, job, stub } = stageFixture(t);
 	job.stages = [];
 	job.orchestrator.tools = ["delegate"];
+	job.orchestrator.model.modelId = "openai/gpt-oss-120b";
+	job.agents.worker.model = job.orchestrator.model;
+	Object.assign(job.orchestrator, { thinkingLevel: "high" });
 	fs.writeFileSync(
 		stub,
 		`import fs from 'node:fs';
 		globalThis.fetch = async (_url, init) => {
-			const { messages } = JSON.parse(init.body);
+			const { messages, reasoning_effort } = JSON.parse(init.body);
 			const prompt = messages.find(m => m.role === 'user').content;
+			if (reasoning_effort !== (prompt === 'task' ? 'high' : undefined)) throw Error('Unexpected inherited thinking level');
 			const results = messages.filter(m => m.role === 'tool');
 			let delta = {role:'assistant', content:prompt};
 			if (prompt !== 'task') {
@@ -126,6 +131,25 @@ test("resume aborts an interrupted delegate; only a fresh delegation runs", asyn
 	} finally {
 		await storage.close(BACKGROUND_CONTEXT);
 	}
+});
+
+test("unsupported thinking levels fail before a request; valid levels reach each agent", async (t) => {
+	const { job, run, dir } = stageFixture(t);
+	const model = { provider: "groq", modelId: "openai/gpt-oss-120b" };
+	const payload = {
+		...job,
+		stages: job.stages.slice(0, 1),
+		orchestrator: { ...job.orchestrator, model, thinkingLevel: "high" },
+		agents: { ...job.agents, worker: { ...job.agents.worker, model, thinkingLevel: "off" } },
+	};
+	const failed = await run(payload);
+	assert.equal(failed.status, 1);
+	assert.match(failed.stdout, /worker: groq\/openai\/gpt-oss-120b does not support thinkingLevel/);
+	assert.ok(!fs.existsSync(join(dir, "requests")));
+	payload.agents.worker.thinkingLevel = "low";
+	const result = await run(payload);
+	assert.equal(result.status, 0, result.stderr);
+	assert.equal(fs.readFileSync(join(dir, "effort"), "utf8"), "low\nhigh\n");
 });
 
 test("an unavailable pinned subagent model fails explicitly before any model request", async (t) => {
