@@ -53,6 +53,7 @@ export interface RunConfig {
 	actionDigest: string;
 	hookPending?: "prepare" | "after";
 	prepareDone?: boolean;
+	setupPending?: boolean;
 	afterDone?: boolean;
 	agentDone?: boolean;
 }
@@ -228,6 +229,7 @@ export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 			mode: "run",
 			prepared: false,
 			prepareDone: false,
+			setupPending: false,
 			agentLaunchAttempted: false,
 			actionDigest,
 		} satisfies RunConfig);
@@ -259,6 +261,9 @@ export async function launchResume(id: string, retryHook = false): Promise<strin
 		readActionSnapshot(dir, cfg.actionDigest);
 		// A legacy config without the marker cannot prove the agent never started.
 		if (cfg.agentLaunchAttempted !== false) requireSession(id);
+		// Older workers did not checkpoint setup; once Compose was materialized it may have run.
+		if (!retryHook && !cfg.prepared && (cfg.setupPending ?? fs.existsSync(join(dir, "compose.yaml"))))
+			throw Error("Outcome of setup-project unknown; inspect its side effects before using resume --retry-hook");
 		if (cfg.hookPending && !retryHook)
 			throw Error(
 				`Outcome of ${cfg.hookPending} hook unknown; verify its side effects before using resume --retry-hook`,
@@ -330,14 +335,14 @@ export async function worker(id: string): Promise<number> {
 			try {
 				task.start();
 			} catch {
-				task.up(false);
+				task.up();
 			}
 		} else if (cfg.prepared) {
 			status(dir, `Resuming run on ${project.name}…`);
 			if (!fs.existsSync(task.composeFile)) task.materializeCompose();
 			services = task.services();
 			stackStartAttempted = true;
-			task.up(false);
+			task.up();
 		} else {
 			status(dir, `Preparing isolated workspace for ${project.name}…`);
 			if (!cfg.prepareDone && !cfg.hookPending) {
@@ -377,7 +382,11 @@ export async function worker(id: string): Promise<number> {
 			const mat = task.materializeCompose();
 			services = mat.services;
 			stackStartAttempted = true;
-			task.up(true);
+			task.up();
+			cfg.setupPending = true;
+			writeJson(cfgFile, cfg);
+			task.setup();
+			cfg.setupPending = false;
 			cfg.prepared = true;
 			writeJson(cfgFile, cfg);
 		}

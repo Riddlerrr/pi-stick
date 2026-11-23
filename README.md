@@ -146,6 +146,8 @@ Before the first worker starts, `run` pins the resolved action (including projec
 
 Hooks execute the saved script (`$0`) in the task checkout. `PI_STICK_ACTION_DIR` and `PI_STICK_HOOK_SOURCE_DIR` refer to the original action directory and original script directory, respectively. Helpers and templates there are not copied.
 
+`setup-project` runs after Compose starts. If it fails or is interrupted after it may have changed files or volumes, plain `resume` refuses to rerun it. Inspect the effects and use `pistick resume RUN_ID --retry-hook` only when repeating setup is safe. The same confirmation applies to older unfinished runs where setup may already have run. A completed setup is not repeated on resume or follow-up.
+
 Host hooks may have external side effects. If a hook started but its success was not recorded, inspect the run and external state first. Use `pistick resume RUN_ID --retry-hook` only if it is safe to execute that hook again. This is not an exactly-once guarantee for commands interrupted mid-execution.
 
 Once a task can run project code, Git inspection (including `pistick diff`) runs in the pi-stick image with a read-only workspace and no network. Rebuild the image after upgrading to a version that requires Git in the image. Trusted host hooks remain the operator’s responsibility.

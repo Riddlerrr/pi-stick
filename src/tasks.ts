@@ -253,12 +253,13 @@ export class TaskEnv {
 		return `${this.key}_default`;
 	}
 
-	up(runSetup = true) {
+	up() {
 		run([...this.compose, "up", "--build", "-d", "--wait", "--wait-timeout", "180"]);
-		if (runSetup) {
-			run([...this.compose, "exec", "-T", "-w", CONTAINER_REPO_DIR, "runner", "/usr/local/bin/setup-project"]);
-		}
 		touch(join(this.dir, "last-used"));
+	}
+
+	setup() {
+		run([...this.compose, "exec", "-T", "-w", CONTAINER_REPO_DIR, "runner", "/usr/local/bin/setup-project"]);
 	}
 
 	start() {

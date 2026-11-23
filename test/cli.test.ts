@@ -397,7 +397,7 @@ test("actions system starts empty, supports global/project override, and rejects
 });
 
 test("failed Compose startup or setup stops the task stack unless --keep-up was requested", (t) => {
-	const { app, tmp, source, ok, invoke, stub } = fixture(t);
+	const { app, tmp, source, ok, fail, invoke, stub } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);
 	ok(["create", "action", "check"]);
 	writeJson(join(app, "actions/check/action.json"), {
@@ -418,6 +418,8 @@ test("failed Compose startup or setup stops the task stack unless --keep-up was 
 			else {
 				const cmd = args.find(arg => ['up','exec','stop'].includes(arg));
 				require('node:fs').appendFileSync(${JSON.stringify(calls)}, cmd + '\\n');
+				if (cmd === 'exec' && require('node:fs').existsSync(${JSON.stringify(join(tmp, "interrupt-setup"))}))
+					process.kill(process.ppid, 'SIGKILL'); // Interrupt the worker after the recorded setup side effect.
 				if (cmd === '${failAt}') process.exit(1);
 			}`,
 		);
@@ -431,17 +433,31 @@ test("failed Compose startup or setup stops the task stack unless --keep-up was 
 		const id = /Run: ([0-9a-f]{32})/.exec(result.stdout)?.[1];
 		assert.ok(id, result.stdout);
 		assert.equal(JSON.parse(read(join(app, "state/runs", id, "meta.json"))).status, "failed");
+		if (failAt === "up") {
+			fs.writeFileSync(calls, "");
+			assert.equal(invoke(["resume", id]).status, 1);
+			assert.equal(read(calls), "up\nstop\n", "Compose startup is safe to retry before setup");
+		}
 		if (keepUp) {
 			stub("git", "process.exit(97)");
 			fs.writeFileSync(calls, "");
-			assert.equal(invoke(["resume", id]).status, 1);
-			assert.equal(read(calls), "up\nexec\n", "resume must reach setup without host Git");
+			fail(["resume", id], /setup-project unknown.*--retry-hook/);
+			assert.equal(read(calls), "");
+			fs.writeFileSync(join(tmp, "interrupt-setup"), "");
+			assert.equal(invoke(["resume", id, "--retry-hook"]).status, 1);
+			assert.equal(read(calls), "up\nexec\n", "explicit retry reaches setup without host Git");
+			assert.ok(!fs.existsSync(join(app, "state/runs", id, "exit")), "worker died before recording completion");
+			fail(["resume", id], /setup-project unknown.*--retry-hook/);
+			assert.equal(read(calls), "up\nexec\n", "no duplicate setup side effect after interruption");
 			const config = join(app, "state/runs", id, "run-config.json");
 			const legacy = JSON.parse(read(config));
+			delete legacy.setupPending;
+			writeJson(config, legacy);
+			fail(["resume", id], /setup-project unknown.*--retry-hook/);
 			delete legacy.prepareDone;
 			writeJson(config, legacy);
 			fs.writeFileSync(calls, "");
-			assert.equal(invoke(["resume", id]).status, 1);
+			assert.equal(invoke(["resume", id, "--retry-hook"]).status, 1);
 			assert.match(read(join(app, "state/runs", id, "worker.log")), /legacy run/);
 			assert.equal(read(calls), "");
 		}
