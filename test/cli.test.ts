@@ -697,7 +697,7 @@ if (has('git') && a[0] === 'run') {
   console.log('exec-ok:' + a.at(-1));
 } else if (has('logs')) {
   console.log('service-log-line');
-} else if (has('ps')) {
+} else if (a[0] === 'compose' && has('ps')) {
   console.log('[{"Service":"runner","State":"running"}]');
 } else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
   const repoMount = a.find(x => x.endsWith(':/workspace/repo')).slice(0, -':/workspace/repo'.length);

@@ -19,6 +19,7 @@ cleanup() {
   local rc=$?
   set +e
   if ((rc)) && [[ -f $tmp/cli.log ]]; then tail -n 100 "$tmp/cli.log" >&2; fi
+  if [[ -n ${standin:-} ]]; then docker rm -f "$standin" >/dev/null 2>&1; fi
   if [[ -n $pid ]]; then kill "$pid" 2>/dev/null; fi
   if [[ -z $run ]]; then
     for d in "$PI_STICK_DEV_HOME"/state/runs/*; do [[ -d $d ]] && run=$d; done
@@ -81,11 +82,21 @@ interrupt() {
     sleep 0.1
   done
   id=${run##*/}; key="pi-stick-demo-${id:0:12}"
-  # Match the exact image (runner derives from it) and only this run's network.
-  local agent
-  agent=$(docker ps --filter "network=${key}_default" --format '{{.ID}} {{.Image}}' | awk -v img="$PI_STICK_IMAGE" '$2==img {print $1}')
-  [[ $agent =~ ^[0-9a-f]+$ ]]
-  docker kill "$agent" >/dev/null
+  local agent worker
+  agent=$(docker ps --filter "label=pi-stick.run=$id" --format '{{.Names}}')
+  [[ $agent == "pi-stick-agent-$id" ]]
+  if [[ $step == follow-up ]]; then
+    worker=$(pgrep -f " _worker $id$")
+    [[ $worker =~ ^[0-9]+$ && /proc/$worker/fd/3 -ef $run/lock ]]
+    kill -KILL "$worker"
+    deadline=$((SECONDS+15))
+    while [[ -n $(docker ps -aq --filter "label=pi-stick.run=$id") ]]; do
+      ((SECONDS < deadline)) || { echo "Agent survived worker death" >&2; return 1; }
+      sleep 0.1
+    done
+  else
+    docker kill "$agent" >/dev/null
+  fi
   local rc=0; wait "$pid" || rc=$?; pid=
   [[ $rc == 1 ]]
 }
@@ -101,7 +112,17 @@ timeout 90 "$cli" resume "$id"
 [[ $(<"$run/outputs/worker.md") == $'result-A\n\n---\n\nresult-B' ]]
 assert_stopped
 interrupt follow-up continue "$id" follow-up
+# SIGKILL bypassed the worker's Compose teardown. Neither stop nor resume may delete a foreign container.
+name="pi-stick-agent-$id"
+standin=$(docker create --name "$name" "$PI_STICK_IMAGE" sleep infinity)
+if "$cli" stop "$id" || "$cli" resume "$id"; then exit 1; fi
+docker rm "$standin" >/dev/null
+# If EOF did not suffice, both paths must reap only this run's leftover agent.
+leftover() { docker run -d --name "$name" --label "pi-stick.run=$id" "$PI_STICK_IMAGE" sleep infinity; }
+standin=$(leftover)
+"$cli" stop "$id"
 assert_stopped
+standin=$(leftover)
 timeout 90 "$cli" resume "$id"
 [[ $(<"$run/report.md") == 'continued report' ]]
 [[ $(<"$run/scratch/requests") == $'A\nB\nB\nroot\nfollow-up\nfollow-up' ]]

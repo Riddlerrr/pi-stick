@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import type { CredentialPayload } from "../runtime-auth.ts";
-import { IMAGE, isolatedRun } from "./container.ts";
+import { agentName, IMAGE, isolatedRun } from "./container.ts";
 import {
 	ASSETS,
 	closed,
@@ -115,6 +115,7 @@ export async function resolveModels(specs: string[]): Promise<ResolvedAuth> {
 }
 
 export interface EphemeralContainerOptions {
+	runId?: string;
 	image?: string;
 	network: string;
 	repo?: string;
@@ -126,6 +127,7 @@ export interface EphemeralContainerOptions {
 
 export function ephemeralArgs(opts: EphemeralContainerOptions): string[] {
 	const args = isolatedRun(opts.network);
+	if (opts.runId) args.push("--name", agentName(opts.runId), "--label", `pi-stick.run=${opts.runId}`);
 	if (opts.tmpfsProbe) {
 		const uid = process.getuid?.();
 		args.push(

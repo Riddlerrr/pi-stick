@@ -238,6 +238,9 @@ function walkFiles(dir: string, root: string, out: string[], limit: number) {
 	}
 }
 
+// Docker forwards EOF when the worker dies, even during an outstanding model request.
+const hostDisconnected = () => process.exit(1);
+process.stdin.once("end", hostDisconnected);
 const job = await readInitialJob();
 if (!/^[0-9a-f]{32}$/.test(job.id)) throw Error("Invalid run ID");
 
@@ -1115,6 +1118,7 @@ try {
 		send({ report, ...(Object.keys(agentOutputs).length ? { outputs: agentOutputs } : {}) });
 	}
 } finally {
+	process.stdin.off("end", hostDisconnected);
 	rl.close();
 	await sandbox.close();
 	await h.close(ctx);

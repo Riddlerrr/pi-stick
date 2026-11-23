@@ -2,6 +2,8 @@ import { devMode } from "./platform.ts";
 
 export const IMAGE = process.env.PI_STICK_IMAGE || (devMode ? "pi-stick:dev" : "pi-stick:current");
 
+export const agentName = (id: string) => `pi-stick-agent-${id}`;
+
 export function isolatedRun(network: string) {
 	const uid = process.getuid?.();
 	const gid = process.getgid?.();

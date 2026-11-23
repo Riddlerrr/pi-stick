@@ -6,12 +6,14 @@ import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
 import { readActionSnapshot, saveActionSnapshot } from "./action-snapshot.ts";
 import { type LoadedAction, loadAction, type ResolvedAgentSpec, resolveInputs, runHook } from "./actions.ts";
+import { agentName } from "./container.ts";
 import {
 	closed,
 	compiled,
 	devMode,
 	isLocked,
 	json,
+	output,
 	prompt,
 	read,
 	run,
@@ -268,6 +270,7 @@ export async function launchResume(id: string, retryHook = false): Promise<strin
 			throw Error(
 				`Outcome of ${cfg.hookPending} hook unknown; verify its side effects before using resume --retry-hook`,
 			);
+		if (cfg.agentLaunchAttempted !== false) removeOrphanAgent(id);
 		fs.rmSync(exitFile, { force: true });
 		await spawnWorker(id, fd);
 	} finally {
@@ -581,6 +584,7 @@ export async function executeAgentContainer(
 	refreshToken: (provider: unknown) => Promise<string>,
 ): Promise<AgentRunResult> {
 	const argv = ephemeralArgs({
+		runId: task.id,
 		network: task.network(),
 		repo: task.repo,
 		scratch: task.scratch,
@@ -705,12 +709,46 @@ export function listRuns(all: boolean) {
 	}
 }
 
+// Caller holds the run lock; remove by immutable container ID, never by a reusable name.
+function removeOrphanAgent(id: string) {
+	const lookup = () =>
+		output([
+			"docker",
+			"ps",
+			"-a",
+			"--no-trunc",
+			"--filter",
+			`name=^/${agentName(id)}$`,
+			"--format",
+			'{{.ID}} {{.Label "pi-stick.run"}}',
+		]);
+	const found = lookup();
+	if (!found) return;
+	const [container, owner] = found.split(" ");
+	if (!/^[0-9a-f]{64}$/.test(container) || owner !== id)
+		throw Error(`Cannot verify ownership of ${agentName(id)}; refusing to remove it`);
+	try {
+		run(["docker", "rm", "-f", container]);
+	} catch (err) {
+		// --rm may have already removed the agent after its stdin closed.
+		if (lookup()) throw err;
+		return;
+	}
+	if (lookup()) throw Error(`Agent container for run ${id} still exists`);
+}
+
 export function stopRun(id: string) {
 	const meta = readMeta(id);
-	if (isLocked(runLock(id))) throw Error(`Run ${id} is currently active; wait for it to finish before stopping`);
-	const task = new TaskEnv(id, getProject(meta.project));
-	task.stop();
-	touch(join(task.dir, "last-used"));
+	const fd = fs.openSync(runLock(id), "a");
+	try {
+		if (!tryLock(fd)) throw Error(`Run ${id} is currently active; wait for it to finish before stopping`);
+		removeOrphanAgent(id);
+		const task = new TaskEnv(id, getProject(meta.project));
+		task.stop();
+		touch(join(task.dir, "last-used"));
+	} finally {
+		fs.closeSync(fd);
+	}
 	console.log(`Stopped containers for run ${id}.`);
 }
 

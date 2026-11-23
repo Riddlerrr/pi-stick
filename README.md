@@ -153,7 +153,7 @@ pistick follow RUN_ID                   # stream progress (Ctrl-C detaches)
 pistick continue RUN_ID "Follow-up"     # after success, start another turn in the same session & workspace
 pistick resume RUN_ID                   # resume the interrupted initial turn or follow-up
 pistick diff RUN_ID                     # show changes made in the task workspace
-pistick stop RUN_ID                     # stop a --keep-up task's project containers
+pistick stop RUN_ID                     # stop an inactive run's project containers; keep its workspace and history
 pistick cleanup [--dry-run] [--days 7]  # delete old finished runs, stacks, volumes & sessions
 pistick doctor                          # check Docker, image self-check, auth, recipes & actions
 pistick update [--yes]                  # rebuild pi-stick:current with latest dependencies
@@ -162,6 +162,8 @@ pistick update [--yes]                  # rebuild pi-stick:current with latest d
 A new task clones the local project checkout and points its `origin` at `project.json`’s `source` before running the `prepare` hook. Use a credential helper or SSH key; source URLs with embedded credentials, a query string, or a fragment are rejected. `--ref` uses a locally available commit or branch first; only a missing ref triggers a fetch from `origin`. It does not refresh existing branches or update the shared project checkout. For manually configured projects without `project.json`, `origin` remains the local project checkout.
 
 Each run mounts only `state/runs/<id>/session/` at `/sessions`; the orchestrator and its subagents share that SQLite database. `stop` preserves it and `cleanup` removes it with the run. Legacy `state/sessions/` databases are neither migrated nor used. `continue` refuses a missing session without changing the run. Before the first agent launch attempt, `resume` may initialize a session; after that attempt is recorded, a missing database is an error even if Docker never started.
+
+`stop` is not cancellation: it refuses while the worker holds the run lock. If the worker dies during a model request, the agent exits on stdin EOF. As a fallback, `stop` and `resume` remove a leftover `pi-stick-agent-RUN_ID` container only after verifying its `pi-stick.run` label under the lock. Unrelated containers are left alone.
 
 For new runs, `resume` reuses completed static stages and their outputs, and reconnects to the same Pi Durable submissions in an interrupted stage. Resuming a follow-up never starts the initial stages. Runs created before stage checkpointing have no saved stage results.
 
