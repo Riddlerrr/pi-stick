@@ -289,14 +289,17 @@ export async function launchContinue(id: string, promptText: string, keepUp?: bo
 		if (cfg.hookPending) throw Error(`Resolve pending ${cfg.hookPending} hook with resume first`);
 		if (!cfg.prepared) throw Error("Run preparation is incomplete; resume it first");
 		requireSession(id);
+		if (!fs.existsSync(exitFile) || read(exitFile).trim() !== "0")
+			throw Error(`Current turn did not finish successfully; use 'pistick resume ${id}'`);
 		delete cfg.afterDone;
 		delete cfg.agentDone;
 		cfg.mode = "continue";
 		cfg.prompt = promptText.trim();
 		cfg.requestId = runId();
 		if (keepUp !== undefined) cfg.keepUp = keepUp;
+		// A new request must never inherit the previous turn's success marker.
+		fs.unlinkSync(exitFile);
 		writeJson(cfgFile, cfg);
-		fs.rmSync(exitFile, { force: true });
 		await spawnWorker(id, fd);
 	} finally {
 		fs.closeSync(fd);

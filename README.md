@@ -129,7 +129,7 @@ Each action directory contains `action.json` (validated against `action.schema.j
 pistick run my-app my-action [--ref BRANCH_OR_SHA] [--input KEY=VALUE]... [--keep-up] ["Prompt"]
 pistick runs [--all]                    # list active (or all) runs
 pistick follow RUN_ID                   # stream progress (Ctrl-C detaches)
-pistick continue RUN_ID "Follow-up"     # send another turn in the same session & workspace
+pistick continue RUN_ID "Follow-up"     # after success, start another turn in the same session & workspace
 pistick resume RUN_ID                   # resume the interrupted initial turn or follow-up
 pistick diff RUN_ID                     # show changes made in the task workspace
 pistick stop RUN_ID                     # stop a --keep-up task's project containers

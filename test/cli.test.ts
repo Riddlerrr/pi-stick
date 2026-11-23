@@ -691,6 +691,16 @@ if (has('git') && a[0] === 'run') {
 	// Continue run with follow-up prompt
 	assert.equal(invoke(["continue", id, "Also add followup line"]).status, 1);
 	const failedState = snapshot();
+	const resumeFirst = new RegExp(`pistick resume ${id}`);
+	fail(["continue", id, "do not replace failed follow-up"], resumeFirst);
+	assert.deepEqual(snapshot(), failedState);
+	const exit = join(runPath, "exit");
+	fs.unlinkSync(exit);
+	fail(["continue", id, "do not replace interrupted follow-up"], resumeFirst);
+	assert.ok(!fs.existsSync(exit));
+	fs.writeFileSync(exit, "1");
+	assert.deepEqual(snapshot(), failedState);
+	assert.equal(read(db), id);
 	fs.renameSync(pinned, `${pinned}.missing`);
 	fail(["resume", id], /Invalid action snapshot/);
 	assert.deepEqual(snapshot(), failedState);
