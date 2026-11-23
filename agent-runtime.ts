@@ -1,5 +1,8 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import * as fs from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -34,7 +37,8 @@ const SCRATCH_DIR = process.env.PI_STICK_SCRATCH_DIR ?? "/scratch";
 const CONTEXT_DIR = process.env.PI_STICK_CONTEXT_DIR ?? "/context";
 const MAX_READ_CHARS = 32_000;
 const MAX_FIND_RESULTS = 500;
-const SKIP_DIRS = new Set([".git", "node_modules"]);
+const MAX_GREP_MATCHES = 2000;
+const SEARCH_TIMEOUT_MS = 15_000;
 
 interface AgentRuntimeSpec {
 	name: string;
@@ -220,23 +224,61 @@ function globToRegExp(pattern: string): RegExp {
 	return new RegExp(`^${re}$`);
 }
 
-function walkFiles(dir: string, root: string, out: string[], limit: number) {
-	if (out.length >= limit) return;
-	let entries: fs.Dirent[];
+async function scanRipgrep(
+	cwd: string,
+	args: string[],
+	separator: string,
+	accept: (record: string) => boolean,
+	abortSignal: AbortSignal | undefined,
+): Promise<boolean> {
+	const deadline = AbortSignal.timeout(SEARCH_TIMEOUT_MS);
+	const child = spawn(
+		"rg",
+		[
+			"--no-config",
+			"--hidden",
+			"--no-require-git",
+			"--no-ignore-global",
+			"--no-ignore-dot",
+			"--sort=path",
+			"--glob=!.git",
+			"--glob=!node_modules",
+			...args,
+		],
+		{
+			cwd,
+			stdio: ["ignore", "pipe", "pipe"],
+			signal: abortSignal ? AbortSignal.any([abortSignal, deadline]) : deadline,
+			killSignal: "SIGKILL",
+		},
+	);
+	const closed = once(child, "close") as Promise<[number | null, NodeJS.Signals | null]>;
+	void closed.catch(() => {}); // The child can fail while stdout is being drained.
+	let stderr = "";
+	child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+		stderr = (stderr + chunk).slice(0, 2000);
+	});
 	try {
-		entries = fs.readdirSync(dir, { withFileTypes: true });
-	} catch {
-		return;
-	}
-	entries.sort((a, b) => a.name.localeCompare(b.name));
-	for (const entry of entries) {
-		if (out.length >= limit) return;
-		if (entry.isDirectory()) {
-			if (SKIP_DIRS.has(entry.name)) continue;
-			walkFiles(join(dir, entry.name), root, out, limit);
-		} else if (entry.isFile()) {
-			out.push(relative(root, join(dir, entry.name)));
+		let pending = "";
+		let truncated = false;
+		for await (const chunk of child.stdout.setEncoding("utf8") as AsyncIterable<string>) {
+			const records = (pending + chunk).split(separator);
+			pending = records.pop() ?? "";
+			if (records.every(accept)) continue;
+			truncated = true;
+			child.kill("SIGKILL");
+			break;
 		}
+		const [code, signal] = await closed;
+		if (code !== 0 && code !== 1 && !(truncated && signal === "SIGKILL")) {
+			throw Error(stderr.trim() || `ripgrep failed (${code ?? signal})`);
+		}
+		return truncated;
+	} catch (err) {
+		if (deadline.aborted && !abortSignal?.aborted) throw Error("Search timed out; narrow the search path.");
+		throw err;
+	} finally {
+		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
 	}
 }
 
@@ -610,20 +652,21 @@ const editTool = defineTool({
 
 const grepTool = defineTool({
 	name: "grep",
-	description: "Search files for a literal substring or regular expression. Skips .git and node_modules.",
+	description:
+		"Search for a literal substring or ripgrep regex. Directory searches respect .gitignore and skip .git and node_modules.",
 	parameters: {
 		type: "object",
 		properties: {
 			pattern: { type: "string", description: "Substring (or regex when regex=true) to match." },
 			path: { type: "string", description: `Optional directory or file path (defaults to ${CONTAINER_REPO_DIR}).` },
-			regex: { type: "boolean", description: "Interpret pattern as a regular expression." },
+			regex: { type: "boolean", description: "Use ripgrep's default regular expression syntax." },
 			offset: { type: "integer", minimum: 0, description: "Character offset into results." },
 		},
 		required: ["pattern"],
 		additionalProperties: false,
 	},
 	replay: "safe",
-	execute: async (args, api) => {
+	execute: async (args, api, context) => {
 		const {
 			pattern,
 			path = CONTAINER_REPO_DIR,
@@ -637,36 +680,48 @@ const grepTool = defineTool({
 		};
 		try {
 			const resolved = resolveAgentPath(path, getAgentCtx(api.conversationId), false);
-			const matcher = regex ? new RegExp(pattern) : null;
+			const info = await stat(resolved);
+			const directory = info.isDirectory();
+			if (!directory && !info.isFile()) throw Error("Search path must be a regular file or directory.");
+			if (!directory && info.size > 2 * 1024 * 1024)
+				return { output: [{ type: "text" as const, text: "(no matches)" }] };
 			const matches: string[] = [];
-			const stat = fs.statSync(resolved);
-			const files = stat.isDirectory() ? [] : [""];
-			if (stat.isDirectory()) walkFiles(resolved, resolved, files, 5000);
-			for (const rel of files) {
-				const full = rel ? join(resolved, rel) : resolved;
-				let buf: Buffer;
-				try {
-					const st = fs.statSync(full);
-					if (st.size > 2 * 1024 * 1024) continue;
-					buf = fs.readFileSync(full);
-				} catch {
-					continue;
-				}
-				if (isBinary(buf)) continue;
-				const lines = buf.toString("utf8").split("\n");
-				const label = rel || path;
-				for (let i = 0; i < lines.length; i++) {
-					const line = lines[i];
-					if (matcher ? matcher.test(line) : line.includes(pattern)) {
-						matches.push(`${label}:${i + 1}:${line.slice(0, 400)}`);
-						if (matches.length >= 2000) break;
-					}
-				}
-				if (matches.length >= 2000) break;
-			}
-			const text = matches.join("\n") || "(no matches)";
 			const end = offset + MAX_READ_CHARS;
-			const slice = text.slice(offset, end) + (text.length > end ? `\n[more at offset ${end}]` : "");
+			let length = 0;
+			const truncated = await scanRipgrep(
+				directory ? resolved : dirname(resolved),
+				[
+					"--line-number",
+					directory ? "--with-filename" : "--no-filename",
+					"--color=never",
+					"--max-columns=400",
+					"--max-columns-preview",
+					"--max-filesize=2M",
+					...(regex ? [] : ["--fixed-strings"]),
+					"-e",
+					pattern,
+					"--",
+					directory ? "." : `./${basename(resolved)}`,
+				],
+				"\n",
+				(line) => {
+					if (!directory && !/^\d+:/.test(line)) return true; // ripgrep can report a binary file without a line number.
+					if (matches.length === MAX_GREP_MATCHES) return false;
+					const match = directory ? line.replace(/^\.\//, "") : `${path}:${line}`;
+					length += match.length + (matches.length ? 1 : 0);
+					matches.push(match);
+					return length <= end;
+				},
+				context.abortSignal,
+			);
+			const text = matches.join("\n") || "(no matches)";
+			const suffix =
+				text.length > end
+					? `\n[more at offset ${end}]`
+					: truncated
+						? "\n[More matches omitted; narrow the search.]"
+						: "";
+			const slice = text.slice(offset, end) + suffix;
 			return { output: [{ type: "text" as const, text: slice }] };
 		} catch (err) {
 			return {
@@ -679,7 +734,7 @@ const grepTool = defineTool({
 
 const findTool = defineTool({
 	name: "find",
-	description: `List files under a directory (defaults to ${CONTAINER_REPO_DIR}), optionally matching a glob or substring.`,
+	description: `List files under a directory (defaults to ${CONTAINER_REPO_DIR}), optionally matching a glob or substring. Respects .gitignore and skips .git and node_modules.`,
 	parameters: {
 		type: "object",
 		properties: {
@@ -690,7 +745,7 @@ const findTool = defineTool({
 		additionalProperties: false,
 	},
 	replay: "safe",
-	execute: async (args, api) => {
+	execute: async (args, api, context) => {
 		const {
 			path = CONTAINER_REPO_DIR,
 			query,
@@ -702,20 +757,28 @@ const findTool = defineTool({
 		};
 		try {
 			const resolved = resolveAgentPath(path, getAgentCtx(api.conversationId), false);
+			if (!(await stat(resolved)).isDirectory()) return { output: [{ type: "text" as const, text: "(no files)" }] };
+			const glob = query && /[*?]/.test(query) ? globToRegExp(query) : null;
 			const files: string[] = [];
-			walkFiles(resolved, resolved, files, 10_000);
-			let filtered = files;
-			if (query) {
-				if (/[*?]/.test(query)) {
-					const re = globToRegExp(query);
-					filtered = files.filter((f) => re.test(f));
-				} else {
-					filtered = files.filter((f) => f.includes(query));
-				}
-			}
-			const sliced = filtered.slice(0, maxResults);
-			const suffix = filtered.length > maxResults ? `\n[${filtered.length - maxResults} more files omitted]` : "";
-			return { output: [{ type: "text" as const, text: (sliced.join("\n") || "(no files)") + suffix }] };
+			let length = 0;
+			const truncated = await scanRipgrep(
+				resolved,
+				["--files", "--null", "--", "."],
+				"\0",
+				(entry) => {
+					const file = entry.replace(/^\.\//, "");
+					// Positive ripgrep globs override .gitignore, so filter after discovery.
+					if (query && !(glob ? glob.test(file) : file.includes(query))) return true;
+					const display = file.replaceAll("\n", "\\n").replaceAll("\r", "\\r");
+					length += display.length + (files.length ? 1 : 0);
+					if (files.length === maxResults || length > MAX_READ_CHARS) return false;
+					files.push(display);
+					return true;
+				},
+				context.abortSignal,
+			);
+			const suffix = truncated ? "\n[More files omitted; narrow the search.]" : "";
+			return { output: [{ type: "text" as const, text: (files.join("\n") || "(no files)") + suffix }] };
 		} catch (err) {
 			return {
 				output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
@@ -993,10 +1056,23 @@ try {
 			model: fauxModel,
 			instructions: "Offline read-only probe subagent B",
 			mode: "read-only",
-			tools: ["read", "write"],
+			tools: ["read", "write", "find"],
 		};
 
-		fs.writeFileSync(join(WORKSPACE_DIR, "probe.txt"), "probe-workspace", { flag: "wx" });
+		for (const [path, data] of Object.entries({
+			"probe.txt": "probe-workspace",
+			".gitignore": "/probe-src/vendor/\n",
+			"probe-src/000.txt": "-probeXmarker\n",
+			"probe-src/z/.visible.ts": "first line\n-probe.marker\n",
+			"probe-src/vendor/ignored.ts": "-probe.marker\n",
+			"probe-src/nested/.gitignore": "ignored.ts\n",
+			"probe-src/nested/ignored.ts": "-probe.marker\n",
+			"probe-src/node_modules/ignored.ts": "-probe.marker\n",
+		})) {
+			const file = join(WORKSPACE_DIR, path);
+			fs.mkdirSync(dirname(file), { recursive: true });
+			fs.writeFileSync(file, data, { flag: "wx" });
+		}
 		const code = `const [a, b] = await Promise.all([tools.ps({}), tools.logs({ tail: 5 })]); return a + '|' + b;`;
 		const router = (transcript: {
 			messages: Array<{ role: string; isError?: boolean; content: string | Array<{ type: string; text?: string }> }>;
@@ -1010,6 +1086,7 @@ try {
 					return fauxAssistantMessage(
 						[
 							fauxToolCall("read", { path: `${CONTAINER_REPO_DIR}/probe.txt` }),
+							fauxToolCall("grep", { path: "probe-src", pattern: "-probe.marker" }),
 							fauxToolCall("write", { path: `${CONTAINER_REPO_DIR}/should-fail.txt`, content: "nope" }),
 							fauxToolCall("write", { path: "/scratch/checker-a/note.txt", content: "ok-a" }),
 						],
@@ -1019,19 +1096,30 @@ try {
 				const results = transcript.messages.filter((m) => m.role === "toolResult");
 				const blockedWorkspace = results.some((r) => r.isError && msgText(r).includes("read-only"));
 				const readWorkspace = results.some((r) => !r.isError && msgText(r) === "probe-workspace");
+				const grep = results.some((r) => !r.isError && msgText(r) === "z/.visible.ts:2:-probe.marker");
 				const wroteScratch = results.some((r) => !r.isError && msgText(r).includes("/scratch/checker-a/note.txt"));
 				return fauxAssistantMessage([
-					fauxText(blockedWorkspace && readWorkspace && wroteScratch ? "subagent-a-ok" : "subagent-a-fail"),
+					fauxText(
+						blockedWorkspace && readWorkspace && wroteScratch && grep ? "subagent-a-ok" : "subagent-a-fail",
+					),
 				]);
 			}
 			if (firstUser === "probe B") {
 				if (last?.role === "user") {
 					return fauxAssistantMessage(
-						[fauxToolCall("write", { path: "/scratch/checker-b/note.txt", content: "ok-b" })],
+						[
+							fauxToolCall("find", { path: "probe-src", query: "**/*.ts", maxResults: 1 }),
+							fauxToolCall("find", { path: "probe-src", maxResults: 1 }),
+							fauxToolCall("write", { path: "/scratch/checker-b/note.txt", content: "ok-b" }),
+						],
 						{ stopReason: "toolUse" },
 					);
 				}
-				return fauxAssistantMessage([fauxText("subagent-b-ok")]);
+				const results = transcript.messages.filter((m) => m.role === "toolResult" && !m.isError).map(msgText);
+				const find =
+					results.includes("z/.visible.ts") &&
+					results.includes("000.txt\n[More files omitted; narrow the search.]");
+				return fauxAssistantMessage([fauxText(find ? "subagent-b-ok" : "subagent-b-fail")]);
 			}
 			// Orchestrator sequence: (1) Codemode multiplexed RPC, (2) parallel delegate, (3) final ready
 			const toolResults = transcript.messages.filter((m) => m.role === "toolResult");

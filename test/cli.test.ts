@@ -425,19 +425,43 @@ test("cleanup holds the run lock during teardown and retains state if Compose fa
 	assert.ok(!fs.existsSync(dir));
 });
 
-test("agent-runtime offline self-check exercises canonical repo paths, read-only scratch, parallel delegate, Codemode, and multiplexed JSON-RPC", async (t) => {
+test("agent-runtime offline self-check exercises canonical paths, scratch, concurrent search, delegate, Codemode, and JSON-RPC", async (t) => {
 	const tmp = fs.mkdtempSync(join(tmpdir(), "pi-stick-rt-"));
 	const workspace = join(tmp, "workspace");
 	const scratch = join(tmp, "scratch");
 	const sessions = join(tmp, "sessions");
-	fs.mkdirSync(workspace, { recursive: true });
-	fs.mkdirSync(scratch, { recursive: true });
-	fs.mkdirSync(sessions, { recursive: true });
+	const bin = join(tmp, "bin");
+	for (const dir of [workspace, scratch, sessions, bin]) fs.mkdirSync(dir);
 	t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+	// Each search waits for its peer before forwarding to real ripgrep. A synchronous search cannot pass this gate.
+	fs.writeFileSync(
+		join(bin, "rg"),
+		`#!/usr/bin/env node
+		const { spawnSync } = require('node:child_process');
+		const { existsSync, writeFileSync } = require('node:fs');
+		const { setTimeout: delay } = require('node:timers/promises');
+		const args = process.argv.slice(2);
+		const find = args.includes('--files');
+		const marker = (name) => ${JSON.stringify(`${tmp}/`)} + name;
+		(async () => {
+			writeFileSync(marker(find ? 'find-started' : 'grep-started'), '');
+			const peer = marker(find ? 'grep-started' : 'find-started');
+			const deadline = Date.now() + 8000;
+			while (!existsSync(peer) && Date.now() < deadline) await delay(10);
+			if (!existsSync(peer)) process.exit(2);
+			const result = spawnSync('rg', args, {
+				env: { ...process.env, PATH: ${JSON.stringify(process.env.PATH)} }, stdio: 'inherit',
+			});
+			if (result.error) throw result.error;
+			process.exit(result.status ?? 2);
+		})().catch((err) => { console.error(err); process.exit(2); });`,
+		{ mode: 0o700 },
+	);
 	const runtime = join(import.meta.dirname, "..", "agent-runtime.ts");
 	const child = spawn(process.execPath, [runtime], {
 		env: {
 			...process.env,
+			PATH: `${bin}:${process.env.PATH}`,
 			PI_STICK_SESSIONS_DIR: sessions,
 			PI_STICK_WORKSPACE_DIR: workspace,
 			PI_STICK_SCRATCH_DIR: scratch,
