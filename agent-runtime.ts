@@ -13,7 +13,6 @@ import {
 	defineDoc,
 	defineExtension,
 	defineTask,
-	defineTool,
 	GenerationTask,
 	Harness,
 	hook,
@@ -26,6 +25,7 @@ import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
 import { type CredentialPayload, runtimeCredentials } from "./runtime-auth.ts";
+import { type BatchResult, createDelegateTool, type DelegateTasks } from "./runtime-tools/delegate.ts";
 import { createEditTool } from "./runtime-tools/edit.ts";
 import { createExecTool } from "./runtime-tools/exec.ts";
 import { createFindTool } from "./runtime-tools/find.ts";
@@ -270,10 +270,6 @@ const emitProgress = (line: string, label?: string) => {
 const stageProgressLabel = job.check || job.orchestrator ? "orchestrator" : undefined;
 const activeSubagents: Record<string, AgentRuntimeSpec> = { ...(job.agents ?? {}) };
 const agentOutputs: Record<string, string> = {};
-type BatchResult = {
-	results: Array<{ agent: string; ok: boolean; output: string }>;
-	cleanlinessWarning?: string;
-};
 
 const workflow = defineDoc<{
 	slots: Record<string, ConversationId>;
@@ -435,7 +431,6 @@ async function runParallelBatch(
 	return result;
 }
 
-type DelegateTasks = Array<{ agent: string; prompt: string }>;
 // An abandoned batch is marked before recovery dispatches any of its owned conversations.
 const delegateBatch = defineTask<DelegateTasks, { phase: "run" }, BatchResult>({
 	name: "pi-stick.delegate-batch",
@@ -460,64 +455,6 @@ const delegateBatch = defineTask<DelegateTasks, { phase: "run" }, BatchResult>({
 	},
 });
 
-const delegateTool = defineTool({
-	name: "delegate",
-	replay: "unsafe",
-	description:
-		"Run one or more configured subagents in parallel and collect their results. Multiple read-only subagents may run concurrently; read-write subagents must run one at a time.",
-	parameters: {
-		type: "object",
-		properties: {
-			tasks: {
-				type: "array",
-				minItems: 1,
-				maxItems: 16,
-				items: {
-					type: "object",
-					properties: {
-						agent: { type: "string", description: "Configured subagent name." },
-						prompt: { type: "string", description: "Specific task or question for this subagent." },
-					},
-					required: ["agent", "prompt"],
-					additionalProperties: false,
-				},
-			},
-		},
-		required: ["tasks"],
-		additionalProperties: false,
-	},
-	callers: ["model"],
-	execute: async (args, api) => {
-		const caller = getAgentCtx(api.conversationId);
-		if (caller.name !== "orchestrator") {
-			return {
-				output: [{ type: "text" as const, text: "Only the orchestrator may call delegate." }],
-				isError: true,
-			};
-		}
-		const { tasks } = args as { tasks: DelegateTasks };
-		try {
-			const id = await api.createTask(
-				delegateBatch,
-				tasks,
-				{ ownership: { kind: "task", taskId: api.taskId }, abandonOnRestart: true },
-				ctx,
-			);
-			const { outcome } = (await api.waitForTask(id, ctx)).state;
-			if (outcome.status !== "completed") throw Error(outcome.error?.message ?? `Delegate batch ${outcome.status}`);
-			const { results, cleanlinessWarning } = outcome.result;
-			const sections = results.map((r) => `### Agent: ${r.agent} (${r.ok ? "ok" : "error"})\n\n${r.output}`);
-			if (cleanlinessWarning) sections.push(`### Repository Cleanliness Warning\n\n${cleanlinessWarning}`);
-			return { output: [{ type: "text" as const, text: sections.join("\n\n") }] };
-		} catch (err) {
-			return {
-				output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
-				isError: true,
-			};
-		}
-	},
-});
-
 const agentRpc: AgentRpc = (method, params, id) => callHostRpc(method, params, getAgentCtx(id).name);
 
 const toolMap = new Map<string, ToolRegistration>([
@@ -530,7 +467,7 @@ const toolMap = new Map<string, ToolRegistration>([
 	["logs", createLogsTool(agentRpc)],
 	["ps", createPsTool(agentRpc)],
 	["restart", createRestartTool(agentRpc)],
-	["delegate", delegateTool],
+	["delegate", createDelegateTool(delegateBatch, (id) => getAgentCtx(id).name === "orchestrator")],
 ]);
 
 const registry = createRegistry();
