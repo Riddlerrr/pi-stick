@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { TestContext } from "node:test";
 import test from "node:test";
+import { loadActionFromDir } from "../src/actions.ts";
 import { closed, read, runId, tryLock, writeJson } from "../src/platform.ts";
 import { status } from "../src/runs.ts";
 import { ephemeralArgs, parseModelSpec } from "../src/system.ts";
@@ -73,6 +74,25 @@ function fixture(t: TestContext) {
 		fs.writeFileSync(join(bin, name), `#!/usr/bin/env node\n${js}`, { mode: 0o700 });
 	return { tmp, app, bin, source, ok, fail, invoke, git, stub, env };
 }
+
+test("native search tools are opt-in per role, including scaffolded actions", (t) => {
+	const { app, ok } = fixture(t);
+	ok(["create", "action", "search"]);
+	const dir = join(app, "actions/search");
+	const load = () => loadActionFromDir("search", dir, "global", false);
+	const scaffold = load();
+	writeJson(join(dir, "action.json"), {
+		orchestrator: {},
+		agents: { reader: {}, grepper: { tools: ["grep"] }, finder: { tools: ["find"] } },
+	});
+	const { orchestrator, agents } = load();
+	for (const role of [scaffold.orchestrator!, orchestrator!, agents.reader]) {
+		assert.ok(role.tools.includes("bash"));
+		assert.ok(!role.tools.includes("grep") && !role.tools.includes("find"));
+	}
+	assert.deepEqual(agents.grepper.tools, ["grep"]);
+	assert.deepEqual(agents.finder.tools, ["find"]);
+});
 
 test("version reports the CLI package version without creating state", (t) => {
 	const { app, ok, fail } = fixture(t);

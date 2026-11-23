@@ -149,19 +149,8 @@ function validateField(value: unknown, field: Field, path: string): void {
 			throw Error(`Unsupported action schema type: ${field.type}`);
 	}
 }
-const DEFAULT_RW_TOOLS: ToolName[] = [
-	"read",
-	"write",
-	"edit",
-	"grep",
-	"find",
-	"codemode",
-	"bash",
-	"logs",
-	"ps",
-	"restart",
-];
-const DEFAULT_RO_TOOLS: ToolName[] = ["read", "write", "edit", "grep", "find", "codemode", "bash", "logs", "ps"];
+const DEFAULT_RO_TOOLS: ToolName[] = ["read", "write", "edit", "codemode", "bash", "logs", "ps"];
+const DEFAULT_RW_TOOLS: ToolName[] = [...DEFAULT_RO_TOOLS, "restart"];
 
 export function globalActionsDir() {
 	return join(ROOT, "actions");
@@ -408,7 +397,7 @@ export function createAction(name: string, project?: ProjectInfo): string {
 		orchestrator: {
 			instructions: "instructions.md",
 			mode: "read-write",
-			tools: ["read", "write", "edit", "grep", "find", "codemode", "bash", "logs", "ps", "restart"],
+			tools: DEFAULT_RW_TOOLS,
 			allowedServices: ["runner"],
 		},
 	};
