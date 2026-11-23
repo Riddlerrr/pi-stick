@@ -1,58 +1,37 @@
-import * as fs from "node:fs";
+import { constants } from "node:fs";
+import { open, readFile, writeFile } from "node:fs/promises";
+import { createEditTool as createPiEditTool, type EditToolInput } from "@earendil-works/pi-coding-agent";
 import { type ConversationId, defineTool } from "@earendil-works/pi-durable";
+
+const piEdit = createPiEditTool("/");
 
 export function createEditTool(resolvePath: (path: string, conversationId: ConversationId) => string) {
 	return defineTool({
-		name: "edit",
-		description:
-			"Replace an exact target string in an existing file. In read-only mode, edits are restricted to /scratch/<agent>.",
-		parameters: {
-			type: "object",
-			properties: {
-				path: { type: "string", description: "File path to modify." },
-				target: { type: "string", description: "Exact substring to replace." },
-				replacement: { type: "string", description: "Replacement text." },
-				replaceAll: {
-					type: "boolean",
-					description: "Replace all occurrences instead of requiring a unique match.",
-				},
-			},
-			required: ["path", "target", "replacement"],
-			additionalProperties: false,
-		},
-		callers: ["model"],
-		execute: async (args, api) => {
-			const {
-				path,
-				target,
-				replacement,
-				replaceAll = false,
-			} = args as {
-				path: string;
-				target: string;
-				replacement: string;
-				replaceAll?: boolean;
-			};
+		name: piEdit.name,
+		description: `${piEdit.description} In read-only mode, edits are restricted to your agent scratch directory.`,
+		parameters: piEdit.parameters,
+		prepareArguments: piEdit.prepareArguments,
+		executionMode: "sequential",
+		async execute(input, api, context) {
+			const { path, edits } = input as EditToolInput;
+			context.abortSignal?.throwIfAborted();
+			const resolved = resolvePath(path.replace(/^@/, ""), api.conversationId);
+			const file = await open(resolved, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 			try {
-				if (!target.length) throw Error("target must not be empty");
-				const resolved = resolvePath(path, api.conversationId);
-				const original = fs.readFileSync(resolved, "utf8");
-				const first = original.indexOf(target);
-				if (first < 0) throw Error("Target text not found in file");
-				if (!replaceAll && original.indexOf(target, first + 1) >= 0)
-					throw Error(
-						"Target text appears multiple times; provide more surrounding context or set replaceAll: true",
-					);
-				const updated = replaceAll
-					? original.replaceAll(target, () => replacement)
-					: original.replace(target, () => replacement);
-				fs.writeFileSync(resolved, updated, "utf8");
-				return { output: [{ type: "text" as const, text: `Edited ${path}` }] };
-			} catch (err) {
-				return {
-					output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
-					isError: true,
-				};
+				if (!(await file.stat()).isFile()) throw Error(`Cannot edit ${path}: not a regular file`);
+				// Pin Pi's file operations to the authorized inode even if the workspace path is replaced.
+				const pinned = `/proc/self/fd/${file.fd}`;
+				const tool = createPiEditTool("/", {
+					operations: {
+						access: async () => {},
+						readFile: () => readFile(pinned),
+						writeFile: (_, content) => writeFile(pinned, content),
+					},
+				});
+				const result = await tool.execute(api.callId, { path: resolved, edits }, context.abortSignal);
+				return { output: result.content, details: result.details };
+			} finally {
+				await file.close();
 			}
 		},
 	});

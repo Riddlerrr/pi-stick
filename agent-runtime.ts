@@ -601,6 +601,7 @@ try {
 
 		for (const [path, data] of Object.entries({
 			"probe.txt": "probe-workspace",
+			"probe-edit.txt": "before",
 			".gitignore": "/probe-src/vendor/\n",
 			"probe-src/000.txt": "-probeXmarker\n",
 			"probe-src/z/.visible.ts": "first line\n-probe.marker\n",
@@ -613,7 +614,7 @@ try {
 			fs.mkdirSync(dirname(file), { recursive: true });
 			fs.writeFileSync(file, data, { flag: "wx" });
 		}
-		const code = `const [a, b, cmd] = await Promise.all([tools.ps({}), tools.logs({ tail: 5 }), tools.bash({command: "exit 7"})]); return [a,b, cmd.exit_code === 7 && !cmd.truncated && cmd.output === "probe-bash" ? "bash-ok" : "bash-failed"].join("|");`;
+		const code = `const [a, b, cmd] = await Promise.all([tools.ps({}), tools.logs({ tail: 5 }), tools.bash({command: "exit 7"})]); const edit = await tools.edit({path: "probe-edit.txt", edits: [{oldText: "before", newText: "after"}]}); return [a,b,edit, cmd.exit_code === 7 && !cmd.truncated && cmd.output === "probe-bash" ? "bash-ok" : "bash-failed"].join("|");`;
 		const router = (transcript: {
 			messages: Array<{ role: string; isError?: boolean; content: string | Array<{ type: string; text?: string }> }>;
 		}) => {
@@ -673,7 +674,9 @@ try {
 					!toolResults[0].isError &&
 					msgText(toolResults[0]).includes("probe-ok:ps") &&
 					msgText(toolResults[0]).includes("probe-ok:logs") &&
-					msgText(toolResults[0]).includes("bash-ok");
+					msgText(toolResults[0]).includes("bash-ok") &&
+					msgText(toolResults[0]).includes("Successfully replaced 1 block") &&
+					fs.readFileSync(join(WORKSPACE_DIR, "probe-edit.txt"), "utf8") === "after";
 				if (!okRpc) return fauxAssistantMessage([fauxText("rpc-probe-failed")]);
 				return fauxAssistantMessage(
 					[
