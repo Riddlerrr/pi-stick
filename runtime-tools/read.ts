@@ -49,7 +49,10 @@ export function createReadTool(repoDir: string, resolvePath: (path: string, conv
 				}
 				const buf = fs.readFileSync(resolved);
 				if (isBinary(buf))
-					return { output: [{ type: "text" as const, text: "Binary file cannot be read as text." }], isError: true };
+					return {
+						output: [{ type: "text" as const, text: "Binary file cannot be read as text." }],
+						isError: true,
+					};
 				const text = buf.toString("utf8");
 				const end = offset + Math.min(limit, 100_000);
 				const slice = text.slice(offset, end) + (text.length > end ? `\n[more at offset ${end}]` : "");

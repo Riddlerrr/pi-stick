@@ -24,7 +24,14 @@
 		"lineWidth": 120
 	},
 	"files": {
-		"includes": ["src/**/*.ts", "test/**/*.ts", "agent-runtime.ts", "runtime-auth.ts", "!!**/node_modules"]
+		"includes": [
+			"src/**/*.ts",
+			"test/**/*.ts",
+			"agent-runtime.ts",
+			"runtime-auth.ts",
+			"runtime-tools/**/*.ts",
+			"!!**/node_modules"
+		]
 	},
 	"plugins": ["./scripts/biome/model-type-comparison.grit"]
 }

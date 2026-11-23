@@ -8,7 +8,10 @@ export type BatchResult = {
 	cleanlinessWarning?: string;
 };
 
-export function createDelegateTool(delegateBatch: Task<DelegateTasks, { phase: "run" }, BatchResult, object>, isOrchestrator: (id: ConversationId) => boolean) {
+export function createDelegateTool(
+	delegateBatch: Task<DelegateTasks, { phase: "run" }, BatchResult, object>,
+	isOrchestrator: (id: ConversationId) => boolean,
+) {
 	return defineTool({
 		name: "delegate",
 		replay: "unsafe",
@@ -52,7 +55,8 @@ export function createDelegateTool(delegateBatch: Task<DelegateTasks, { phase: "
 					ctx,
 				);
 				const { outcome } = (await api.waitForTask(id, ctx)).state;
-				if (outcome.status !== "completed") throw Error(outcome.error?.message ?? `Delegate batch ${outcome.status}`);
+				if (outcome.status !== "completed")
+					throw Error(outcome.error?.message ?? `Delegate batch ${outcome.status}`);
 				const { results, cleanlinessWarning } = outcome.result;
 				const sections = results.map((r) => `### Agent: ${r.agent} (${r.ok ? "ok" : "error"})\n\n${r.output}`);
 				if (cleanlinessWarning) sections.push(`### Repository Cleanliness Warning\n\n${cleanlinessWarning}`);

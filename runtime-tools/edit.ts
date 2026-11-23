@@ -12,7 +12,10 @@ export function createEditTool(resolvePath: (path: string, conversationId: Conve
 				path: { type: "string", description: "File path to modify." },
 				target: { type: "string", description: "Exact substring to replace." },
 				replacement: { type: "string", description: "Replacement text." },
-				replaceAll: { type: "boolean", description: "Replace all occurrences instead of requiring a unique match." },
+				replaceAll: {
+					type: "boolean",
+					description: "Replace all occurrences instead of requiring a unique match.",
+				},
 			},
 			required: ["path", "target", "replacement"],
 			additionalProperties: false,
@@ -37,7 +40,9 @@ export function createEditTool(resolvePath: (path: string, conversationId: Conve
 				const first = original.indexOf(target);
 				if (first < 0) throw Error("Target text not found in file");
 				if (!replaceAll && original.indexOf(target, first + 1) >= 0)
-					throw Error("Target text appears multiple times; provide more surrounding context or set replaceAll: true");
+					throw Error(
+						"Target text appears multiple times; provide more surrounding context or set replaceAll: true",
+					);
 				const updated = replaceAll
 					? original.replaceAll(target, () => replacement)
 					: original.replace(target, () => replacement);

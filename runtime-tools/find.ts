@@ -34,7 +34,12 @@ export function createFindTool(repoDir: string, resolvePath: (path: string, conv
 			properties: {
 				path: { type: "string", description: `Directory to search (defaults to ${repoDir}).` },
 				query: { type: "string", description: "Optional glob pattern (e.g. '**/*.ts') or substring filter." },
-				maxResults: { type: "integer", minimum: 1, maximum: 2000, description: "Max files to return (default 500)." },
+				maxResults: {
+					type: "integer",
+					minimum: 1,
+					maximum: 2000,
+					description: "Max files to return (default 500).",
+				},
 			},
 			additionalProperties: false,
 		},
@@ -51,7 +56,8 @@ export function createFindTool(repoDir: string, resolvePath: (path: string, conv
 			};
 			try {
 				const resolved = resolvePath(path, api.conversationId);
-				if (!(await stat(resolved)).isDirectory()) return { output: [{ type: "text" as const, text: "(no files)" }] };
+				if (!(await stat(resolved)).isDirectory())
+					return { output: [{ type: "text" as const, text: "(no files)" }] };
 				const glob = query && /[*?]/.test(query) ? globToRegExp(query) : null;
 				const files: string[] = [];
 				let length = 0;
