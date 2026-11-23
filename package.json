@@ -26,7 +26,8 @@
     "pack:npm": "./scripts/pack-npm.sh",
     "check": "npm run lint && tsc --noEmit",
     "lint": "biome check --error-on-warnings .",
-    "test": "node --test test/*.test.ts"
+    "test": "node --test test/*.test.ts",
+    "test:docker-recovery": "bash test/integration/docker-recovery.sh"
   },
   "version": "0.2.0"
 }

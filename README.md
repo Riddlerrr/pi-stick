@@ -12,6 +12,7 @@ A Linux CLI platform for running independent, isolated AI tasks against local Do
 - `npm run check` — Biome lint/format check (warnings are errors) and `tsc --noEmit`.
 - `npm run lint -- --write` — Apply safe Biome fixes.
 - `npm test` — Run `node --test test/*.test.ts`.
+- `npm run test:docker-recovery` — Linux integration test; run as a non-root user with Docker/Compose and build access. Builds the runtime image, interrupts an agent during a stage and a follow-up, and resumes both through the CLI. Uses a temporary project and local model endpoint, not your Pi credentials. Runs separately on x64 before release.
 - `./scripts/install-dev.sh [--fresh] [--dir PATH] [--model PROVIDER/MODEL] [--no-build] [--yes]` — Prepare the isolated dev directory (`~/pi-stick-dev` or `$PI_STICK_DEV_HOME`), initialize `settings.json` (suggesting the default model from `~/.pi/agent/settings.json` if set), optionally wipe and recreate an existing dev folder from scratch (tearing down its task Docker stacks first), and offer to build `pi-stick:dev` and run `./pistick-dev doctor`.
 - `npm run build:image:dev` — Build the dev agent image (`pi-stick:dev`).
 - `./pistick-dev ...` (or `./pistick ...` without `PI_STICK_HOME`, `pistick --dev ...`, `PI_STICK_DEV=1`) — Run in isolated **dev mode**:
