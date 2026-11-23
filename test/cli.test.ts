@@ -81,6 +81,15 @@ test("version reports the CLI package version without creating state", (t) => {
 	assert.ok(!fs.existsSync(join(app, "state")));
 });
 
+test("container-only commands require the containers namespace", (t) => {
+	const { ok, fail } = fixture(t);
+	assert.match(ok(["containers", "--help"]), /containers .*stop RUN_ID .*update/);
+	fail(["containers", "stop", "bad-id"], /Invalid run ID/);
+	fail(["containers", "stop", "--yes"], /Unknown option/);
+	fail(["containers", "update", "extra"], /Usage: pistick containers/);
+	for (const cmd of ["stop", "update"]) fail([cmd], /Usage:/);
+});
+
 test("create project clones independent workspaces without GitHub coupling", (t) => {
 	const { app, source, tmp, ok, fail } = fixture(t);
 	ok(["create", "project", "first"], `${source}\n`);
@@ -320,7 +329,7 @@ test("per-run locks allow concurrent runs, follow, diff, and selective cleanup",
 		assert.match(allOut, new RegExp(idB));
 
 		// Update refuses while run A is active
-		fail(["update", "--yes"], /active/);
+		fail(["containers", "update", "--yes"], /active/);
 
 		// Cleanup cleans finished run B while leaving locked active run A untouched
 		assert.match(ok(["cleanup", "--dry-run"]), new RegExp(idB));

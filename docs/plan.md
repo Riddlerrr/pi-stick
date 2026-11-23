@@ -42,7 +42,7 @@ flowchart LR
 
 ### 3.1 Clean Pivot from v0.1.0
 - Remove hardcoded PR-review commands and assumptions (`pull`, `review`, `review-method.md`, single-model `gpt-6.2-sol` lock-in, GitHub-only requirement, single global execution lock).
-- Retain and generalize reusable foundations: project scaffolding (`create project`), Docker Compose recipe validation, Pi Durable SQLite session persistence, detached background worker + plain-text `follow`, `cleanup`, `doctor`, `update`, and Linux binary / npm / installer packaging.
+- Retain and generalize reusable foundations: project scaffolding (`create project`), Docker Compose recipe validation, Pi Durable SQLite session persistence, detached background worker + plain-text `follow`, `cleanup`, `doctor`, `containers update`, and Linux binary / npm / installer packaging.
 
 ### 3.2 Container Topology & Security Model
 - **Ephemeral agent container per task**: Rather than one long-lived `pi-stick` container, each task invocation starts an ephemeral container (`docker run --rm`) from the `pi-stick` image with `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, memory/PID limits, and host UID alignment.
@@ -56,7 +56,7 @@ flowchart LR
 
 ### 3.3 Task Workspace, Concurrency & Lifecycle
 - **Isolated workspace & stack per task**: Each task creates an isolated copy/worktree of the project repository and starts its own Compose project (`pi-stick-<project>-<run-id>`), leaving the user's development workspace (`projects/<name>/repo`) untouched.
-- **Concurrent tasks**: Multiple independent tasks can run simultaneously (across the same or different projects). Locking moves from a global lock file to per-run lock files, with `update` and `cleanup` checking active locks safely.
+- **Concurrent tasks**: Multiple independent tasks can run simultaneously (across the same or different projects). Locking moves from a global lock file to per-run lock files, with `containers update` and `cleanup` checking active locks safely.
 - **Mutable workspace with clean export**: Tasks may modify files inside their own `/workspace/repo`. On completion, `pi-stick` captures `git diff` / `changes.patch` alongside the run report and artifacts.
 - **Container lifecycle (`stop` by default)**:
   - When a run finishes, `pi-stick` runs `docker compose stop` on the task's project stack to release CPU/RAM while preserving workspace files, Docker volumes (dependencies, DB state), reports, patches, and durable SQLite sessions until `pistick cleanup`.
@@ -117,13 +117,13 @@ pistick runs [--all]
 pistick follow RUN_ID
 pistick resume RUN_ID
 pistick continue RUN_ID PROMPT [--keep-up]
-pistick stop RUN_ID
+pistick containers stop RUN_ID
 pistick diff RUN_ID
 
 # Maintenance
 pistick cleanup [--dry-run] [--days DAYS]
 pistick doctor
-pistick update [--yes]
+pistick containers update [--yes]
 pistick version
 ```
 
@@ -139,7 +139,7 @@ pistick version
 4. Replace the persistent `pi-stick` Compose service with an ephemeral `docker run --rm` agent container attached to the task's Docker network and scoped mounts, stopping the project stack on completion (`--keep-up` override).
 5. Implement multiplexed JSON-RPC between host and agent container for `exec`, `logs`, `ps`, and `restart`.
 6. Replace the single hardcoded model with dynamic multi-provider model resolution and credential passing via local `pi auth`.
-7. Update `doctor`, `cleanup`, and `update` (image build + offline self-check probe) for the new ephemeral container architecture.
+7. Update `doctor`, `cleanup`, and `containers update` (image build + offline self-check probe) for the new ephemeral container architecture.
 
 ### Phase 2: Actions System, Hooks & Task Lifecycle CLI
 *Goal: Enable users to create and run single-agent custom actions end-to-end.*
@@ -147,7 +147,7 @@ pistick version
 2. Implement two-tier action discovery (`projects/<project>/actions/` overriding `$PI_STICK_HOME/actions/`), `pistick actions`, and `pistick create action`.
 3. Implement trusted host hooks (`prepare` with `/context:ro` output and `after` post-processing).
 4. Build the generic container entrypoint (`agent-runtime.ts`) with native file tools (`read`, `write`, `edit`, `grep`, `find`), Codemode, and host-brokered tools.
-5. Implement `run`, `runs`, `follow`, `resume`, `continue`, `stop`, and `diff`, plus automatic `changes.patch` and `report.md` artifact generation.
+5. Implement `run`, `runs`, `follow`, `resume`, `continue`, `containers stop`, and `diff`, plus automatic `changes.patch` and `report.md` artifact generation.
 
 ### Phase 3: Multi-Agent Orchestration & Permission Enforcement
 *Goal: Support parallel subagents, orchestrator synthesis, and safe shared-workspace concurrency.*

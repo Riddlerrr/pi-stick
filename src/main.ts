@@ -28,11 +28,10 @@ const usage = {
 	follow: "follow RUN_ID",
 	resume: "resume RUN_ID [--retry-hook]",
 	continue: "continue RUN_ID PROMPT [--keep-up]",
-	stop: "stop RUN_ID",
+	containers: "containers (stop RUN_ID | update [--yes])",
 	diff: "diff RUN_ID",
 	cleanup: "cleanup [--dry-run] [--days DAYS]",
 	doctor: "doctor",
-	update: "update [--yes]",
 	version: "version",
 };
 
@@ -131,9 +130,15 @@ function parse(cmd: string, args: string[]): Command {
 			}
 			break;
 		}
-		case "stop": {
-			const { positionals: p } = flags({});
-			if (p.length === 1) return { cmd: "stop", id: p[0] };
+		case "containers": {
+			const subcommand = args.shift();
+			if (subcommand === "stop") {
+				const { positionals: p } = flags({});
+				if (p.length === 1) return { cmd: "stop", id: p[0] };
+			} else if (subcommand === "update") {
+				const { positionals: p, values: v } = flags({ yes: { type: "boolean" } });
+				if (!p.length) return { cmd: "update", yes: v.yes === true };
+			}
 			break;
 		}
 		case "diff": {
@@ -155,11 +160,6 @@ function parse(cmd: string, args: string[]): Command {
 		case "doctor":
 			if (!args.length) return { cmd };
 			break;
-		case "update": {
-			const { positionals: p, values: v } = flags({ yes: { type: "boolean" } });
-			if (!p.length) return { cmd, yes: v.yes === true };
-			break;
-		}
 	}
 	throw Error(Object.hasOwn(usage, cmd) ? `Usage: pistick ${usage[cmd as keyof typeof usage]}` : help);
 }

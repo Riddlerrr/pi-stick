@@ -115,12 +115,12 @@ interrupt follow-up continue "$id" follow-up
 # SIGKILL bypassed the worker's Compose teardown. Neither stop nor resume may delete a foreign container.
 name="pi-stick-agent-$id"
 standin=$(docker create --name "$name" "$PI_STICK_IMAGE" sleep infinity)
-if "$cli" stop "$id" || "$cli" resume "$id"; then exit 1; fi
+if "$cli" containers stop "$id" || "$cli" resume "$id"; then exit 1; fi
 docker rm "$standin" >/dev/null
 # If EOF did not suffice, both paths must reap only this run's leftover agent.
 leftover() { docker run -d --name "$name" --label "pi-stick.run=$id" "$PI_STICK_IMAGE" sleep infinity; }
 standin=$(leftover)
-"$cli" stop "$id"
+"$cli" containers stop "$id"
 assert_stopped
 standin=$(leftover)
 timeout 90 "$cli" resume "$id"
