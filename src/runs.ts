@@ -15,6 +15,7 @@ import {
 	output,
 	prompt,
 	read,
+	run,
 	runId,
 	STATE,
 	touch,
@@ -711,20 +712,23 @@ export async function cleanup(days: number, dry: boolean) {
 		console.log("No eligible pi-stick runs.");
 		return;
 	}
-	const items: Array<{ dir: string; key: string; compose: string }> = [];
+	function eligibleLastUsed(dir: string) {
+		if (!fs.existsSync(join(dir, "exit"))) return;
+		const last = fs.statSync(join(dir, "last-used"), { throwIfNoEntry: false });
+		return last?.isFile() && last.mtimeMs <= cutoff ? last.mtimeMs : undefined;
+	}
+	const items: Array<{ id: string; key: string; lastUsed: number }> = [];
 	for (const entry of fs.readdirSync(runsDir, { withFileTypes: true })) {
 		const id = entry.name;
 		if (!entry.isDirectory() || !VALID_ID.test(id)) continue;
 		const dir = join(runsDir, id);
 		if (isLocked(join(dir, "lock"))) continue;
-		if (!fs.existsSync(join(dir, "exit"))) continue;
-		const last = fs.statSync(join(dir, "last-used"), { throwIfNoEntry: false });
-		if (!last?.isFile() || last.mtimeMs > cutoff) continue;
+		const lastUsed = eligibleLastUsed(dir);
+		if (lastUsed === undefined) continue;
 		const metaFile = join(dir, "meta.json");
 		const project = fs.existsSync(metaFile) ? (json(metaFile) as Partial<RunMeta>).project : undefined;
 		const key = project ? `pi-stick-${project}-${id.slice(0, 12)}` : `pi-stick-run-${id.slice(0, 12)}`;
-		const compose = join(dir, "compose.yaml");
-		items.push({ dir, key, compose });
+		items.push({ id, key, lastUsed });
 		console.log(`${id} (${project ?? "unknown"}): workspace, scratch stack/volumes, reports and session`);
 	}
 	if (!items.length) {
@@ -732,11 +736,28 @@ export async function cleanup(days: number, dry: boolean) {
 		return;
 	}
 	if (dry || (await prompt("Permanently delete listed pi-stick runs? [y/N] ")).toLowerCase() !== "y") return;
-	for (const { dir, key, compose } of items) {
-		if (fs.existsSync(compose)) {
-			const res = spawn("docker", ["compose", "-p", key, "-f", compose, "down", "--volumes"], { stdio: "inherit" });
-			await closed(res);
+	for (const { id, key, lastUsed } of items) {
+		const dir = runDir(id);
+		let fd: number;
+		try {
+			fd = fs.openSync(runLock(id), "a");
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw err;
 		}
-		fs.rmSync(dir, { recursive: true, force: true });
+		try {
+			if (!tryLock(fd) || eligibleLastUsed(dir) !== lastUsed) {
+				console.log(`Skipping ${id}: active or changed since listing.`);
+				continue;
+			}
+			const compose = join(dir, "compose.yaml");
+			if (fs.existsSync(compose)) run(["docker", "compose", "-p", key, "-f", compose, "down", "--volumes"]);
+			// Retire the run ID before recursive removal can unlink its lock file.
+			const retired = join(runsDir, `.deleting-${id}`);
+			fs.renameSync(dir, retired);
+			fs.rmSync(retired, { recursive: true });
+		} finally {
+			fs.closeSync(fd);
+		}
 	}
 }

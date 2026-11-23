@@ -251,6 +251,69 @@ test("per-run locks allow concurrent runs, follow, diff, and selective cleanup",
 	fail(["follow", idA], /Worker interrupted/);
 });
 
+test("cleanup rechecks listed runs after confirmation", async (t) => {
+	const { app, bin, env } = fixture(t);
+	const [busy, reused, interrupted, gone, eligible] = Array.from({ length: 5 }, () =>
+		join(app, "state/runs", runId()),
+	);
+	for (const dir of [busy, reused, interrupted, gone, eligible]) {
+		fs.mkdirSync(dir, { recursive: true });
+		fs.writeFileSync(join(dir, "exit"), "0");
+		fs.writeFileSync(join(dir, "last-used"), "");
+		fs.utimesSync(join(dir, "last-used"), 1, 1);
+	}
+	const child = spawn(join(bin, "pistick"), ["cleanup"], { env, timeout: 10000 });
+	const exit = closed(child);
+	let output = "";
+	let fd: number | undefined;
+	try {
+		for await (const chunk of child.stdout) {
+			output += chunk;
+			if (fd !== undefined || !output.includes("[y/N]")) continue;
+			fd = fs.openSync(join(busy, "lock"), "a");
+			assert.ok(tryLock(fd));
+			fs.utimesSync(join(reused, "last-used"), 2, 2);
+			fs.unlinkSync(join(interrupted, "exit"));
+			fs.rmSync(gone, { recursive: true });
+			child.stdin.end("y\n");
+		}
+		assert.equal((await exit)[0], 0, output);
+		for (const dir of [busy, reused, interrupted]) assert.ok(fs.existsSync(dir), dir);
+		for (const dir of [gone, eligible]) assert.ok(!fs.existsSync(dir), dir);
+	} finally {
+		child.kill();
+		if (fd !== undefined) fs.closeSync(fd);
+	}
+});
+
+test("cleanup holds the run lock during teardown and retains state if Compose fails", (t) => {
+	const { app, ok, invoke, stub } = fixture(t);
+	const id = runId();
+	const dir = join(app, "state/runs", id);
+	fs.mkdirSync(join(dir, "session"), { recursive: true });
+	const db = join(dir, "session", `${id}.sqlite`);
+	fs.writeFileSync(db, "history");
+	fs.writeFileSync(join(dir, "compose.yaml"), "services: {}");
+	fs.writeFileSync(join(dir, "exit"), "0");
+	fs.writeFileSync(join(dir, "last-used"), "");
+	fs.utimesSync(join(dir, "last-used"), 1, 1);
+	stub(
+		"docker",
+		`const { spawnSync } = require('node:child_process');
+		if (process.argv.slice(-2).join(' ') !== 'down --volumes') process.exit(2);
+		const probe = spawnSync('flock', ['-n', '-E', '75', ${JSON.stringify(join(dir, "lock"))}, 'true']);
+		process.exit(probe.status === 75 ? 7 : 3);`,
+	);
+	const failed = invoke(["cleanup"], "y\n");
+	assert.equal(failed.status, 1);
+	assert.match(failed.stderr, /docker failed \(7\)/);
+	assert.equal(read(db), "history");
+	assert.ok(fs.existsSync(join(dir, "compose.yaml")));
+	stub("docker", "process.exit(0)");
+	ok(["cleanup"], "y\n");
+	assert.ok(!fs.existsSync(dir));
+});
+
 test("agent-runtime offline self-check exercises Pi Durable SQLite, Codemode, read-only scratch, parallel delegate, and multiplexed JSON-RPC", async (t) => {
 	const tmp = fs.mkdtempSync(join(tmpdir(), "pi-stick-rt-"));
 	const workspace = join(tmp, "workspace");
