@@ -29,6 +29,7 @@ import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
 import { type CredentialPayload, runtimeCredentials } from "./runtime-auth.ts";
+import { createEditTool } from "./runtime-tools/edit.ts";
 import { createReadTool } from "./runtime-tools/read.ts";
 import { createWriteTool } from "./runtime-tools/write.ts";
 
@@ -513,56 +514,6 @@ async function runParallelBatch(
 	return result;
 }
 
-const editTool = defineTool({
-	name: "edit",
-	description:
-		"Replace an exact target string in an existing file. In read-only mode, edits are restricted to /scratch/<agent>.",
-	parameters: {
-		type: "object",
-		properties: {
-			path: { type: "string", description: "File path to modify." },
-			target: { type: "string", description: "Exact substring to replace." },
-			replacement: { type: "string", description: "Replacement text." },
-			replaceAll: { type: "boolean", description: "Replace all occurrences instead of requiring a unique match." },
-		},
-		required: ["path", "target", "replacement"],
-		additionalProperties: false,
-	},
-	callers: ["model"],
-	execute: async (args, api) => {
-		const {
-			path,
-			target,
-			replacement,
-			replaceAll = false,
-		} = args as {
-			path: string;
-			target: string;
-			replacement: string;
-			replaceAll?: boolean;
-		};
-		try {
-			if (!target.length) throw Error("target must not be empty");
-			const resolved = resolveAgentPath(path, getAgentCtx(api.conversationId), true);
-			const original = fs.readFileSync(resolved, "utf8");
-			const first = original.indexOf(target);
-			if (first < 0) throw Error("Target text not found in file");
-			if (!replaceAll && original.indexOf(target, first + 1) >= 0)
-				throw Error("Target text appears multiple times; provide more surrounding context or set replaceAll: true");
-			const updated = replaceAll
-				? original.replaceAll(target, () => replacement)
-				: original.replace(target, () => replacement);
-			fs.writeFileSync(resolved, updated, "utf8");
-			return { output: [{ type: "text" as const, text: `Edited ${path}` }] };
-		} catch (err) {
-			return {
-				output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
-				isError: true,
-			};
-		}
-	},
-});
-
 const grepTool = defineTool({
 	name: "grep",
 	description:
@@ -863,7 +814,7 @@ const delegateTool = defineTool({
 const toolMap = new Map<string, ToolRegistration>([
 	["read", createReadTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
 	["write", createWriteTool((path, id) => resolveAgentPath(path, getAgentCtx(id), true))],
-	["edit", editTool],
+	["edit", createEditTool((path, id) => resolveAgentPath(path, getAgentCtx(id), true))],
 	["grep", grepTool],
 	["find", findTool],
 	["exec", execTool],
