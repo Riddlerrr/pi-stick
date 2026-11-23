@@ -56,7 +56,7 @@ export interface ActionManifest {
 	model?: string;
 	inputs?: Record<string, ActionInputSpec>;
 	hooks?: ActionHooks;
-	orchestrator: AgentConfig;
+	orchestrator?: AgentConfig;
 	agents?: Record<string, AgentConfig>;
 	stageContext?: "previous" | "all";
 	stages?: StageConfig[];
@@ -81,7 +81,7 @@ export interface LoadedAction {
 	description: string;
 	inputs: Record<string, ActionInputSpec>;
 	hooks: { prepare?: string; after?: string };
-	orchestrator: ResolvedAgentSpec;
+	orchestrator?: ResolvedAgentSpec;
 	agents: Record<string, ResolvedAgentSpec>;
 	stageContext?: ActionManifest["stageContext"];
 	stages: StageConfig[];
@@ -251,15 +251,19 @@ export function loadActionFromDir(
 		agents[agentName] = resolveAgent(agentName, rawAgents[agentName], dir, fallbackModel, false, false, requireModel);
 	}
 
-	const orchestrator = resolveAgent(
-		"orchestrator",
-		manifest.orchestrator,
-		dir,
-		fallbackModel,
-		true,
-		agentNames.length > 0,
-		requireModel,
-	);
+	if (!manifest.orchestrator && manifest.stages?.at(-1)?.parallel.length !== 1)
+		throw Error("An action without an orchestrator requires a final stage with exactly one agent");
+	const orchestrator =
+		manifest.orchestrator &&
+		resolveAgent(
+			"orchestrator",
+			manifest.orchestrator,
+			dir,
+			fallbackModel,
+			true,
+			agentNames.length > 0,
+			requireModel,
+		);
 
 	const stages: StageConfig[] = [];
 	if (manifest.stages !== undefined) {

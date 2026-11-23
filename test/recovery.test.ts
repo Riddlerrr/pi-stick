@@ -12,7 +12,7 @@ import { closed, runId } from "../src/platform.ts";
 
 function stageFixture(
 	t: TestContext,
-	failure: "interrupt-stage" | "interrupt-third" | "fail-stage" | "fail-root" = "interrupt-stage",
+	failure: "interrupt-stage" | "interrupt-third" | "empty-final" | "fail-stage" | "fail-root" = "interrupt-stage",
 ) {
 	const dir = fs.mkdtempSync(join(tmpdir(), "pi-stick-recovery-"));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -36,7 +36,7 @@ function stageFixture(
 				if (calls < 2) return new Response('invalid request', {status: 400});
 				if (calls === 2) process.kill(process.pid, 'SIGKILL');
 			}
-			const data = { choices: [{index:0, delta:{role:'assistant',content:'answer-' + stage}, finish_reason:'stop'}] };
+			const data = { choices: [{index:0, delta:{role:'assistant',content:${failure === "empty-final"} && stage === 'B' && !seen.includes('B') ? '   ' : 'answer-' + stage}, finish_reason:'stop'}] };
 			return new Response('data: ' + JSON.stringify(data) + '\\n\\ndata: [DONE]\\n\\n', {headers:{'content-type':'text/event-stream'}});
 		};`,
 	);
@@ -61,7 +61,7 @@ function stageFixture(
 			parallel: name === "first" && failure === "fail-stage" ? ["worker", "sibling"] : ["worker"],
 		})),
 	};
-	const run = async () => {
+	const run = async (payload: unknown = job) => {
 		const child = spawn(process.execPath, ["--import", stub, join(import.meta.dirname, "../agent-runtime.ts")], {
 			cwd: dir,
 			env: { ...process.env, PI_STICK_SESSIONS_DIR: dir, PI_STICK_SCRATCH_DIR: dir },
@@ -76,7 +76,7 @@ function stageFixture(
 		child.stderr.on("data", (chunk) => {
 			stderr += chunk;
 		});
-		child.stdin.write(`${JSON.stringify(job)}\n`);
+		child.stdin.write(`${JSON.stringify(payload)}\n`);
 		const [status, signal] = await exit;
 		return { status, signal, stdout, stderr };
 	};
@@ -176,6 +176,22 @@ for (const stageContext of [undefined, "all"] as const) {
 		assert.equal(fs.readFileSync(join(dir, "requests"), "utf8"), "A\nB\nC\nC\nroot\n");
 	});
 }
+
+test("a final-stage report retries an empty answer, then restores without synthesis", async (t) => {
+	const { job, dir, run } = stageFixture(t, "empty-final");
+	const payload = { ...job, orchestrator: undefined };
+	const failed = await run(payload);
+	assert.equal(failed.status, 1);
+	assert.match(failed.stdout, /returned an empty report/);
+	for (let i = 0; i < 2; i++) {
+		const result = await run(payload);
+		assert.equal(result.status, 0, result.stderr);
+		const { report, outputs } = JSON.parse(result.stdout.trim().split("\n").at(-1)!);
+		assert.equal(report, "answer-B");
+		assert.equal(outputs.worker, "answer-A\n\n---\n\nanswer-B");
+	}
+	assert.equal(fs.readFileSync(join(dir, "requests"), "utf8"), "A\nB\nB\n");
+});
 
 test("resume retries an unanswered root once and reattaches after interruption without replaying stages", async (t) => {
 	const { run, dir } = stageFixture(t, "fail-root");

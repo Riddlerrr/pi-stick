@@ -298,6 +298,7 @@ const emitProgress = (line: string, label?: string) => {
 	else send({ progress: line, ...(label ? { agent: label } : {}) });
 };
 
+const stageProgressLabel = job.check || job.orchestrator ? "orchestrator" : undefined;
 const activeSubagents: Record<string, AgentRuntimeSpec> = { ...(job.agents ?? {}) };
 const agentOutputs: Record<string, string> = {};
 type BatchResult = {
@@ -327,6 +328,7 @@ async function runSubagent(
 	promptText: string,
 	slot?: string,
 	ownerTaskId?: TaskId,
+	requireReport = false,
 ): Promise<{ agent: string; ok: boolean; output: string }> {
 	const scratchDir = join(SCRATCH_DIR, spec.name);
 	fs.mkdirSync(scratchDir, { recursive: true });
@@ -382,6 +384,11 @@ async function runSubagent(
 			.map((b) => b.text)
 			.join("\n")
 			.trim();
+		if (requireReport && !text) {
+			const msg = `Final agent ${spec.name} returned an empty report`;
+			emitProgress(msg, label);
+			return { agent: spec.name, ok: false, output: msg };
+		}
 		const final = text || "(empty output)";
 		recordAgentOutput(spec.name, final);
 		emitProgress("completed", label);
@@ -395,7 +402,7 @@ async function runSubagent(
 }
 
 async function runParallelBatch(
-	batch: Array<{ spec: AgentRuntimeSpec; prompt: string }>,
+	batch: Array<{ spec: AgentRuntimeSpec; prompt: string; requireReport?: boolean }>,
 	batchLabel: string,
 	recovery: { stageKey: string } | { taskId: TaskId },
 ): Promise<BatchResult> {
@@ -404,7 +411,7 @@ async function runParallelBatch(
 	const cached = stageKey ? (await h.snapshot(workflow, ctx))?.stages[stageKey] : undefined;
 	if (cached?.results.every((r) => r.ok)) {
 		for (const r of cached.results) recordAgentOutput(r.agent, r.output);
-		emitProgress(`Restored completed ${batchLabel}`, "orchestrator");
+		emitProgress(`Restored completed ${batchLabel}`, stageProgressLabel);
 		return cached;
 	}
 	if (stageKey && cached) {
@@ -427,20 +434,26 @@ async function runParallelBatch(
 		const res = await callHostRpc("check_clean", {});
 		if (!res.error) return res.text;
 		cleanlinessWarning = `WARNING: Could not verify tracked files in read-only round '${batchLabel}': ${res.text}`;
-		emitProgress(cleanlinessWarning, "orchestrator");
+		emitProgress(cleanlinessWarning, stageProgressLabel);
 		return undefined;
 	};
 	const beforeClean = allReadOnly ? await trackedStatus() : undefined;
 	const results = await Promise.all(
 		batch.map((item, i) =>
-			runSubagent(item.spec, item.prompt, stageKey && `${stageKey}:${i}:${item.spec.name}`, owner),
+			runSubagent(
+				item.spec,
+				item.prompt,
+				stageKey && `${stageKey}:${i}:${item.spec.name}`,
+				owner,
+				item.requireReport,
+			),
 		),
 	);
 	if (beforeClean !== undefined) {
 		const after = await trackedStatus();
 		if (after !== undefined && after !== beforeClean) {
 			cleanlinessWarning = `WARNING: Tracked repository files changed during read-only round '${batchLabel}':\n${after.trim()}`;
-			emitProgress(cleanlinessWarning, "orchestrator");
+			emitProgress(cleanlinessWarning, stageProgressLabel);
 		}
 	}
 	const result = { results, ...(cleanlinessWarning ? { cleanlinessWarning } : {}) };
@@ -1053,75 +1066,7 @@ try {
 			throw Error(`Unexpected probe progress events: ${JSON.stringify(probeEvents)}`);
 		send({ ready: true });
 	} else {
-		const spec = job.orchestrator;
-		if (!spec || !job.prompt) throw Error("Missing orchestrator configuration or prompt");
-		fs.mkdirSync(defaultAgentCtx.scratchDir, { recursive: true });
-
-		let finalPrompt = job.prompt;
-		if (!job.continueRun && job.stages?.length) {
-			const stageSections: string[] = [];
-			for (const [index, stage] of job.stages.entries()) {
-				emitProgress(`Starting parallel stage '${stage.name}': ${stage.parallel.join(", ")}`, "orchestrator");
-				let stagePrompt = stage.prompt ? `${stage.prompt}\n\nTask context:\n${job.prompt}` : job.prompt;
-				if (index > 0) {
-					const prior = job.stageContext === "all" ? stageSections.join("\n\n") : stageSections[index - 1];
-					stagePrompt += `\n\n# Previous stage results\n\n${prior}`;
-				}
-				const batch = stage.parallel.map((agentName) => {
-					const agentSpec = activeSubagents[agentName];
-					if (!agentSpec) throw Error(`Stage '${stage.name}' references missing agent '${agentName}'`);
-					return { spec: agentSpec, prompt: stagePrompt };
-				});
-				const { results, cleanlinessWarning } = await runParallelBatch(batch, `stage:${stage.name}`, {
-					stageKey: `${job.requestId ?? job.id}:${index}:${stage.name}`,
-				});
-				const failures = results.filter((r) => !r.ok);
-				if (failures.length) {
-					const message = `Stage '${stage.name}' failed: ${failures.map((r) => r.agent).join(", ")}`;
-					emitProgress(message, "orchestrator");
-					throw Error(message);
-				}
-				const lines = [`## Stage: ${stage.name}`];
-				for (const r of results) {
-					lines.push(`### Agent: ${r.agent} (ok)\n\n${r.output}`);
-				}
-				if (cleanlinessWarning) lines.push(`### Repository Cleanliness Warning\n\n${cleanlinessWarning}`);
-				stageSections.push(lines.join("\n\n"));
-			}
-			finalPrompt = `${job.prompt}\n\n---\n\n# Parallel Stage Results\n\n${stageSections.join("\n\n")}`;
-		}
-
-		const { extensions, tools } = selectToolsAndExtensions(spec.tools);
-		const root = await h.root(ctx, {
-			agent: {
-				model: spec.model,
-				instructions: spec.instructions,
-				extensions,
-				tools,
-				...(spec.maxTurns ? { maxTurns: spec.maxTurns } : {}),
-			},
-		});
-		if (job.continueRun) await root.configure({ instructions: spec.instructions }, ctx);
-		const sub = await root.submit(
-			continueRoot
-				? { type: "continue", requestId: rootRequestId }
-				: { type: "input", content: finalPrompt, requestId: rootRequestId },
-			ctx,
-		);
-		const settled = await sub.wait(ctx);
-		if (settled.status !== "done" || settled.type === "write")
-			throw Error(
-				`Task submission did not complete: ${settled.status}${settled.reason ? `: ${settled.reason}` : ""}`,
-			);
-		const entry = await root.commit((tx) => tx.entry(AssistantEntry, settled.answer), ctx);
-		const message = entry?.model?.[0];
-		if (message?.role !== "assistant") throw Error("Missing assistant answer");
-		const report = message.content
-			.filter((b) => b.type === "text")
-			.map((b) => b.text)
-			.join("\n")
-			.trim();
-		if (!report) throw Error("Agent returned an empty report");
+		const report = await runAction();
 		send({ report, ...(Object.keys(agentOutputs).length ? { outputs: agentOutputs } : {}) });
 	}
 } finally {
@@ -1129,6 +1074,82 @@ try {
 	rl.close();
 	await sandbox.close();
 	await h.close(ctx);
+}
+
+async function runAction(): Promise<string> {
+	const spec = job.orchestrator;
+	if (!job.prompt) throw Error("Missing prompt");
+	if (!spec && (job.continueRun || job.stages?.at(-1)?.parallel.length !== 1))
+		throw Error("A run without an orchestrator requires a single final agent and cannot continue");
+
+	let finalPrompt = job.prompt;
+	if (!job.continueRun && job.stages?.length) {
+		const stageSections: string[] = [];
+		for (const [index, stage] of job.stages.entries()) {
+			emitProgress(`Starting parallel stage '${stage.name}': ${stage.parallel.join(", ")}`, stageProgressLabel);
+			let stagePrompt = stage.prompt ? `${stage.prompt}\n\nTask context:\n${job.prompt}` : job.prompt;
+			if (index > 0) {
+				const prior = job.stageContext === "all" ? stageSections.join("\n\n") : stageSections[index - 1];
+				stagePrompt += `\n\n# Previous stage results\n\n${prior}`;
+			}
+			const requireReport = !spec && index === job.stages.length - 1;
+			const batch = stage.parallel.map((agentName) => {
+				const agentSpec = activeSubagents[agentName];
+				if (!agentSpec) throw Error(`Stage '${stage.name}' references missing agent '${agentName}'`);
+				return { spec: agentSpec, prompt: stagePrompt, requireReport };
+			});
+			const { results, cleanlinessWarning } = await runParallelBatch(batch, `stage:${stage.name}`, {
+				stageKey: `${job.requestId ?? job.id}:${index}:${stage.name}`,
+			});
+			const failures = results.filter((r) => !r.ok);
+			if (failures.length) {
+				const message = `Stage '${stage.name}' failed: ${failures.map((r) => r.agent).join(", ")}`;
+				emitProgress(message, stageProgressLabel);
+				throw Error(message);
+			}
+			if (requireReport) return results[0].output;
+			const lines = [`## Stage: ${stage.name}`];
+			for (const r of results) {
+				lines.push(`### Agent: ${r.agent} (ok)\n\n${r.output}`);
+			}
+			if (cleanlinessWarning) lines.push(`### Repository Cleanliness Warning\n\n${cleanlinessWarning}`);
+			stageSections.push(lines.join("\n\n"));
+		}
+		finalPrompt = `${job.prompt}\n\n---\n\n# Parallel Stage Results\n\n${stageSections.join("\n\n")}`;
+	}
+
+	if (!spec) throw Error("Missing orchestrator");
+	fs.mkdirSync(defaultAgentCtx.scratchDir, { recursive: true });
+	const { extensions, tools } = selectToolsAndExtensions(spec.tools);
+	const root = await h.root(ctx, {
+		agent: {
+			model: spec.model,
+			instructions: spec.instructions,
+			extensions,
+			tools,
+			...(spec.maxTurns ? { maxTurns: spec.maxTurns } : {}),
+		},
+	});
+	if (job.continueRun) await root.configure({ instructions: spec.instructions }, ctx);
+	const sub = await root.submit(
+		continueRoot
+			? { type: "continue", requestId: rootRequestId }
+			: { type: "input", content: finalPrompt, requestId: rootRequestId },
+		ctx,
+	);
+	const settled = await sub.wait(ctx);
+	if (settled.status !== "done" || settled.type === "write")
+		throw Error(`Task submission did not complete: ${settled.status}${settled.reason ? `: ${settled.reason}` : ""}`);
+	const entry = await root.commit((tx) => tx.entry(AssistantEntry, settled.answer), ctx);
+	const message = entry?.model?.[0];
+	if (message?.role !== "assistant") throw Error("Missing assistant answer");
+	const report = message.content
+		.filter((b) => b.type === "text")
+		.map((b) => b.text)
+		.join("\n")
+		.trim();
+	if (!report) throw Error("Agent returned an empty report");
+	return report;
 }
 
 await new Promise<void>((resolve, reject) => process.stdout.write("", (err) => (err ? reject(err) : resolve())));

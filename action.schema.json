@@ -4,7 +4,10 @@
   "title": "pi-stick Action Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["orchestrator"],
+  "anyOf": [
+    { "required": ["orchestrator"] },
+    { "required": ["stages"], "properties": { "stages": { "minItems": 1 } } }
+  ],
   "properties": {
     "$schema": { "type": "string" },
     "name": {
@@ -42,7 +45,7 @@
         }
       }
     },
-    "orchestrator": { "$ref": "#/$defs/agentConfig" },
+    "orchestrator": { "$ref": "#/$defs/agentConfig", "description": "Optional when the final stage has exactly one agent. Its answer then becomes the report, and continue is unavailable." },
     "agents": {
       "type": "object",
       "propertyNames": {

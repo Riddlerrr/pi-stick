@@ -532,6 +532,10 @@ test("action validation reports the invalid field before creating a run", (t) =>
 		writeJson(file, { ...base, ...fields });
 		fail(["run", "demo", "check"], reason);
 	}
+	for (const stages of [undefined, [], [{ ...stage, parallel: ["audit", "audit"] }]]) {
+		writeJson(file, { model: base.model, agents: base.agents, stages });
+		fail(["run", "demo", "check"], /without an orchestrator requires a final stage with exactly one agent/);
+	}
 	writeJson(file, { ...base, inputs: { ticket: { default: "none" } } });
 	fail(["run", "demo", "check", "--input", "typo=1"], /Unknown --input 'typo'/);
 	assert.deepEqual(fs.readdirSync(join(app, "state/runs")), []);
@@ -1085,6 +1089,11 @@ if (has('config')) {
       if (job.credentials['openai-codex'].authType !== 'oauth') process.exit(4);
       if (job.credentials['anthropic'].token !== 'anthropic-key-fixture') process.exit(5);
       if (job.credentials['anthropic'].authType !== 'api_key') process.exit(6);
+      if (!job.orchestrator) {
+        send({ report: 'Final audit', outputs: { sec: 'Final audit' } });
+        rl.close();
+        return;
+      }
       if (!job.orchestrator.instructions.includes('Security specialist')) process.exit(7);
       if (job.stageContext !== 'all' || job.stages.length !== 1 || job.stages[0].parallel.join(',') !== 'sec,perf') process.exit(8);
       // Test per-agent host RPC policy: sec cannot exec on 'web', orchestrator can exec on 'web', perf cannot exec at all
@@ -1121,6 +1130,21 @@ if (has('config')) {
 	const runPath = join(app, "state/runs", id);
 	assert.equal(read(join(runPath, "outputs/sec.md")), "Security findings\n");
 	assert.equal(read(join(runPath, "outputs/perf.md")), "Perf findings\n");
+
+	const manifestFile = join(actionDir, "action.json");
+	const manifest = JSON.parse(read(manifestFile));
+	delete manifest.orchestrator;
+	manifest.stages.push({ name: "report", parallel: ["sec"] });
+	writeJson(manifestFile, manifest);
+	const direct = ok(["run", "demo", "deep-check", "Run direct audit"]);
+	const directId = /Run: ([0-9a-f]{32})/.exec(direct)![1];
+	const dir = join(app, "state/runs", directId);
+	assert.match(direct, /\[agent:sec\] Final audit/);
+	assert.equal(read(join(dir, "report.md")), "Final audit\n");
+	const config = read(join(dir, "run-config.json"));
+	fail(["continue", directId, "follow-up"], /Cannot continue a run without an orchestrator/);
+	assert.equal(read(join(dir, "run-config.json")), config);
+	assert.equal(read(join(dir, "exit")), "0");
 });
 
 test("kill interrupts only the selected concurrent run and preserves its workspace", async (t) => {

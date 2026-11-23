@@ -209,6 +209,7 @@ export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 	const task = new TaskEnv(id, project);
 	const { services } = task.validateBase();
 	for (const agent of [action.orchestrator, ...Object.values(action.agents)]) {
+		if (!agent) continue;
 		for (const service of agent.allowedServices) {
 			if (service !== "*" && !Object.hasOwn(services, service)) {
 				const path = agent === action.orchestrator ? "orchestrator" : `agents.${agent.name}`;
@@ -304,7 +305,8 @@ export async function launchContinue(id: string, promptText: string, keepUp?: bo
 	try {
 		if (!tryLock(fd)) throw Error(`Run ${id} is currently active; wait for it to finish first`);
 		const cfg = json(cfgFile) as RunConfig;
-		readActionSnapshot(dir, cfg.actionDigest);
+		if (!readActionSnapshot(dir, cfg.actionDigest).orchestrator)
+			throw Error("Cannot continue a run without an orchestrator");
 		const project = getProject(cfg.project);
 		const task = new TaskEnv(id, project);
 		if (!fs.existsSync(task.repo)) throw Error(`Workspace for run ${id} is no longer present`);
@@ -435,49 +437,42 @@ export async function worker(id: string): Promise<number> {
 		const patchFile = join(dir, "changes.patch");
 		if (!cfg.agentDone) {
 			const contextFiles = fs.existsSync(task.context) ? fs.readdirSync(task.context).sort() : [];
-			const modelSpecs = [action.orchestrator.model, ...Object.values(action.agents).map((a) => a.model)];
+			const modelSpecs = Object.values(action.agents).map((a) => a.model);
+			if (action.orchestrator) modelSpecs.unshift(action.orchestrator.model);
 			const auth = await resolveModels(modelSpecs);
-			const orchModel = parseModelSpec(action.orchestrator.model);
 
 			meta.status = "running";
 			meta.keepUp = cfg.keepUp;
 			writeMeta(id, meta);
-			status(dir, `Starting action '${action.name}' (${action.orchestrator.model})…`);
+			const reporter = action.orchestrator ?? action.agents[action.stages.at(-1)!.parallel[0]];
+			status(dir, `Starting action '${action.name}' (${reporter.model})…`);
 
-			const subagentPayloads: Record<string, unknown> = {};
-			for (const [agentName, spec] of Object.entries(action.agents)) {
-				const parsedModel = parseModelSpec(spec.model);
-				subagentPayloads[agentName] = {
-					name: agentName,
+			const payload = (spec: ResolvedAgentSpec) => {
+				const { provider, modelId } = parseModelSpec(spec.model);
+				return {
+					name: spec.name,
 					description: spec.description,
-					model: { provider: parsedModel.provider, modelId: parsedModel.modelId },
-					instructions: composeInstructions(spec, project, action.projectNotes, services, contextFiles),
+					model: { provider, modelId },
+					instructions: composeInstructions(
+						spec,
+						project,
+						action.projectNotes,
+						services,
+						contextFiles,
+						spec === action.orchestrator ? action.agents : undefined,
+					),
 					mode: spec.mode,
 					tools: spec.tools,
 					maxTurns: spec.maxTurns,
 				};
-			}
+			};
 
 			const jobPayload: Record<string, unknown> = {
 				id,
 				models: auth.models,
 				credentials: auth.credentials,
-				orchestrator: {
-					name: "orchestrator",
-					model: { provider: orchModel.provider, modelId: orchModel.modelId },
-					instructions: composeInstructions(
-						action.orchestrator,
-						project,
-						action.projectNotes,
-						services,
-						contextFiles,
-						action.agents,
-					),
-					mode: action.orchestrator.mode,
-					tools: action.orchestrator.tools,
-					maxTurns: action.orchestrator.maxTurns,
-				},
-				agents: subagentPayloads,
+				orchestrator: action.orchestrator && payload(action.orchestrator),
+				agents: Object.fromEntries(Object.entries(action.agents).map(([name, spec]) => [name, payload(spec)])),
 				stageContext: action.stageContext,
 				stages: action.stages,
 				prompt: cfg.prompt,
@@ -516,7 +511,7 @@ export async function worker(id: string): Promise<number> {
 			}
 
 			const { patch, untracked } = task.captureDiff(meta.baseHead);
-			status(dir, result.report, "orchestrator");
+			status(dir, result.report, action.orchestrator ? "orchestrator" : `agent:${reporter.name}`);
 			status(dir, `Wrote: ${reportFile}`);
 			if (patch.trim()) status(dir, `Patch: ${join(dir, "changes.patch")}`);
 			if (untracked.length) status(dir, `Untracked files: ${untracked.length}`);
