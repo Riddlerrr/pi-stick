@@ -60,6 +60,15 @@ function stageFixture(t: TestContext, failFirst = false) {
 	return { run, dir, job };
 }
 
+test("an unavailable pinned subagent model fails explicitly before any model request", (t) => {
+	const { job, run, dir } = stageFixture(t);
+	job.agents.worker.model = { provider: "groq", modelId: "missing-model" };
+	const result = run();
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /Configured model unavailable for worker: groq\/missing-model/);
+	assert.ok(!fs.existsSync(join(dir, "requests")));
+});
+
 test("after process death, resume restores the first stage's output and completes the second", async (t) => {
 	const { run, dir, job } = stageFixture(t);
 	const first = run();

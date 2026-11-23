@@ -140,7 +140,11 @@ pistick update [--yes]                  # rebuild pi-stick:current with latest d
 
 Each run mounts only `state/runs/<id>/session/` at `/sessions`; the orchestrator and its subagents share that SQLite database. `stop` preserves it and `cleanup` removes it with the run. Legacy `state/sessions/` databases are neither migrated nor used. `continue` refuses a missing session without changing the run. Before the first agent launch attempt, `resume` may initialize a session; after that attempt is recorded, a missing database is an error even if Docker never started.
 
-For new runs, `resume` reuses completed static stages and their outputs, and reconnects to the same Pi Durable submissions in an interrupted stage. Resuming a follow-up never starts the initial stages. Runs created before stage checkpointing have no saved stage results. Keep the action definition unchanged while recovering a run.
+For new runs, `resume` reuses completed static stages and their outputs, and reconnects to the same Pi Durable submissions in an interrupted stage. Resuming a follow-up never starts the initial stages. Runs created before stage checkpointing have no saved stage results.
+
+Before the first worker starts, `run` pins the resolved action (including project overrides, agent instructions and permissions, stages, effective model IDs, and project `AGENTS.md`) and executable copies of `prepare` and `after` in the host-only `state/runs/<id>/action-snapshot/`. `resume` and `continue` verify this snapshot before changing the turn. Missing, legacy, or corrupt snapshots require a new run; existing history is preserved. Editing an action does not revoke existing runs. Model catalogs, credentials, and the run’s service and `/context` listings remain live.
+
+Hooks execute the saved script (`$0`) in the task checkout. `PI_STICK_ACTION_DIR` and `PI_STICK_HOOK_SOURCE_DIR` refer to the original action directory and original script directory, respectively. Helpers and templates there are not copied.
 
 Host hooks may have external side effects. If a hook started but its success was not recorded, inspect the run and external state first. Use `pistick resume RUN_ID --retry-hook` only if it is safe to execute that hook again. This is not an exactly-once guarantee for commands interrupted mid-execution.
 

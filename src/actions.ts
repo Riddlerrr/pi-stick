@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { ASSETS, json, ROOT, read, run, userSettings, writeJson } from "./platform.ts";
 import { parseModelSpec } from "./system.ts";
 import { isValidName, type ProjectInfo } from "./workspace.ts";
@@ -381,7 +381,7 @@ export function createAction(name: string, project?: ProjectInfo): string {
 export interface HookEnvContext {
 	runId: string;
 	project: ProjectInfo;
-	action: LoadedAction;
+	action: Pick<LoadedAction, "name" | "dir">;
 	runDir: string;
 	repoDir: string;
 	scratchDir: string;
@@ -396,7 +396,7 @@ export interface HookEnvContext {
 	outputsDir?: string;
 }
 
-export function runHook(scriptPath: string, envCtx: HookEnvContext) {
+export function runHook(name: keyof ActionHooks, source: string, envCtx: HookEnvContext) {
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		PI_STICK_RUN_ID: envCtx.runId,
@@ -404,6 +404,7 @@ export function runHook(scriptPath: string, envCtx: HookEnvContext) {
 		PI_STICK_PROJECT_DIR: envCtx.project.folder,
 		PI_STICK_ACTION: envCtx.action.name,
 		PI_STICK_ACTION_DIR: envCtx.action.dir,
+		PI_STICK_HOOK_SOURCE_DIR: dirname(source),
 		PI_STICK_RUN_DIR: envCtx.runDir,
 		PI_STICK_REPO: envCtx.repoDir,
 		PI_STICK_SCRATCH: envCtx.scratchDir,
@@ -417,5 +418,5 @@ export function runHook(scriptPath: string, envCtx: HookEnvContext) {
 	if (envCtx.reportFile) env.PI_STICK_REPORT_FILE = envCtx.reportFile;
 	if (envCtx.patchFile) env.PI_STICK_PATCH_FILE = envCtx.patchFile;
 	if (envCtx.outputsDir) env.PI_STICK_OUTPUTS_DIR = envCtx.outputsDir;
-	run([scriptPath], { cwd: envCtx.repoDir, env });
+	run([join(envCtx.runDir, "action-snapshot", name)], { cwd: envCtx.repoDir, env });
 }

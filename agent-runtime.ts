@@ -295,6 +295,11 @@ for (const provider of allProviders) {
 	}
 }
 
+for (const spec of [job.orchestrator, ...Object.values(job.agents ?? {})]) {
+	if (spec && !models.getModel(spec.model.provider, spec.model.modelId))
+		throw Error(`Configured model unavailable for ${spec.name}: ${spec.model.provider}/${spec.model.modelId}`);
+}
+
 const agentByConv = new Map<ConversationId, AgentContext>();
 const defaultAgentCtx: AgentContext = {
 	name: "orchestrator",
@@ -1074,6 +1079,7 @@ try {
 				...(spec.maxTurns ? { maxTurns: spec.maxTurns } : {}),
 			},
 		});
+		if (job.continueRun) await root.configure({ instructions: spec.instructions }, ctx);
 		const sub = await root.submit({ type: "input", content: finalPrompt, requestId: job.requestId ?? job.id }, ctx);
 		const settled = await sub.wait(ctx);
 		if (settled.status !== "done" || settled.type !== "input")

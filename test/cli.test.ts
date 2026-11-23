@@ -499,6 +499,10 @@ test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async
 	const prepareScript = join(hooksDir, "prepare.sh");
 	const afterScript = join(hooksDir, "after.sh");
 	const afterMarker = join(tmp, "after-called.json");
+	const failHook = join(tmp, "fail-after");
+	const projectDir = join(app, "projects/demo");
+	fs.writeFileSync(join(projectDir, "AGENTS.md"), "PINNED PROJECT NOTES");
+	fs.writeFileSync(join(actionDir, "instructions.md"), "PINNED INSTRUCTIONS");
 	fs.writeFileSync(
 		prepareScript,
 		`#!/usr/bin/env bash\nset -euo pipefail\nprintf 'ticket=%s\\n' "$PI_STICK_INPUTS_JSON" > "$PI_STICK_CONTEXT/ticket.txt"\n`,
@@ -506,14 +510,16 @@ test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async
 	);
 	fs.writeFileSync(
 		afterScript,
-		`#!/usr/bin/env bash\nset -euo pipefail\nprintf '{"code":%s,"report":"%s","patch":"%s"}\n' "$PI_STICK_EXIT_CODE" "$PI_STICK_REPORT_FILE" "\${PI_STICK_PATCH_FILE:-}" > ${JSON.stringify(afterMarker)}\n`,
+		`#!/usr/bin/env bash\nset -euo pipefail\n[[ "$PI_STICK_ACTION_DIR" == ${JSON.stringify(actionDir)} && "$PI_STICK_HOOK_SOURCE_DIR" == ${JSON.stringify(hooksDir)} && "$0" == "$PI_STICK_RUN_DIR/action-snapshot/after" && "$PWD" == "$PI_STICK_REPO" ]]\n[[ ! -e ${JSON.stringify(failHook)} ]]\nprintf '{"code":%s,"report":"%s","patch":"%s"}\n' "$PI_STICK_EXIT_CODE" "$PI_STICK_REPORT_FILE" "\${PI_STICK_PATCH_FILE:-}" > ${JSON.stringify(afterMarker)}\n`,
 		{ mode: 0o700 },
 	);
 
+	const settings = join(tmp, ".config/pi-stick/settings.json");
+	fs.mkdirSync(dirname(settings), { recursive: true });
+	writeJson(settings, { default_model: "openai-codex/gpt-6.2-sol" });
 	writeJson(join(actionDir, "action.json"), {
 		name: "fix",
 		description: "Fix and verify issue",
-		model: "openai-codex/gpt-6.2-sol",
 		inputs: {
 			ticket: { required: true },
 		},
@@ -543,6 +549,10 @@ const a = process.argv.slice(2);
 const has = s => a.includes(s);
 fs.appendFileSync(${JSON.stringify(dockerLog)}, a.join(' ') + '\\n');
 if (has('config')) {
+  // Base validation runs after launcher resolution but before the first worker.
+  const override = ${JSON.stringify(join(projectDir, "actions/fix"))};
+  fs.mkdirSync(override, {recursive:true});
+  fs.writeFileSync(override + '/action.json', JSON.stringify({orchestrator:{model:'changed/model',tools:['restart']}}));
   console.log(JSON.stringify({
     services: { runner: { volumes: [{ type: 'volume', source: 'source', target: '/workspace' }] } },
     volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
@@ -567,7 +577,9 @@ if (has('config')) {
     const m = JSON.parse(line);
     if (!job) {
       job = m;
-      if (job.credentials['openai-codex'].token !== 'secret-fixture-token') process.exit(3);
+      if (job.credentials['openai-codex'].token !== (job.continueRun ? 'fresh-token' : 'secret-fixture-token')) process.exit(3);
+      if (job.orchestrator.model.modelId !== 'gpt-6.2-sol' || !job.orchestrator.instructions.includes('PINNED PROJECT NOTES') || !job.orchestrator.instructions.includes('PINNED INSTRUCTIONS') || job.orchestrator.tools.includes('restart')) process.exit(10);
+      if (job.continueRun && !job.orchestrator.instructions.includes('updated-context.md')) process.exit(11);
       if (!fs.readFileSync(ctxMount + '/ticket.txt', 'utf8').includes('ISSUE-42')) process.exit(4);
       const session = a.find(x => x.endsWith(':/sessions')).slice(0, -':/sessions'.length);
       const db = session + '/' + job.id + '.sqlite';
@@ -641,13 +653,41 @@ if (has('config')) {
 	assert.ok(!fs.existsSync(db));
 	fs.writeFileSync(db, id);
 
+	const pinned = join(runPath, "action-snapshot");
+	for (const name of fs.readdirSync(pinned)) assert.ok(!read(join(pinned, name)).includes("secret-fixture-token"));
+	fs.rmSync(actionDir, { recursive: true });
+	writeJson(settings, { default_model: "different/model" });
+	fs.writeFileSync(join(projectDir, "AGENTS.md"), "CHANGED NOTES");
+	fs.writeFileSync(join(runPath, "context/updated-context.md"), "new context");
+	stub("pi", "console.log('fresh-token')");
+
 	// Continue run with follow-up prompt
 	assert.equal(invoke(["continue", id, "Also add followup line"]).status, 1);
-	const script = read(afterScript);
-	fs.writeFileSync(afterScript, "#!/bin/sh\nexit 1\n");
+	const failedState = snapshot();
+	fs.renameSync(pinned, `${pinned}.missing`);
+	fail(["resume", id], /Invalid action snapshot/);
+	assert.deepEqual(snapshot(), failedState);
+	fs.renameSync(`${pinned}.missing`, pinned);
+	const cfgPath = join(runPath, "run-config.json");
+	const cfg = JSON.parse(read(cfgPath));
+	const { actionDigest: _digest, ...legacy } = cfg;
+	writeJson(cfgPath, legacy);
+	const legacyState = snapshot();
+	fail(["continue", id, "ignore legacy run"], /Missing action snapshot/);
+	assert.deepEqual(snapshot(), legacyState);
+	writeJson(cfgPath, cfg);
+	const savedHook = join(pinned, "after");
+	fs.chmodSync(savedHook, 0o700);
+	const script = read(savedHook);
+	fs.appendFileSync(savedHook, "# changed bytes\n");
+	fail(["resume", id], /after checksum mismatch/);
+	fail(["continue", id, "do not start"], /after checksum mismatch/);
+	assert.deepEqual(snapshot(), failedState);
+	fs.writeFileSync(savedHook, script);
+	fs.writeFileSync(failHook, "");
 	assert.equal(invoke(["resume", id]).status, 1);
 	fail(["resume", id], /after hook unknown/);
-	fs.writeFileSync(afterScript, script);
+	fs.unlinkSync(failHook);
 	const stopFailure = join(tmp, "fail-stop");
 	fs.writeFileSync(stopFailure, "");
 	const stopResult = invoke(["resume", id, "--retry-hook"]);

@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
+import { readActionSnapshot, saveActionSnapshot } from "./action-snapshot.ts";
 import { type LoadedAction, loadAction, type ResolvedAgentSpec, resolveInputs, runHook } from "./actions.ts";
 import {
 	closed,
@@ -49,9 +50,10 @@ export interface RunConfig {
 	prompt: string;
 	keepUp: boolean;
 	requestId: string;
-	mode: "run" | "resume" | "continue";
+	mode: "run" | "continue";
 	prepared?: boolean;
 	agentLaunchAttempted: boolean;
+	actionDigest: string;
 	hookPending?: "prepare" | "after";
 	prepareDone?: boolean;
 	afterDone?: boolean;
@@ -104,6 +106,7 @@ export function status(dir: string, msg: string, agent?: string) {
 function composeInstructions(
 	agent: ResolvedAgentSpec,
 	project: ProjectInfo,
+	projectNotes: string | null,
 	services: string[],
 	contextFiles: string[],
 	availableSubagents?: Record<string, ResolvedAgentSpec>,
@@ -134,11 +137,7 @@ function composeInstructions(
 			`Configured subagents you can invoke in parallel via the 'delegate' tool:\n${lines.join("\n")}\nNote: parallel batches may include multiple read-only subagents, while read-write subagents must run one at a time.`,
 		);
 	}
-	const agentsMd = join(project.folder, "AGENTS.md");
-	if (fs.existsSync(agentsMd)) {
-		const notes = read(agentsMd).trim();
-		if (notes) parts.push(`Project notes (AGENTS.md):\n${notes}`);
-	}
+	if (projectNotes?.trim()) parts.push(`Project notes (AGENTS.md):\n${projectNotes.trim()}`);
 	if (agent.instructions.trim()) {
 		parts.push(`Action instructions:\n${agent.instructions.trim()}`);
 	}
@@ -157,7 +156,7 @@ function buildInitialPrompt(action: LoadedAction, userPrompt: string, inputs: Re
 	return lines.join("\n");
 }
 
-function policyForAgent(action: LoadedAction, agentName?: string): RpcPolicy {
+function policyForAgent(action: Pick<LoadedAction, "agents" | "orchestrator">, agentName?: string): RpcPolicy {
 	const spec = !agentName || agentName === "orchestrator" ? action.orchestrator : action.agents[agentName];
 	if (!spec) return { allowExec: false, allowLogs: false, allowPs: false, allowRestart: false };
 	return {
@@ -209,6 +208,7 @@ export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 	const fd = fs.openSync(runLock(id), "a");
 	try {
 		if (!tryLock(fd)) throw Error("Could not acquire run lock");
+		const actionDigest = saveActionSnapshot(task.dir, action, project.folder);
 		const now = new Date().toISOString();
 		writeMeta(id, {
 			id,
@@ -231,6 +231,7 @@ export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 			mode: "run",
 			prepared: false,
 			agentLaunchAttempted: false,
+			actionDigest,
 		} satisfies RunConfig);
 		await spawnWorker(id, fd);
 	} finally {
@@ -257,17 +258,13 @@ export async function launchResume(id: string, retryHook = false): Promise<strin
 		const cfg = json(cfgFile) as RunConfig;
 		if (fs.existsSync(exitFile) && read(exitFile).trim() === "0")
 			throw Error("Run already completed; use 'pistick continue' for follow-up instructions");
+		readActionSnapshot(dir, cfg.actionDigest);
 		// A legacy config without the marker cannot prove the agent never started.
 		if (cfg.agentLaunchAttempted !== false) requireSession(id);
 		if (cfg.hookPending && !retryHook)
 			throw Error(
 				`Outcome of ${cfg.hookPending} hook unknown; verify its side effects before using resume --retry-hook`,
 			);
-		// Older versions overwrote the turn kind on resume; only follow-ups have a fresh request ID.
-		if (cfg.mode === "resume") {
-			cfg.mode = cfg.requestId === id ? "run" : "continue";
-			writeJson(cfgFile, cfg);
-		}
 		fs.rmSync(exitFile, { force: true });
 		await spawnWorker(id, fd);
 	} finally {
@@ -287,6 +284,7 @@ export async function launchContinue(id: string, promptText: string, keepUp?: bo
 	try {
 		if (!tryLock(fd)) throw Error(`Run ${id} is currently active; wait for it to finish first`);
 		const cfg = json(cfgFile) as RunConfig;
+		readActionSnapshot(dir, cfg.actionDigest);
 		const project = getProject(cfg.project);
 		const task = new TaskEnv(id, project);
 		if (!fs.existsSync(task.repo)) throw Error(`Workspace for run ${id} is no longer present`);
@@ -315,7 +313,7 @@ export async function worker(id: string): Promise<number> {
 	const cfg = json(cfgFile) as RunConfig;
 	const meta = readMeta(id);
 	const project = getProject(cfg.project);
-	const action = loadAction(cfg.action, project, true);
+	const action = readActionSnapshot(dir, cfg.actionDigest);
 	const task = new TaskEnv(id, project);
 	let code = 1;
 	let stackStartAttempted = false;
@@ -350,7 +348,7 @@ export async function worker(id: string): Promise<number> {
 				cfg.hookPending = "prepare";
 				writeJson(cfgFile, cfg);
 				status(dir, "Running prepare hook…");
-				runHook(action.hooks.prepare, {
+				runHook("prepare", action.hooks.prepare, {
 					runId: id,
 					project,
 					action,
@@ -400,7 +398,7 @@ export async function worker(id: string): Promise<number> {
 					name: agentName,
 					description: spec.description,
 					model: { provider: parsedModel.provider, modelId: parsedModel.modelId },
-					instructions: composeInstructions(spec, project, services, contextFiles),
+					instructions: composeInstructions(spec, project, action.projectNotes, services, contextFiles),
 					mode: spec.mode,
 					tools: spec.tools,
 					maxTurns: spec.maxTurns,
@@ -414,7 +412,14 @@ export async function worker(id: string): Promise<number> {
 				orchestrator: {
 					name: "orchestrator",
 					model: { provider: orchModel.provider, modelId: orchModel.modelId },
-					instructions: composeInstructions(action.orchestrator, project, services, contextFiles, action.agents),
+					instructions: composeInstructions(
+						action.orchestrator,
+						project,
+						action.projectNotes,
+						services,
+						contextFiles,
+						action.agents,
+					),
 					mode: action.orchestrator.mode,
 					tools: action.orchestrator.tools,
 					maxTurns: action.orchestrator.maxTurns,
@@ -464,7 +469,7 @@ export async function worker(id: string): Promise<number> {
 			cfg.hookPending = "after";
 			writeJson(cfgFile, cfg);
 			status(dir, "Running after hook…");
-			runHook(action.hooks.after, {
+			runHook("after", action.hooks.after, {
 				runId: id,
 				project,
 				action,
