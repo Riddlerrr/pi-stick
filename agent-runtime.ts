@@ -33,6 +33,7 @@ import { createGrepTool } from "./runtime-tools/grep.ts";
 import { createLogsTool } from "./runtime-tools/logs.ts";
 import { createPsTool } from "./runtime-tools/ps.ts";
 import { createReadTool } from "./runtime-tools/read.ts";
+import { createRestartTool } from "./runtime-tools/restart.ts";
 import type { AgentRpc } from "./runtime-tools/rpc.ts";
 import { createWriteTool } from "./runtime-tools/write.ts";
 
@@ -434,25 +435,6 @@ async function runParallelBatch(
 	return result;
 }
 
-const restartTool = defineTool({
-	name: "restart",
-	description: "Restart a service in the project Compose stack.",
-	parameters: {
-		type: "object",
-		properties: {
-			service: { type: "string", description: "Compose service name to restart." },
-		},
-		required: ["service"],
-		additionalProperties: false,
-	},
-	callers: ["model"],
-	execute: async (args, api) => {
-		const agentCtx = getAgentCtx(api.conversationId);
-		const res = await callHostRpc("restart", args as Record<string, unknown>, agentCtx.name);
-		return { output: [{ type: "text" as const, text: res.text }], isError: !!res.error };
-	},
-});
-
 type DelegateTasks = Array<{ agent: string; prompt: string }>;
 // An abandoned batch is marked before recovery dispatches any of its owned conversations.
 const delegateBatch = defineTask<DelegateTasks, { phase: "run" }, BatchResult>({
@@ -547,7 +529,7 @@ const toolMap = new Map<string, ToolRegistration>([
 	["exec", createExecTool(CONTAINER_REPO_DIR, agentRpc)],
 	["logs", createLogsTool(agentRpc)],
 	["ps", createPsTool(agentRpc)],
-	["restart", restartTool],
+	["restart", createRestartTool(agentRpc)],
 	["delegate", delegateTool],
 ]);
 
