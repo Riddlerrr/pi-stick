@@ -6,6 +6,7 @@ WORKDIR /app
 COPY --chmod=0644 package*.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 COPY --chmod=0644 agent-runtime.ts runtime-auth.ts ./
-COPY --chmod=0644 runtime-tools/ ./runtime-tools/
+COPY --chmod=0644 runtime-tools/*.ts ./runtime-tools/
+RUN chmod 0755 ./runtime-tools
 USER node
 CMD ["node", "/app/agent-runtime.ts"]
