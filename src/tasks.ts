@@ -1,6 +1,7 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import { join, posix } from "node:path";
+import { promisify } from "node:util";
 import { IMAGE, isolatedRun } from "./container.ts";
 import { closed, command, gitCommand, output, run, STATE, touch } from "./platform.ts";
 import { type ProjectInfo, projectSource } from "./workspace.ts";
@@ -308,20 +309,42 @@ export class TaskEnv {
 		run([...this.compose, "down", "--volumes"]);
 	}
 
-	private inspectWorkspace(...args: string[]): string {
+	private inspectionArgs(...args: string[]) {
 		// Mount the trusted parent: the runner can replace entries inside workspace, including repo.
-		return command([...isolatedRun("none"), "-v", `${this.workspace}:/workspace:ro`, IMAGE, ...args]).toString(
-			"utf8",
-		);
+		return [...isolatedRun("none"), "-v", `${this.workspace}:/workspace:ro`, IMAGE, ...args];
+	}
+
+	private inspectWorkspace(...args: string[]): string {
+		return command(this.inspectionArgs(...args)).toString("utf8");
 	}
 
 	inspectGit(...args: string[]): string {
 		return this.inspectWorkspace(...gitCommand(CONTAINER_REPO_DIR), "--no-optional-locks", ...args);
 	}
 
-	trackedStatus(): string {
-		if (!fs.existsSync(this.repo)) return "";
-		return this.inspectGit("status", "--porcelain", "--untracked-files=no");
+	private async trackedStatus(): Promise<RpcResponse> {
+		const [docker, ...args] = this.inspectionArgs(
+			"timeout",
+			"-k",
+			"2",
+			"30",
+			...gitCommand(CONTAINER_REPO_DIR),
+			"--no-optional-locks",
+			"status",
+			"--porcelain",
+			"--untracked-files=no",
+		);
+		try {
+			const { stdout } = await promisify(execFile)(docker, args, {
+				timeout: 35_000,
+				killSignal: "SIGKILL",
+				maxBuffer: 1024 * 1024,
+			});
+			return { text: stdout };
+		} catch (err) {
+			const { code, signal } = err as NodeJS.ErrnoException & { signal?: string };
+			return { error: true, text: `git status failed (${signal ?? code ?? "unknown error"})` };
+		}
 	}
 
 	captureDiff(baseHead?: string): { patch: string; untracked: string[] } {
@@ -446,7 +469,7 @@ export class TaskEnv {
 				};
 			}
 			case "check_clean": {
-				return { text: this.trackedStatus(), error: false };
+				return this.trackedStatus();
 			}
 			default:
 				return { text: `Unsupported RPC method: ${method}`, error: true };

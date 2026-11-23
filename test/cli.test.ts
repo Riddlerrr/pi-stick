@@ -760,6 +760,20 @@ if (has('git') && a[0] === 'run') {
   const mounts = a.filter((_, i) => a[i - 1] === '-v');
   if (mounts.length !== 1 || !mounts[0].endsWith(':/workspace:ro') || a[a.indexOf('--network') + 1] !== 'none' || !has('--read-only')) process.exit(14);
   const cwd = mounts[0].slice(0, -':/workspace:ro'.length) + '/repo';
+  if (has('status')) {
+    const gate = cwd + '/../ps-replied';
+    const deadline = Date.now() + 5000;
+    while (!fs.existsSync(gate)) {
+      if (Date.now() > deadline) process.exit(21);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+    if (fs.existsSync(cwd + '/../overflow')) {
+      process.stdout.write('x'.repeat(2 * 1024 * 1024));
+      return;
+    }
+    process.stdout.write(' M tracked-file\\n'.repeat(3000));
+    process.stderr.write('not part of status');
+  }
   const cmd = a.slice(a.indexOf('git'));
   cmd[0] = ${JSON.stringify(realGit)};
   cmd[cmd.indexOf('-C') + 1] = cwd;
@@ -816,7 +830,10 @@ if (has('git') && a[0] === 'run') {
       fs.writeFileSync(repoMount + '/new [test].txt', 'created\\n');
       fs.appendFileSync(repoMount + '/.git/info/exclude', 'ignored.txt\\n');
       fs.writeFileSync(repoMount + '/ignored.txt', 'not for export\\n');
+      fs.rmSync(repoMount + '/../ps-replied', {force:true});
+      fs.rmSync(repoMount + '/../overflow', {force:true});
       send({ rpc: 4, method: 'check_clean', params: {} });
+      send({ rpc: 5, method: 'ps', params: {}, agent:'orchestrator' });
       send({ rpc: 1, method: 'exec', params: { command: 'echo hi' }, agent: 'orchestrator' });
       send({ rpc: 2, method: 'logs', params: { tail: 10 }, agent: 'orchestrator' });
       send({ rpc: 3, method: 'restart', params: { service: 'runner' }, agent: 'orchestrator' });
@@ -825,9 +842,16 @@ if (has('git') && a[0] === 'run') {
     if (m.rpc === 1 && !m.result.error && m.result.text.includes('exec-ok:echo hi')) got |= 1;
     else if (m.rpc === 2 && !m.result.error && m.result.text.includes('service-log-line')) got |= 2;
     else if (m.rpc === 3 && m.result.error && m.result.text.includes('not permitted')) got |= 4;
-    else if (m.rpc === 4 && !m.result.error && m.result.text === '') got |= 8;
+    else if (m.rpc === 5 && !m.result.error && m.result.text.includes('runner')) {
+      fs.writeFileSync(repoMount + '/../ps-replied', '');
+      got |= 16;
+    } else if (m.rpc === 4 && !m.result.error && m.result.text === ' M tracked-file\\n'.repeat(3000)) {
+      got |= 8;
+      fs.writeFileSync(repoMount + '/../overflow', '');
+      send({rpc:6, method:'check_clean', params:{}});
+    } else if (m.rpc === 6 && m.result.error && m.result.text.includes('MAXBUFFER')) got |= 32;
     else process.exit(5);
-    if (got === 15) {
+    if (got === 63) {
       send({ progress: 'All checks passed', agent: 'orchestrator' });
       send({ report: 'Initial report' });
       rl.close();

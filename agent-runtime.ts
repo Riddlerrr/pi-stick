@@ -421,21 +421,24 @@ async function runParallelBatch(
 		);
 	}
 	const allReadOnly = batch.every((b) => b.spec.mode === "read-only");
-	let beforeClean: string | undefined;
-	if (allReadOnly) {
+	let cleanlinessWarning: string | undefined;
+	const trackedStatus = async () => {
 		const res = await callHostRpc("check_clean", {});
-		if (!res.error) beforeClean = res.text;
-	}
+		if (!res.error) return res.text;
+		cleanlinessWarning = `WARNING: Could not verify tracked files in read-only round '${batchLabel}': ${res.text}`;
+		emitProgress(cleanlinessWarning, "orchestrator");
+		return undefined;
+	};
+	const beforeClean = allReadOnly ? await trackedStatus() : undefined;
 	const results = await Promise.all(
 		batch.map((item, i) =>
 			runSubagent(item.spec, item.prompt, stageKey && `${stageKey}:${i}:${item.spec.name}`, owner),
 		),
 	);
-	let cleanlinessWarning: string | undefined;
-	if (allReadOnly && beforeClean !== undefined) {
-		const after = await callHostRpc("check_clean", {});
-		if (!after.error && after.text !== beforeClean) {
-			cleanlinessWarning = `WARNING: Tracked repository files changed during read-only round '${batchLabel}':\n${after.text.trim()}`;
+	if (beforeClean !== undefined) {
+		const after = await trackedStatus();
+		if (after !== undefined && after !== beforeClean) {
+			cleanlinessWarning = `WARNING: Tracked repository files changed during read-only round '${batchLabel}':\n${after.trim()}`;
 			emitProgress(cleanlinessWarning, "orchestrator");
 		}
 	}
