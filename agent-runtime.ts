@@ -1,8 +1,6 @@
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import * as fs from "node:fs";
 import { stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -30,7 +28,9 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 
 import { type CredentialPayload, runtimeCredentials } from "./runtime-auth.ts";
 import { createEditTool } from "./runtime-tools/edit.ts";
+import { createGrepTool } from "./runtime-tools/grep.ts";
 import { createReadTool } from "./runtime-tools/read.ts";
+import { MAX_SEARCH_CHARS, scanRipgrep } from "./runtime-tools/ripgrep.ts";
 import { createWriteTool } from "./runtime-tools/write.ts";
 
 const SESSIONS_DIR = process.env.PI_STICK_SESSIONS_DIR ?? "/sessions";
@@ -38,10 +38,7 @@ const CONTAINER_REPO_DIR = "/workspace/repo";
 const WORKSPACE_DIR = process.env.PI_STICK_WORKSPACE_DIR ?? CONTAINER_REPO_DIR;
 const SCRATCH_DIR = process.env.PI_STICK_SCRATCH_DIR ?? "/scratch";
 const CONTEXT_DIR = process.env.PI_STICK_CONTEXT_DIR ?? "/context";
-const MAX_SEARCH_CHARS = 32_000;
 const MAX_FIND_RESULTS = 500;
-const MAX_GREP_MATCHES = 2000;
-const SEARCH_TIMEOUT_MS = 15_000;
 
 interface AgentRuntimeSpec {
 	name: string;
@@ -217,64 +214,6 @@ function globToRegExp(pattern: string): RegExp {
 		}
 	}
 	return new RegExp(`^${re}$`);
-}
-
-async function scanRipgrep(
-	cwd: string,
-	args: string[],
-	separator: string,
-	accept: (record: string) => boolean,
-	abortSignal: AbortSignal | undefined,
-): Promise<boolean> {
-	const deadline = AbortSignal.timeout(SEARCH_TIMEOUT_MS);
-	const child = spawn(
-		"rg",
-		[
-			"--no-config",
-			"--hidden",
-			"--no-require-git",
-			"--no-ignore-global",
-			"--no-ignore-dot",
-			"--sort=path",
-			"--glob=!.git",
-			"--glob=!node_modules",
-			...args,
-		],
-		{
-			cwd,
-			stdio: ["ignore", "pipe", "pipe"],
-			signal: abortSignal ? AbortSignal.any([abortSignal, deadline]) : deadline,
-			killSignal: "SIGKILL",
-		},
-	);
-	const closed = once(child, "close") as Promise<[number | null, NodeJS.Signals | null]>;
-	void closed.catch(() => {}); // The child can fail while stdout is being drained.
-	let stderr = "";
-	child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
-		stderr = (stderr + chunk).slice(0, 2000);
-	});
-	try {
-		let pending = "";
-		let truncated = false;
-		for await (const chunk of child.stdout.setEncoding("utf8") as AsyncIterable<string>) {
-			const records = (pending + chunk).split(separator);
-			pending = records.pop() ?? "";
-			if (records.every(accept)) continue;
-			truncated = true;
-			child.kill("SIGKILL");
-			break;
-		}
-		const [code, signal] = await closed;
-		if (code !== 0 && code !== 1 && !(truncated && signal === "SIGKILL")) {
-			throw Error(stderr.trim() || `ripgrep failed (${code ?? signal})`);
-		}
-		return truncated;
-	} catch (err) {
-		if (deadline.aborted && !abortSignal?.aborted) throw Error("Search timed out; narrow the search path.");
-		throw err;
-	} finally {
-		if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-	}
 }
 
 // Docker forwards EOF when the worker dies, even during an outstanding model request.
@@ -514,88 +453,6 @@ async function runParallelBatch(
 	return result;
 }
 
-const grepTool = defineTool({
-	name: "grep",
-	description:
-		"Search for a literal substring or ripgrep regex. Directory searches respect .gitignore and skip .git and node_modules.",
-	parameters: {
-		type: "object",
-		properties: {
-			pattern: { type: "string", description: "Substring (or regex when regex=true) to match." },
-			path: { type: "string", description: `Optional directory or file path (defaults to ${CONTAINER_REPO_DIR}).` },
-			regex: { type: "boolean", description: "Use ripgrep's default regular expression syntax." },
-			offset: { type: "integer", minimum: 0, description: "Character offset into results." },
-		},
-		required: ["pattern"],
-		additionalProperties: false,
-	},
-	replay: "safe",
-	execute: async (args, api, context) => {
-		const {
-			pattern,
-			path = CONTAINER_REPO_DIR,
-			regex = false,
-			offset = 0,
-		} = args as {
-			pattern: string;
-			path?: string;
-			regex?: boolean;
-			offset?: number;
-		};
-		try {
-			const resolved = resolveAgentPath(path, getAgentCtx(api.conversationId), false);
-			const info = await stat(resolved);
-			const directory = info.isDirectory();
-			if (!directory && !info.isFile()) throw Error("Search path must be a regular file or directory.");
-			if (!directory && info.size > 2 * 1024 * 1024)
-				return { output: [{ type: "text" as const, text: "(no matches)" }] };
-			const matches: string[] = [];
-			const end = offset + MAX_SEARCH_CHARS;
-			let length = 0;
-			const truncated = await scanRipgrep(
-				directory ? resolved : dirname(resolved),
-				[
-					"--line-number",
-					directory ? "--with-filename" : "--no-filename",
-					"--color=never",
-					"--max-columns=400",
-					"--max-columns-preview",
-					"--max-filesize=2M",
-					...(regex ? [] : ["--fixed-strings"]),
-					"-e",
-					pattern,
-					"--",
-					directory ? "." : `./${basename(resolved)}`,
-				],
-				"\n",
-				(line) => {
-					if (!directory && !/^\d+:/.test(line)) return true; // ripgrep can report a binary file without a line number.
-					if (matches.length === MAX_GREP_MATCHES) return false;
-					const match = directory ? line.replace(/^\.\//, "") : `${path}:${line}`;
-					length += match.length + (matches.length ? 1 : 0);
-					matches.push(match);
-					return length <= end;
-				},
-				context.abortSignal,
-			);
-			const text = matches.join("\n") || "(no matches)";
-			const suffix =
-				text.length > end
-					? `\n[more at offset ${end}]`
-					: truncated
-						? "\n[More matches omitted; narrow the search.]"
-						: "";
-			const slice = text.slice(offset, end) + suffix;
-			return { output: [{ type: "text" as const, text: slice }] };
-		} catch (err) {
-			return {
-				output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
-				isError: true,
-			};
-		}
-	},
-});
-
 const findTool = defineTool({
 	name: "find",
 	description: `List files under a directory (defaults to ${CONTAINER_REPO_DIR}), optionally matching a glob or substring. Respects .gitignore and skips .git and node_modules.`,
@@ -815,7 +672,7 @@ const toolMap = new Map<string, ToolRegistration>([
 	["read", createReadTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
 	["write", createWriteTool((path, id) => resolveAgentPath(path, getAgentCtx(id), true))],
 	["edit", createEditTool((path, id) => resolveAgentPath(path, getAgentCtx(id), true))],
-	["grep", grepTool],
+	["grep", createGrepTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
 	["find", findTool],
 	["exec", execTool],
 	["logs", logsTool],
