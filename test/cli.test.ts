@@ -28,6 +28,7 @@ function fixture(t: TestContext) {
 			"package.json",
 			"project-template",
 			"agent-runtime.ts",
+			"runtime-auth.ts",
 			"Dockerfile",
 			"action.schema.json",
 		])
@@ -958,13 +959,16 @@ if (has('config')) {
       send({ rpc: 1, method: 'exec', params: { service: 'web', command: 'echo 1' }, agent: 'sec' });
       send({ rpc: 2, method: 'exec', params: { service: 'web', command: 'echo 2' }, agent: 'orchestrator' });
       send({ rpc: 3, method: 'exec', params: { service: 'runner', command: 'echo 3' }, agent: 'perf' });
+      for (const [rpc, provider] of [[4, 'openai-codex'], [5, 'other'], [6, 'anthropic']]) send({ rpc, method: 'refresh_token', params: {provider} });
       return;
     }
     if (m.rpc === 1 && m.result.error && m.result.text.includes('not permitted')) got |= 1;
     else if (m.rpc === 2 && !m.result.error && m.result.text.includes('ran:echo 2')) got |= 2;
     else if (m.rpc === 3 && m.result.error && m.result.text.includes('not permitted')) got |= 4;
+    else if (m.rpc === 4 && JSON.parse(m.result.text).token === 'codex-token-fixture' && JSON.parse(m.result.text).validUntil > Date.now()) got |= 8;
+    else if ((m.rpc === 5 || m.rpc === 6) && m.result.error) got |= 1 << (m.rpc - 1);
     else process.exit(9);
-    if (got === 7) {
+    if (got === 63) {
       send({ progress: 'checked auth', agent: 'agent:sec' });
       send({ progress: 'checked queries', agent: 'agent:perf' });
       send({
@@ -1090,6 +1094,7 @@ test("stage-release.sh packages updated runtime files and excludes removed legac
 	assert.equal(r.status, 0, r.stderr);
 	for (const rel of [
 		"share/agent-runtime.ts",
+		"share/runtime-auth.ts",
 		"share/action.schema.json",
 		"share/Dockerfile",
 		"share/.dockerignore",

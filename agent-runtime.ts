@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import type { Api, Credential, Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
@@ -25,6 +25,8 @@ import {
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
+import { type CredentialPayload, runtimeCredentials } from "./runtime-auth.ts";
+
 const SESSIONS_DIR = process.env.PI_STICK_SESSIONS_DIR ?? "/sessions";
 const CONTAINER_REPO_DIR = "/workspace/repo";
 const WORKSPACE_DIR = process.env.PI_STICK_WORKSPACE_DIR ?? CONTAINER_REPO_DIR;
@@ -33,11 +35,6 @@ const CONTEXT_DIR = process.env.PI_STICK_CONTEXT_DIR ?? "/context";
 const MAX_READ_CHARS = 32_000;
 const MAX_FIND_RESULTS = 500;
 const SKIP_DIRS = new Set([".git", "node_modules"]);
-
-interface CredentialPayload {
-	token: string;
-	authType?: "oauth" | "api_key";
-}
 
 interface AgentRuntimeSpec {
 	name: string;
@@ -244,41 +241,15 @@ function walkFiles(dir: string, root: string, out: string[], limit: number) {
 const job = await readInitialJob();
 if (!/^[0-9a-f]{32}$/.test(job.id)) throw Error("Invalid run ID");
 
-const credentialMap = new Map<string, Credential>();
 const allProviders = builtinProviders();
-const providerById = new Map(allProviders.map((p) => [p.id, p]));
-
-for (const [providerId, payload] of Object.entries(job.credentials ?? {})) {
-	const provider = providerById.get(providerId);
-	const useOAuth =
-		payload.authType === "oauth" ||
-		(payload.authType !== "api_key" && !provider?.auth.apiKey && !!provider?.auth.oauth);
-	if (useOAuth) {
-		credentialMap.set(providerId, {
-			type: "oauth",
-			access: payload.token,
-			refresh: "",
-			expires: Date.now() + 3600_000,
-		});
-	} else {
-		credentialMap.set(providerId, {
-			type: "api_key",
-			key: payload.token,
-		});
-	}
-}
-delete job.credentials;
-
 const models = createModels({
-	credentials: {
-		list: async () => [...credentialMap.entries()].map(([providerId, cred]) => ({ providerId, type: cred.type })),
-		delete: async () => {
-			throw Error("Agent runtime credentials are read-only");
-		},
-		read: async (id) => credentialMap.get(id),
-		modify: async (id, fn) => fn(credentialMap.get(id)),
-	},
+	credentials: runtimeCredentials(job.credentials ?? {}, allProviders, async (provider) => {
+		const result = await callHostRpc("refresh_token", { provider });
+		if (result.error) throw Error("Host could not renew OAuth token");
+		return JSON.parse(result.text);
+	}),
 });
+delete job.credentials;
 
 for (const provider of allProviders) {
 	const extra = job.models?.[provider.id];

@@ -21,7 +21,7 @@ import {
 	tryLock,
 	writeJson,
 } from "./platform.ts";
-import { ephemeralArgs, parseModelSpec, resolveModels } from "./system.ts";
+import { ephemeralArgs, exportAccessLease, parseModelSpec, resolveModels } from "./system.ts";
 import { CONTAINER_REPO_DIR, type RpcPolicy, TaskEnv } from "./tasks.ts";
 import { getProject, type ProjectInfo } from "./workspace.ts";
 
@@ -397,7 +397,7 @@ export async function worker(id: string): Promise<number> {
 		if (!cfg.agentDone) {
 			const contextFiles = fs.existsSync(task.context) ? fs.readdirSync(task.context).sort() : [];
 			const modelSpecs = [action.orchestrator.model, ...Object.values(action.agents).map((a) => a.model)];
-			const auth = resolveModels(modelSpecs);
+			const auth = await resolveModels(modelSpecs);
 			const orchModel = parseModelSpec(action.orchestrator.model);
 
 			meta.status = "running";
@@ -457,6 +457,12 @@ export async function worker(id: string): Promise<number> {
 				jobPayload,
 				(agentName) => policyForAgent(action, agentName),
 				(line, agentName) => status(dir, line, agentName),
+				async (provider) => {
+					const spec = modelSpecs.find((s) => parseModelSpec(s).provider === provider);
+					if (typeof provider !== "string" || !spec || auth.credentials[provider].authType === "api_key")
+						throw Error("OAuth refresh not permitted");
+					return JSON.stringify(await exportAccessLease(spec));
+				},
 			);
 
 			fs.writeFileSync(reportFile, `${result.report}\n`);
@@ -572,6 +578,7 @@ export async function executeAgentContainer(
 	jobPayload: Record<string, unknown>,
 	resolvePolicy: (agent?: string) => RpcPolicy,
 	onProgress: (line: string, agent?: string) => void,
+	refreshToken: (provider: unknown) => Promise<string>,
 ): Promise<AgentRunResult> {
 	const argv = ephemeralArgs({
 		network: task.network(),
@@ -625,7 +632,10 @@ export async function executeAgentContainer(
 				const work = (async () => {
 					let result: { text: string; error?: boolean };
 					try {
-						result = await task.handleRpc(method, params, resolvePolicy(agentName));
+						result =
+							method === "refresh_token" && !agentName
+								? { text: await refreshToken(params.provider) }
+								: await task.handleRpc(method, params, resolvePolicy(agentName));
 					} catch (err) {
 						result = {
 							text: err instanceof Error ? err.message : "RPC operation failed",

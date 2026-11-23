@@ -1,8 +1,10 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { promisify } from "node:util";
+import type { CredentialPayload } from "../runtime-auth.ts";
 import { IMAGE, isolatedRun } from "./container.ts";
 import {
 	ASSETS,
@@ -30,7 +32,7 @@ export interface ModelSpec {
 
 export interface ResolvedAuth {
 	models: Record<string, unknown[]>;
-	credentials: Record<string, { token: string; authType?: "oauth" | "api_key" }>;
+	credentials: Record<string, CredentialPayload>;
 }
 
 export function parseModelSpec(spec: string): ModelSpec {
@@ -71,12 +73,30 @@ function readAuthTypes(): Record<string, "oauth" | "api_key"> {
 	}
 }
 
-export function resolveModels(specs: string[], offline = false): ResolvedAuth {
+export async function exportAccessLease(model: string, authType?: "oauth" | "api_key") {
+	const minutes = 5;
+	const validUntil = Date.now() + minutes * 60_000;
+	const args =
+		authType === "api_key"
+			? ["print-api-key", "--model", model]
+			: ["print-bearer-token", "--model", model, "--min-expiry", `${minutes}m`];
+	try {
+		const { stdout } = await promisify(execFile)("pi", ["auth", ...args], { timeout: 30_000 });
+		const token = stdout.trim();
+		if (!token) throw Error();
+		return { token, validUntil, authType };
+	} catch {
+		// Subprocess diagnostics may contain secrets.
+		throw Error(`Could not obtain Pi credential for ${model}`);
+	}
+}
+
+export async function resolveModels(specs: string[]): Promise<ResolvedAuth> {
 	const parsed = specs.map(parseModelSpec);
 	const catalog = readLocalCatalog();
 	const authTypes = readAuthTypes();
 	const models: Record<string, unknown[]> = {};
-	const credentials: Record<string, { token: string; authType?: "oauth" | "api_key" }> = {};
+	const credentials: ResolvedAuth["credentials"] = Object.create(null);
 
 	for (const { provider, modelId, raw } of parsed) {
 		const catalogEntry = catalog[provider]?.models?.find((m) => m.id === modelId);
@@ -88,10 +108,7 @@ export function resolveModels(specs: string[], offline = false): ResolvedAuth {
 		}
 		if (!credentials[provider]) {
 			// Tokens travel only over stdin to the ephemeral container; never log or put in argv/env.
-			const token = offline
-				? "offline-fixture"
-				: output(["pi", "auth", "print-bearer-token", "--model", raw, "--min-expiry", "1h"]);
-			credentials[provider] = { token, authType: authTypes[provider] };
+			credentials[provider] = await exportAccessLease(raw, authTypes[provider]);
 		}
 	}
 	return { models, credentials };
@@ -185,8 +202,8 @@ export async function doctor(extraChecks: Array<[string, () => unknown | Promise
 			settings.default_model
 				? `Pi default model auth (${settings.default_model})`
 				: "Pi default model (not set; configure per action or in settings.json)",
-			() => {
-				if (settings.default_model) resolveModels([settings.default_model]);
+			async () => {
+				if (settings.default_model) await resolveModels([settings.default_model]);
 			},
 		],
 		[
@@ -225,7 +242,7 @@ export async function update(yes: boolean, activeRunCount: number) {
 	const stage = fs.mkdtempSync(join(tmpdir(), "pi-stick-update-"));
 	const copy = (name: string, from: string, to: string) => fs.copyFileSync(join(from, name), join(to, name));
 	try {
-		for (const f of [...files, "agent-runtime.ts", ".dockerignore"]) copy(f, ASSETS, stage);
+		for (const f of [...files, "agent-runtime.ts", "runtime-auth.ts", ".dockerignore"]) copy(f, ASSETS, stage);
 		const base = "node:current-bookworm-slim";
 		const digest = /^Digest:\s+(sha256:[0-9a-f]{64})$/m.exec(
 			output(["docker", "buildx", "imagetools", "inspect", base]),

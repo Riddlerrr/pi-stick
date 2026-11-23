@@ -2,5 +2,5 @@
 set -euo pipefail
 mkdir -p "$1/share"
 cp -R project-template Dockerfile .dockerignore package.json package-lock.json \
-  agent-runtime.ts action.schema.json "$1/share/"
+  agent-runtime.ts runtime-auth.ts action.schema.json "$1/share/"
 cp README.md CHANGELOG.md "$1/"
