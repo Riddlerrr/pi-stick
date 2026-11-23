@@ -610,7 +610,11 @@ if (has('git') && a[0] === 'run') {
   const mounts = a.filter((_, i) => a[i - 1] === '-v');
   if (mounts.length !== 1 || !mounts[0].endsWith(':/workspace:ro') || a[a.indexOf('--network') + 1] !== 'none' || !has('--read-only')) process.exit(14);
   const cwd = mounts[0].slice(0, -':/workspace:ro'.length) + '/repo';
-  require('node:child_process').execFileSync(${JSON.stringify(realGit)}, a.slice(a.indexOf('--no-optional-locks')), {cwd, stdio:'inherit'});
+  const cmd = a.slice(a.indexOf('git'));
+  cmd[0] = ${JSON.stringify(realGit)};
+  cmd[cmd.indexOf('-C') + 1] = cwd;
+  if (has('sh')) cmd.unshift(...a.slice(a.indexOf('sh'), a.indexOf('git')));
+  require('node:child_process').execFileSync(cmd[0], cmd.slice(1), {cwd, env:{...process.env, TMPDIR:${JSON.stringify(tmp)}}, stdio:'inherit'});
 } else if (has('config')) {
   // Base validation runs after launcher resolution but before the first worker.
   const override = ${JSON.stringify(join(projectDir, "actions/fix"))};
@@ -659,7 +663,9 @@ if (has('git') && a[0] === 'run') {
         return;
       }
       fs.writeFileSync(db, job.id);
-      fs.writeFileSync(repoMount + '/example.txt', 'updated\\n');
+      fs.writeFileSync(repoMount + '/new [test].txt', 'created\\n');
+      fs.appendFileSync(repoMount + '/.git/info/exclude', 'ignored.txt\\n');
+      fs.writeFileSync(repoMount + '/ignored.txt', 'not for export\\n');
       send({ rpc: 4, method: 'check_clean', params: {} });
       send({ rpc: 1, method: 'exec', params: { command: 'echo hi' }, agent: 'orchestrator' });
       send({ rpc: 2, method: 'logs', params: { tail: 10 }, agent: 'orchestrator' });
@@ -669,7 +675,7 @@ if (has('git') && a[0] === 'run') {
     if (m.rpc === 1 && !m.result.error && m.result.text.includes('exec-ok:echo hi')) got |= 1;
     else if (m.rpc === 2 && !m.result.error && m.result.text.includes('service-log-line')) got |= 2;
     else if (m.rpc === 3 && m.result.error && m.result.text.includes('not permitted')) got |= 4;
-    else if (m.rpc === 4 && !m.result.error && m.result.text.includes(' M example.txt')) got |= 8;
+    else if (m.rpc === 4 && !m.result.error && m.result.text === '') got |= 8;
     else process.exit(5);
     if (got === 15) {
       send({ progress: 'All checks passed', agent: 'orchestrator' });
@@ -693,8 +699,16 @@ if (has('git') && a[0] === 'run') {
 
 	const runPath = join(app, "state/runs", id);
 	assert.equal(read(join(runPath, "report.md")), "Initial report\n");
-	assert.match(read(join(runPath, "changes.patch")), /\+updated/);
-	assert.match(ok(["diff", id]), /\+updated/);
+	const patch = read(join(runPath, "changes.patch"));
+	assert.match(ok(["diff", id]), /\+created/);
+	execFileSync(realGit, ["-C", source, "apply", "-"], { input: patch });
+	assert.equal(read(join(source, "new [test].txt")), "created\n");
+	assert.ok(!fs.existsSync(join(source, "ignored.txt")));
+	const taskRepo = join(runPath, "workspace/repo");
+	assert.equal(
+		execFileSync(realGit, ["--literal-pathspecs", "-C", taskRepo, "ls-files", "--", "new [test].txt"]).length,
+		0,
+	);
 	// After hook ran with report & patch paths
 	const afterData = JSON.parse(read(afterMarker));
 	assert.equal(afterData.code, 0);
@@ -773,7 +787,7 @@ if (has('git') && a[0] === 'run') {
 	fs.unlinkSync(stopFailure);
 	ok(["resume", id]);
 	assert.equal(read(join(runPath, "report.md")), "Follow-up complete\n");
-	assert.equal(read(join(runPath, "workspace/repo/example.txt")), "updated\nfollowup\n");
+	assert.equal(read(join(runPath, "workspace/repo/example.txt")), "committed\nfollowup\n");
 	assert.match(ok(["diff", id]), /\+followup/);
 
 	// A completed follow-up cannot be resumed again.

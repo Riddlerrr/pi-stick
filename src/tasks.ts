@@ -281,17 +281,15 @@ export class TaskEnv {
 		run([...this.compose, "down", "--volumes"]);
 	}
 
-	inspectGit(...args: string[]): string {
+	private inspectWorkspace(...args: string[]): string {
 		// Mount the trusted parent: the runner can replace entries inside workspace, including repo.
-		return command([
-			...isolatedRun("none"),
-			"-v",
-			`${this.workspace}:/workspace:ro`,
-			IMAGE,
-			...gitCommand(CONTAINER_REPO_DIR),
-			"--no-optional-locks",
-			...args,
-		]).toString("utf8");
+		return command([...isolatedRun("none"), "-v", `${this.workspace}:/workspace:ro`, IMAGE, ...args]).toString(
+			"utf8",
+		);
+	}
+
+	inspectGit(...args: string[]): string {
+		return this.inspectWorkspace(...gitCommand(CONTAINER_REPO_DIR), "--no-optional-locks", ...args);
 	}
 
 	trackedStatus(): string {
@@ -300,9 +298,30 @@ export class TaskEnv {
 	}
 
 	captureDiff(baseHead?: string): { patch: string; untracked: string[] } {
-		const patch = this.inspectGit("diff", "--no-ext-diff", "--no-textconv", baseHead || "HEAD", "--");
-		const untrackedRaw = this.inspectGit("ls-files", "--others", "--exclude-standard").trim();
+		const untrackedRaw = this.inspectGit("ls-files", "--others", "--exclude-standard").replace(/\n$/, "");
 		const untracked = untrackedRaw ? untrackedRaw.split("\n") : [];
+		const diff = ["diff", "--binary", "--no-ext-diff", "--no-textconv", baseHead || "HEAD", "--"];
+		// Intent-to-add needs a writable index and may write the empty blob; keep both in the container tmpfs.
+		const patch = untracked.length
+			? this.inspectWorkspace(
+					"sh",
+					"-ec",
+					`base=$1; shift
+					tmp=$(mktemp -d)
+					index=$("$@" rev-parse --path-format=absolute --git-path index)
+					objects=$("$@" rev-parse --path-format=absolute --git-path objects)
+					test ! -f "$index" || cp -- "$index" "$tmp/index"
+					mkdir "$tmp/objects"
+					export GIT_INDEX_FILE="$tmp/index" GIT_OBJECT_DIRECTORY="$tmp/objects" GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects"
+					"$@" ls-files --others --exclude-standard -z > "$tmp/paths"
+					"$@" --literal-pathspecs add -N --pathspec-from-file="$tmp/paths" --pathspec-file-nul
+					exec "$@" diff --binary --no-ext-diff --no-textconv "$base" --`,
+					"sh",
+					baseHead || "HEAD",
+					...gitCommand(CONTAINER_REPO_DIR),
+					"--no-optional-locks",
+				)
+			: this.inspectGit(...diff);
 		const patchFile = join(this.dir, "changes.patch");
 		if (patch.trim()) fs.writeFileSync(patchFile, patch);
 		else fs.rmSync(patchFile, { force: true });
