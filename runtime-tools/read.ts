@@ -1,68 +1,39 @@
-import * as fs from "node:fs";
 import { type ConversationId, defineTool } from "@earendil-works/pi-durable";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
+import { createReadTool as createPiReadTool } from "@earendil-works/pi-durable/tools";
 
-const MAX_READ_CHARS = 32_000;
-
-function isBinary(buf: Buffer): boolean {
-	const len = Math.min(buf.length, 4096);
-	for (let i = 0; i < len; i++) {
-		if (buf[i] === 0) return true;
-	}
-	return false;
-}
+const piRead = createPiReadTool({ images: await createNodePhotonImages() });
 
 export function createReadTool(repoDir: string, resolvePath: (path: string, conversationId: ConversationId) => string) {
 	return defineTool({
-		name: "read",
-		description: `Read a UTF-8 file or list a directory. Relative paths start at ${repoDir}; /scratch/... and /context/... are also readable.`,
-		parameters: {
-			type: "object",
-			properties: {
-				path: { type: "string", description: "File or directory path." },
-				offset: { type: "integer", minimum: 0, description: "Character offset to start reading from." },
-				limit: { type: "integer", minimum: 1, maximum: 100000, description: "Max characters to return." },
-			},
-			required: ["path"],
-			additionalProperties: false,
-		},
+		...piRead,
+		description: `${piRead.description} Use bash or find for directories. Relative paths start at ${repoDir}; /scratch/... and /context/... are also readable.`,
 		replay: "safe",
-		execute: async (args, api) => {
-			const {
-				path,
-				offset = 0,
-				limit = MAX_READ_CHARS,
-			} = args as {
-				path: string;
-				offset?: number;
-				limit?: number;
-			};
-			try {
-				const resolved = resolvePath(path, api.conversationId);
-				const stat = fs.statSync(resolved);
-				if (stat.isDirectory()) {
-					const entries = fs
-						.readdirSync(resolved, { withFileTypes: true })
-						.sort((a, b) => a.name.localeCompare(b.name))
-						.map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
-						.join("\n");
-					return { output: [{ type: "text" as const, text: entries || "(empty directory)" }] };
+		execute: async (args, api, context) => {
+			const resolve = (path: string) => resolvePath(path, api.conversationId);
+			context.abortSignal?.throwIfAborted();
+			// Keep Pi's filename variants virtual until each filesystem access passes the agent's path policy.
+			class ReadEnv extends NodeExecutionEnv {
+				override async absolutePath(path: string) {
+					return { ok: true as const, value: path };
 				}
-				const buf = fs.readFileSync(resolved);
-				if (isBinary(buf))
-					return {
-						output: [{ type: "text" as const, text: "Binary file cannot be read as text." }],
-						isError: true,
-					};
-				const text = buf.toString("utf8");
-				const end = offset + Math.min(limit, 100_000);
-				const slice = text.slice(offset, end) + (text.length > end ? `\n[more at offset ${end}]` : "");
-				return { output: [{ type: "text" as const, text: slice }] };
-			} catch (err) {
-				return {
-					output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
-					isError: true,
-				};
+				override exists(path: string) {
+					return super.exists(resolve(path), context);
+				}
+				override openBinaryReader(path: string) {
+					return super.openBinaryReader(resolve(path), { noFollow: true }, context);
+				}
 			}
+			const env = new ReadEnv({ cwd: repoDir });
+			const result = await piRead.execute(args, { ...api, env }, context);
+			if (!("structuredOutput" in result)) return result;
+			const value = result.structuredOutput;
+			const note = result.diagnostics?.map((d) => d.message).join("\n");
+			if (typeof value === "string" && note) return { ...result, structuredOutput: `${value}\n\n[${note}]` };
+			if (value && typeof value === "object" && !Array.isArray(value) && value.type === "image")
+				return { ...result, structuredOutput: { ...value, note: note ?? "" } };
+			return result;
 		},
 	});
 }
