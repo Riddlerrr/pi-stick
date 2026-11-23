@@ -181,7 +181,10 @@ export async function probe(image = IMAGE): Promise<void> {
 		for await (const line of lines) {
 			const msg = JSON.parse(line);
 			if (typeof msg.rpc === "number") {
-				await send({ rpc: msg.rpc, result: { text: `probe-ok:${msg.method}`, error: false } });
+				if (msg.method === "exec") {
+					await send({ rpc: msg.rpc, chunk: Buffer.from("probe-bash").toString("base64") });
+					await send({ rpc: msg.rpc, result: { text: "", exitCode: 7 } });
+				} else await send({ rpc: msg.rpc, result: { text: `probe-ok:${msg.method}`, error: false } });
 				continue;
 			}
 			if (msg.ready === true) {

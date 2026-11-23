@@ -480,6 +480,13 @@ test("agent-runtime offline self-check exercises canonical paths, scratch, concu
 		const msg = JSON.parse(line);
 		if (typeof msg.rpc === "number") {
 			seenMethods.push(msg.method);
+			if (msg.method === "exec") {
+				assert.equal(msg.params.command, "exit 7");
+				child.stdin.write(
+					`${JSON.stringify({ rpc: msg.rpc, chunk: Buffer.from("probe-bash").toString("base64") })}\n${JSON.stringify({ rpc: msg.rpc, result: { text: "", exitCode: 7 } })}\n`,
+				);
+				continue;
+			}
 			child.stdin.write(
 				`${JSON.stringify({ rpc: msg.rpc, result: { text: msg.method === "check_clean" ? "" : `probe-ok:${msg.method}`, error: false } })}\n`,
 			);
@@ -494,6 +501,7 @@ test("agent-runtime offline self-check exercises canonical paths, scratch, concu
 	assert.equal(ready, true);
 	assert.ok(seenMethods.includes("ps"));
 	assert.ok(seenMethods.includes("logs"));
+	assert.ok(seenMethods.includes("exec"));
 	assert.ok(seenMethods.includes("check_clean"));
 	// Read-only subagents wrote to their isolated scratch dirs and were blocked from /workspace/repo.
 	assert.ok(!fs.existsSync(join(workspace, "should-fail.txt")));

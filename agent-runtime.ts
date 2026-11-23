@@ -613,7 +613,7 @@ try {
 			fs.mkdirSync(dirname(file), { recursive: true });
 			fs.writeFileSync(file, data, { flag: "wx" });
 		}
-		const code = `const [a, b] = await Promise.all([tools.ps({}), tools.logs({ tail: 5 })]); return a + '|' + b;`;
+		const code = `const [a, b, cmd] = await Promise.all([tools.ps({}), tools.logs({ tail: 5 }), tools.bash({command: "exit 7"})]); return [a,b, cmd.exit_code === 7 && !cmd.truncated && cmd.output === "probe-bash" ? "bash-ok" : "bash-failed"].join("|");`;
 		const router = (transcript: {
 			messages: Array<{ role: string; isError?: boolean; content: string | Array<{ type: string; text?: string }> }>;
 		}) => {
@@ -672,7 +672,8 @@ try {
 				const okRpc =
 					!toolResults[0].isError &&
 					msgText(toolResults[0]).includes("probe-ok:ps") &&
-					msgText(toolResults[0]).includes("probe-ok:logs");
+					msgText(toolResults[0]).includes("probe-ok:logs") &&
+					msgText(toolResults[0]).includes("bash-ok");
 				if (!okRpc) return fauxAssistantMessage([fauxText("rpc-probe-failed")]);
 				return fauxAssistantMessage(
 					[
