@@ -710,7 +710,9 @@ export async function executeAgentContainer(
 						result =
 							method === "refresh_token" && !agentName
 								? { text: await refreshToken(params.provider) }
-								: await task.handleRpc(method, params, resolvePolicy(agentName));
+								: await task.handleRpc(method, params, resolvePolicy(agentName), (chunk) =>
+										send({ rpc: rpcId, chunk: chunk.toString("base64") }),
+									);
 					} catch (err) {
 						result = {
 							text: err instanceof Error ? err.message : "RPC operation failed",

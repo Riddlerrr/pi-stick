@@ -76,7 +76,8 @@ interface Job {
 
 interface RpcResponseMessage {
 	rpc: number;
-	result?: { text: string; error?: boolean };
+	chunk?: string;
+	result?: { text: string; error?: boolean; exitCode?: number };
 }
 
 interface AgentContext {
@@ -93,7 +94,11 @@ const send = (data: unknown) => {
 const rl = createInterface({ input: process.stdin });
 const pendingRpc = new Map<
 	number,
-	{ resolve: (res: { text: string; error?: boolean }) => void; reject: (err: Error) => void }
+	{
+		resolve: (res: { text: string; error?: boolean; exitCode?: number }) => void;
+		reject: (err: Error) => void;
+		onChunk?: (chunk: Buffer) => void;
+	}
 >();
 let rpcSeq = 0;
 
@@ -117,6 +122,15 @@ function readInitialJob(): Promise<Job> {
 			if (typeof reply?.rpc === "number") {
 				const pending = pendingRpc.get(reply.rpc);
 				if (pending) {
+					if (typeof reply.chunk === "string") {
+						try {
+							pending.onChunk?.(Buffer.from(reply.chunk, "base64"));
+						} catch (err) {
+							pending.reject(err as Error);
+							pendingRpc.delete(reply.rpc);
+						}
+						return;
+					}
 					pendingRpc.delete(reply.rpc);
 					if (reply.result && typeof reply.result.text === "string") pending.resolve(reply.result);
 					else pending.reject(Error("Invalid RPC reply from host"));
@@ -137,10 +151,11 @@ function callHostRpc(
 	method: string,
 	params: Record<string, unknown>,
 	agent?: string,
-): Promise<{ text: string; error?: boolean }> {
+	onChunk?: (chunk: Buffer) => void,
+): Promise<{ text: string; error?: boolean; exitCode?: number }> {
 	const id = ++rpcSeq;
 	return new Promise((resolve, reject) => {
-		pendingRpc.set(id, { resolve, reject });
+		pendingRpc.set(id, { resolve, reject, onChunk });
 		send({ rpc: id, method, params, ...(agent ? { agent } : {}) });
 	});
 }
@@ -463,7 +478,13 @@ const toolMap = new Map<string, ToolRegistration>([
 	["edit", createEditTool((path, id) => resolveAgentPath(path, getAgentCtx(id), true))],
 	["grep", createGrepTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
 	["find", createFindTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
-	["bash", createBashTool(CONTAINER_REPO_DIR, agentRpc)],
+	[
+		"bash",
+		createBashTool(
+			(args, id, onChunk) => callHostRpc("exec", args, getAgentCtx(id).name, onChunk),
+			(id) => resolveAgentPath(`/scratch/${getAgentCtx(id).name}`, getAgentCtx(id), true),
+		),
+	],
 	["logs", createLogsTool(agentRpc)],
 	["ps", createPsTool(agentRpc)],
 	["restart", createRestartTool(agentRpc)],

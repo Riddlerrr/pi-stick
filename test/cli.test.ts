@@ -903,7 +903,8 @@ if (has('git') && a[0] === 'run') {
       send({ rpc: 3, method: 'restart', params: { service: 'runner' }, agent: 'orchestrator' });
       return;
     }
-    if (m.rpc === 1 && !m.result.error && m.result.text.includes('shell-ok')) got |= 1;
+    if (m.rpc === 1 && m.chunk && Buffer.from(m.chunk,'base64').toString().includes('shell-ok')) return;
+    if (m.rpc === 1 && m.result.exitCode === 0) got |= 1;
     else if (m.rpc === 2 && !m.result.error && m.result.text.includes('service-log-line')) got |= 2;
     else if (m.rpc === 3 && m.result.error && m.result.text.includes('not permitted')) got |= 4;
     else if (m.rpc === 5 && !m.result.error && m.result.text.includes('runner')) {
@@ -1151,8 +1152,9 @@ if (has('config')) {
       for (const [rpc, provider] of [[4, 'openai-codex'], [5, 'other'], [6, 'anthropic']]) send({ rpc, method: 'refresh_token', params: {provider} });
       return;
     }
+    if (m.rpc === 2 && m.chunk && Buffer.from(m.chunk,'base64').toString().includes('ran:echo 2')) return;
     if (m.rpc === 1 && m.result.error && m.result.text.includes('not permitted')) got |= 1;
-    else if (m.rpc === 2 && !m.result.error && m.result.text.includes('ran:echo 2')) got |= 2;
+    else if (m.rpc === 2 && m.result.exitCode === 0) got |= 2;
     else if (m.rpc === 3 && m.result.error && m.result.text.includes('not permitted')) got |= 4;
     else if (m.rpc === 4 && JSON.parse(m.result.text).token === 'codex-token-fixture' && JSON.parse(m.result.text).validUntil > Date.now()) got |= 8;
     else if ((m.rpc === 5 || m.rpc === 6) && m.result.error) got |= 1 << (m.rpc - 1);

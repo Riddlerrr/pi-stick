@@ -52,6 +52,7 @@ export interface RpcPolicy {
 export interface RpcResponse {
 	text: string;
 	error?: boolean;
+	exitCode?: number;
 }
 
 const MAX_OUTPUT = 32000;
@@ -385,7 +386,12 @@ export class TaskEnv {
 		return service;
 	}
 
-	async handleRpc(method: string, params: Record<string, unknown> = {}, policy: RpcPolicy = {}): Promise<RpcResponse> {
+	async handleRpc(
+		method: string,
+		params: Record<string, unknown> = {},
+		policy: RpcPolicy = {},
+		onChunk?: (chunk: Buffer) => Promise<void>,
+	): Promise<RpcResponse> {
 		switch (method) {
 			case "exec": {
 				if (policy.allowExec === false) return { text: "bash is not permitted for this agent", error: true };
@@ -400,7 +406,7 @@ export class TaskEnv {
 					(typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0 || timeout * 1000 > 2147483647)
 				)
 					return { text: "Invalid timeout", error: true };
-				const res = await spawnCapture([
+				const argv = [
 					...this.compose,
 					"exec",
 					"-T",
@@ -412,11 +418,20 @@ export class TaskEnv {
 					"-c",
 					'if command -v bash >/dev/null 2>&1; then exec bash -c -- "$0"; fi; exec sh -c -- "$0"',
 					cmd,
-				]);
-				return {
-					text: `exit=${res.code ?? res.signal}\n${res.text}`,
-					error: res.code !== 0,
+				];
+				if (!onChunk) throw Error("Missing bash output stream");
+				const child = spawn(argv[0], argv.slice(1), { stdio: ["ignore", "pipe", "pipe"] });
+				const exit = closed(child);
+				const forward = async (source: NodeJS.ReadableStream) => {
+					for await (const chunk of source) await onChunk(chunk as Buffer);
 				};
+				try {
+					const [[code, signal]] = await Promise.all([exit, forward(child.stdout), forward(child.stderr)]);
+					if (code === null) throw Error(`Command terminated by ${signal}`);
+					return { text: "", exitCode: code };
+				} finally {
+					child.kill();
+				}
 			}
 			case "logs": {
 				if (policy.allowLogs === false) return { text: "logs is not permitted for this agent", error: true };
