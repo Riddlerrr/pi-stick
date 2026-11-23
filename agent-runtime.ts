@@ -24,7 +24,8 @@ import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
 const SESSIONS_DIR = process.env.PI_STICK_SESSIONS_DIR ?? "/sessions";
-const WORKSPACE_DIR = process.env.PI_STICK_WORKSPACE_DIR ?? "/workspace";
+const CONTAINER_REPO_DIR = "/workspace/repo";
+const WORKSPACE_DIR = process.env.PI_STICK_WORKSPACE_DIR ?? CONTAINER_REPO_DIR;
 const SCRATCH_DIR = process.env.PI_STICK_SCRATCH_DIR ?? "/scratch";
 const CONTEXT_DIR = process.env.PI_STICK_CONTEXT_DIR ?? "/context";
 const MAX_READ_CHARS = 32_000;
@@ -177,12 +178,13 @@ function resolveAgentPath(rawPath: string, agentCtx: AgentContext, forWrite: boo
 		}
 		return assertWithin(candidate, SCRATCH_DIR, "scratch");
 	}
+	const prefix = `${CONTAINER_REPO_DIR}/`;
 	const sub =
-		rawPath === "/workspace" ? "" : rawPath.startsWith("/workspace/") ? rawPath.slice("/workspace/".length) : rawPath;
-	if (isAbsolute(sub)) throw Error("Absolute paths must be under /workspace, /scratch, or /context");
+		rawPath === CONTAINER_REPO_DIR ? "" : rawPath.startsWith(prefix) ? rawPath.slice(prefix.length) : rawPath;
+	if (isAbsolute(sub)) throw Error(`Absolute paths must be under ${CONTAINER_REPO_DIR}, /scratch, or /context`);
 	if (forWrite && agentCtx.mode === "read-only") {
 		throw Error(
-			`Write/edit in /workspace is disabled in read-only mode. Write temporary files under /scratch/${agentCtx.name} instead.`,
+			`Write/edit in ${CONTAINER_REPO_DIR} is disabled in read-only mode. Write temporary files under /scratch/${agentCtx.name} instead.`,
 		);
 	}
 	return assertWithin(resolve(WORKSPACE_DIR, sub), WORKSPACE_DIR, "workspace");
@@ -466,8 +468,7 @@ async function runParallelBatch(
 
 const readTool = defineTool({
 	name: "read",
-	description:
-		"Read a UTF-8 file or list a directory. Paths default to /workspace; /scratch/... and /context/... are also readable.",
+	description: `Read a UTF-8 file or list a directory. Relative paths start at ${CONTAINER_REPO_DIR}; /scratch/... and /context/... are also readable.`,
 	parameters: {
 		type: "object",
 		properties: {
@@ -603,7 +604,7 @@ const grepTool = defineTool({
 		type: "object",
 		properties: {
 			pattern: { type: "string", description: "Substring (or regex when regex=true) to match." },
-			path: { type: "string", description: "Optional directory or file path (defaults to /workspace)." },
+			path: { type: "string", description: `Optional directory or file path (defaults to ${CONTAINER_REPO_DIR}).` },
 			regex: { type: "boolean", description: "Interpret pattern as a regular expression." },
 			offset: { type: "integer", minimum: 0, description: "Character offset into results." },
 		},
@@ -614,7 +615,7 @@ const grepTool = defineTool({
 	execute: async (args, api) => {
 		const {
 			pattern,
-			path = "/workspace",
+			path = CONTAINER_REPO_DIR,
 			regex = false,
 			offset = 0,
 		} = args as {
@@ -667,11 +668,11 @@ const grepTool = defineTool({
 
 const findTool = defineTool({
 	name: "find",
-	description: "List files under a directory (defaults to /workspace), optionally matching a glob or substring.",
+	description: `List files under a directory (defaults to ${CONTAINER_REPO_DIR}), optionally matching a glob or substring.`,
 	parameters: {
 		type: "object",
 		properties: {
-			path: { type: "string", description: "Directory to search (defaults to /workspace)." },
+			path: { type: "string", description: `Directory to search (defaults to ${CONTAINER_REPO_DIR}).` },
 			query: { type: "string", description: "Optional glob pattern (e.g. '**/*.ts') or substring filter." },
 			maxResults: { type: "integer", minimum: 1, maximum: 2000, description: "Max files to return (default 500)." },
 		},
@@ -680,7 +681,7 @@ const findTool = defineTool({
 	replay: "safe",
 	execute: async (args, api) => {
 		const {
-			path = "/workspace",
+			path = CONTAINER_REPO_DIR,
 			query,
 			maxResults = MAX_FIND_RESULTS,
 		} = args as {
@@ -715,14 +716,13 @@ const findTool = defineTool({
 
 const execTool = defineTool({
 	name: "exec",
-	description:
-		"Run a shell command inside a running project container (defaults to 'runner' at /workspace/repo). Returns exit status and output tail.",
+	description: `Run a shell command inside a running project container (defaults to 'runner' at ${CONTAINER_REPO_DIR}). Returns exit status and output tail.`,
 	parameters: {
 		type: "object",
 		properties: {
 			command: { type: "string", description: "Shell command to execute inside the container." },
 			service: { type: "string", description: "Compose service name (defaults to 'runner')." },
-			workdir: { type: "string", description: "Working directory inside /workspace/repo or /scratch." },
+			workdir: { type: "string", description: `Working directory inside ${CONTAINER_REPO_DIR} or /scratch.` },
 			timeout: { type: "integer", minimum: 1, maximum: 900, description: "Timeout in seconds (default 300)." },
 		},
 		required: ["command"],
@@ -951,6 +951,7 @@ try {
 			tools: ["read", "write"],
 		};
 
+		fs.writeFileSync(join(WORKSPACE_DIR, "probe.txt"), "probe-workspace", { flag: "wx" });
 		const code = `const [a, b] = await Promise.all([tools.ps({}), tools.logs({ tail: 5 })]); return a + '|' + b;`;
 		const router = (transcript: {
 			messages: Array<{ role: string; isError?: boolean; content: string | Array<{ type: string; text?: string }> }>;
@@ -961,10 +962,10 @@ try {
 			const last = transcript.messages.at(-1);
 			if (firstUser === "probe A") {
 				if (last?.role === "user") {
-					// Verify read-only subagent is blocked from writing to /workspace AND allowed to write to /scratch/checker-a
 					return fauxAssistantMessage(
 						[
-							fauxToolCall("write", { path: "/workspace/should-fail.txt", content: "nope" }),
+							fauxToolCall("read", { path: `${CONTAINER_REPO_DIR}/probe.txt` }),
+							fauxToolCall("write", { path: `${CONTAINER_REPO_DIR}/should-fail.txt`, content: "nope" }),
 							fauxToolCall("write", { path: "/scratch/checker-a/note.txt", content: "ok-a" }),
 						],
 						{ stopReason: "toolUse" },
@@ -972,9 +973,10 @@ try {
 				}
 				const results = transcript.messages.filter((m) => m.role === "toolResult");
 				const blockedWorkspace = results.some((r) => r.isError && msgText(r).includes("read-only"));
-				const wroteScratch = results.some((r) => !r.isError);
+				const readWorkspace = results.some((r) => !r.isError && msgText(r) === "probe-workspace");
+				const wroteScratch = results.some((r) => !r.isError && msgText(r).includes("/scratch/checker-a/note.txt"));
 				return fauxAssistantMessage([
-					fauxText(blockedWorkspace && wroteScratch ? "subagent-a-ok" : "subagent-a-fail"),
+					fauxText(blockedWorkspace && readWorkspace && wroteScratch ? "subagent-a-ok" : "subagent-a-fail"),
 				]);
 			}
 			if (firstUser === "probe B") {

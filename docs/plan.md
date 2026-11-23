@@ -18,14 +18,14 @@ flowchart LR
     Host["Host CLI (pistick)\n- Task & lock manager\n- Git checkout & patch export\n- Trusted hooks (prepare / after)\n- Pi auth token broker\n- Multiplexed JSON-RPC broker"]
 
     subgraph TaskEnv["Per-Task Isolated Environment"]
-        Agent["Ephemeral Agent Container\n(docker run --rm, read-only rootfs,\ncap_drop: ALL, no Docker socket)\n- Pi Durable SDK + Codemode\n- Orchestrator + Subagents\n- Native file tools (/workspace, /scratch)\n- Direct access to project network"]
+        Agent["Ephemeral Agent Container\n(docker run --rm, read-only rootfs,\ncap_drop: ALL, no Docker socket)\n- Pi Durable SDK + Codemode\n- Orchestrator + Subagents\n- Native file tools (/workspace/repo, /scratch)\n- Direct access to project network"]
 
         subgraph ProjectStack["Per-Task Project Compose Stack"]
             Runner["runner service\n(project toolchain)"]
             Services["Project services\n(web, worker, db, redis, ...)"]
         end
 
-        SharedFS[("Task Directories\n- /workspace (isolated repo)\n- /scratch/<agent-id>\n- /context (read-only)\n- /sessions (SQLite)")]
+        SharedFS[("Task Directories\n- /workspace/repo (isolated repo)\n- /scratch/<agent-id>\n- /context (read-only)\n- /sessions (SQLite)")]
     end
 
     Host -- "stdin/stdout JSON-RPC\n(tokens, exec, logs, ps, restart)" --> Agent
@@ -47,7 +47,7 @@ flowchart LR
 ### 3.2 Container Topology & Security Model
 - **Ephemeral agent container per task**: Rather than one long-lived `pi-stick` container, each task invocation starts an ephemeral container (`docker run --rm`) from the `pi-stick` image with `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges:true`, memory/PID limits, and host UID alignment.
 - **Scoped mounts**: Each agent container mounts *only* its own task directories:
-  - `/workspace` — the task's isolated repository checkout
+  - `/workspace/repo` — the task's isolated repository checkout, at the same path in `runner`
   - `/scratch` — per-agent writable scratch directories (shared with `runner`)
   - `/context` (`ro`) — optional context files written by the action's `prepare` hook
   - `/sessions` — durable SQLite session storage for this run
@@ -57,7 +57,7 @@ flowchart LR
 ### 3.3 Task Workspace, Concurrency & Lifecycle
 - **Isolated workspace & stack per task**: Each task creates an isolated copy/worktree of the project repository and starts its own Compose project (`pi-stick-<project>-<run-id>`), leaving the user's development workspace (`projects/<name>/repo`) untouched.
 - **Concurrent tasks**: Multiple independent tasks can run simultaneously (across the same or different projects). Locking moves from a global lock file to per-run lock files, with `update` and `cleanup` checking active locks safely.
-- **Mutable workspace with clean export**: Tasks may modify files inside their own `/workspace`. On completion, `pi-stick` captures `git diff` / `changes.patch` alongside the run report and artifacts.
+- **Mutable workspace with clean export**: Tasks may modify files inside their own `/workspace/repo`. On completion, `pi-stick` captures `git diff` / `changes.patch` alongside the run report and artifacts.
 - **Container lifecycle (`stop` by default)**:
   - When a run finishes, `pi-stick` runs `docker compose stop` on the task's project stack to release CPU/RAM while preserving workspace files, Docker volumes (dependencies, DB state), reports, patches, and durable SQLite sessions until `pistick cleanup`.
   - Passing `--keep-up` leaves the task stack running for immediate manual inspection.
@@ -83,9 +83,9 @@ flowchart LR
   1. **Declarative stages (fan-out / fan-in)**: Run each configured group of agents in parallel. Pass its results to the next group only on success; pass all groups’ results to the final orchestrator.
   2. **Dynamic orchestration**: The orchestrator agent can invoke configured subagents (individually or in parallel batches) via a delegation tool across multiple rounds as it investigates and verifies results.
 - **Shared workspace, per-agent permissions**:
-  - All agents in a task share the task's `/workspace` and running project stack.
+  - All agents in a task share the task's `/workspace/repo` and running project stack.
   - Each agent role in `action.json` declares its own permission profile: filesystem mode (`read-only` or `read-write`), allowed tools (`read`, `write`, `edit`, `grep`, `find`, `codemode`, `exec`, `logs`, `ps`, `restart`, `delegate`), and allowed Compose services for `exec`.
-  - **`read-only` + per-agent scratch**: `read-only` agents cannot call write/edit tools on `/workspace`, but each agent receives its own writable `/scratch/<agent-id>` directory (mounted in both the agent container and `runner`) to write ad-hoc test scripts, fixtures, or dumps and execute them against the running project. After a `read-only` round finishes, the runtime checks repository cleanliness to catch unintended modifications made via `exec`.
+  - **`read-only` + per-agent scratch**: `read-only` agents cannot call write/edit tools on `/workspace/repo`, but each agent receives its own writable `/scratch/<agent-id>` directory (mounted in both the agent container and `runner`) to write ad-hoc test scripts, fixtures, or dumps and execute them against the running project. After a `read-only` round finishes, the runtime checks repository cleanliness to catch unintended modifications made via `exec`.
 - **Prefixed plain-text progress**: Output from concurrent agents is written to the run's progress stream with clear agent prefixes (e.g., `[orchestrator]`, `[agent:security]`) so `follow`, pipes, and reattached terminals remain readable.
 
 ### 3.6 Agent Toolset

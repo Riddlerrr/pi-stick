@@ -4,6 +4,8 @@ import { join, posix } from "node:path";
 import { closed, command, gitCommand, output, run, STATE, touch } from "./platform.ts";
 import type { ProjectInfo } from "./workspace.ts";
 
+export const CONTAINER_REPO_DIR = "/workspace/repo";
+
 export interface Mount {
 	type: string;
 	source: string;
@@ -253,7 +255,7 @@ export class TaskEnv {
 	up(runSetup = true) {
 		run([...this.compose, "up", "--build", "-d", "--wait", "--wait-timeout", "180"]);
 		if (runSetup) {
-			run([...this.compose, "exec", "-T", "-w", "/workspace/repo", "runner", "/usr/local/bin/setup-project"]);
+			run([...this.compose, "exec", "-T", "-w", CONTAINER_REPO_DIR, "runner", "/usr/local/bin/setup-project"]);
 		}
 		touch(join(this.dir, "last-used"));
 	}
@@ -301,17 +303,17 @@ export class TaskEnv {
 	}
 
 	private resolveExecWorkdir(workdir?: unknown): string {
-		if (workdir === undefined || workdir === "") return "/workspace/repo";
+		if (workdir === undefined || workdir === "") return CONTAINER_REPO_DIR;
 		if (typeof workdir !== "string" || workdir.includes("\0") || workdir.length > 512) throw Error("Invalid workdir");
 		if (workdir === "/scratch" || workdir.startsWith("/scratch/")) {
 			const norm = posix.normalize(workdir);
 			if (norm === "/scratch" || norm.startsWith("/scratch/")) return norm;
 			throw Error("Invalid scratch workdir");
 		}
-		const rel = workdir.startsWith("/workspace/repo") ? workdir : posix.join("/workspace/repo", workdir);
+		const rel = workdir.startsWith(CONTAINER_REPO_DIR) ? workdir : posix.join(CONTAINER_REPO_DIR, workdir);
 		const norm = posix.normalize(rel);
-		if (norm !== "/workspace/repo" && !norm.startsWith("/workspace/repo/"))
-			throw Error("Workdir must stay inside /workspace/repo or /scratch");
+		if (norm !== CONTAINER_REPO_DIR && !norm.startsWith(`${CONTAINER_REPO_DIR}/`))
+			throw Error(`Workdir must stay inside ${CONTAINER_REPO_DIR} or /scratch`);
 		return norm;
 	}
 

@@ -24,8 +24,7 @@ import {
 	writeJson,
 } from "./platform.ts";
 import { ephemeralArgs, parseModelSpec, resolveModels } from "./system.ts";
-import type { RpcPolicy } from "./tasks.ts";
-import { TaskEnv } from "./tasks.ts";
+import { CONTAINER_REPO_DIR, type RpcPolicy, TaskEnv } from "./tasks.ts";
 import { getProject, type ProjectInfo } from "./workspace.ts";
 
 export const VALID_ID = /^[0-9a-f]{32}$/;
@@ -113,12 +112,12 @@ function composeInstructions(
 ): string {
 	const parts: string[] = [
 		`You are agent '${agent.name}' running inside an isolated Docker container for project '${project.name}'.`,
-		`Repository workspace: /workspace (mode: ${agent.mode}).`,
+		`Repository workspace: ${CONTAINER_REPO_DIR} in the agent container and runner (mode: ${agent.mode}).`,
 		`Your writable scratch directory: /scratch/${agent.name} (shared with project runner at /scratch/${agent.name}).`,
 	];
 	if (agent.mode === "read-only") {
 		parts.push(
-			"Read-only workspace policy: do not modify repository files in /workspace. Put temporary scripts, tests, or experiments in your scratch directory.",
+			`Read-only workspace policy: do not modify repository files in ${CONTAINER_REPO_DIR}. Put temporary scripts, tests, or experiments in your scratch directory.`,
 		);
 	}
 	if (services.length) {

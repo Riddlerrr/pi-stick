@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Agent file tools and runner `exec` now share the checkout path `/workspace/repo`. Rebuild locally built agent images and update any custom agent instructions that use absolute `/workspace/<file>` paths. Repo-relative paths are unchanged.
+
 ## 0.2.0 — 2026-11-21
 
 Platform pivot to an action-agnostic, multi-agent isolated Docker workspace runner:

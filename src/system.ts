@@ -18,7 +18,7 @@ import {
 	settingsPath,
 	userSettings,
 } from "./platform.ts";
-import { validateCompose } from "./tasks.ts";
+import { CONTAINER_REPO_DIR, validateCompose } from "./tasks.ts";
 import { listProjects } from "./workspace.ts";
 
 export const IMAGE = process.env.PI_STICK_IMAGE || (devMode ? "pi-stick:dev" : "pi-stick:current");
@@ -137,14 +137,14 @@ export function ephemeralArgs(opts: EphemeralContainerOptions): string[] {
 	if (opts.tmpfsProbe) {
 		args.push(
 			"--tmpfs",
-			`/workspace:rw,uid=${uid},mode=0700`,
+			`${CONTAINER_REPO_DIR}:rw,uid=${uid},mode=0700`,
 			"--tmpfs",
 			`/scratch:rw,uid=${uid},mode=0700`,
 			"--tmpfs",
 			`/sessions:rw,uid=${uid},mode=0700`,
 		);
 	} else {
-		if (opts.repo) args.push("-v", `${opts.repo}:/workspace`);
+		if (opts.repo) args.push("-v", `${opts.repo}:${CONTAINER_REPO_DIR}`);
 		if (opts.scratch) args.push("-v", `${opts.scratch}:/scratch`);
 		if (opts.context) args.push("-v", `${opts.context}:/context:ro`);
 		if (opts.sessions) args.push("-v", `${opts.sessions}:/sessions`);

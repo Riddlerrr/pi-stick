@@ -175,11 +175,12 @@ test("ephemeral container args enforce hardening and model spec validation", () 
 		assert.ok(argv.includes("ALL"));
 		assert.ok(argv.includes("no-new-privileges:true"));
 		assert.ok(argv.includes("pi-stick-demo-abc_default"));
-		assert.ok(argv.includes("/tmp/repo:/workspace"));
+		assert.ok(argv.includes("/tmp/repo:/workspace/repo"));
 		assert.ok(argv.includes("/tmp/scratch:/scratch"));
 		assert.ok(argv.includes("/tmp/context:/context:ro"));
 		assert.ok(argv.includes("/tmp/sessions:/sessions"));
 		const probe = ephemeralArgs({ network: "none", tmpfsProbe: true });
+		assert.ok(probe.includes(`/workspace/repo:rw,uid=${process.getuid()},mode=0700`));
 		assert.ok(probe.includes(`/sessions:rw,uid=${process.getuid()},mode=0700`));
 		assert.ok(!probe.includes("-v"));
 	}
@@ -314,7 +315,7 @@ test("cleanup holds the run lock during teardown and retains state if Compose fa
 	assert.ok(!fs.existsSync(dir));
 });
 
-test("agent-runtime offline self-check exercises Pi Durable SQLite, Codemode, read-only scratch, parallel delegate, and multiplexed JSON-RPC", async (t) => {
+test("agent-runtime offline self-check exercises canonical repo paths, read-only scratch, parallel delegate, Codemode, and multiplexed JSON-RPC", async (t) => {
 	const tmp = fs.mkdtempSync(join(tmpdir(), "pi-stick-rt-"));
 	const workspace = join(tmp, "workspace");
 	const scratch = join(tmp, "scratch");
@@ -359,7 +360,7 @@ test("agent-runtime offline self-check exercises Pi Durable SQLite, Codemode, re
 	assert.ok(seenMethods.includes("ps"));
 	assert.ok(seenMethods.includes("logs"));
 	assert.ok(seenMethods.includes("check_clean"));
-	// Read-only subagents wrote to their isolated scratch dirs and were blocked from /workspace
+	// Read-only subagents wrote to their isolated scratch dirs and were blocked from /workspace/repo.
 	assert.ok(!fs.existsSync(join(workspace, "should-fail.txt")));
 	assert.equal(read(join(scratch, "checker-a/note.txt")), "ok-a");
 	assert.equal(read(join(scratch, "checker-b/note.txt")), "ok-b");
@@ -561,13 +562,14 @@ if (has('config')) {
 } else if (has('stop') && fs.existsSync(${JSON.stringify(join(tmp, "fail-stop"))})) {
   process.exit(9);
 } else if (has('exec') && has('sh') && has('-lc')) {
+  if (a[a.indexOf('-w') + 1] !== '/workspace/repo') process.exit(12);
   console.log('exec-ok:' + a.at(-1));
 } else if (has('logs')) {
   console.log('service-log-line');
 } else if (has('ps')) {
   console.log('[{"Service":"runner","State":"running"}]');
 } else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
-  const repoMount = a.find(x => x.endsWith(':/workspace')).slice(0, -':/workspace'.length);
+  const repoMount = a.find(x => x.endsWith(':/workspace/repo')).slice(0, -':/workspace/repo'.length);
   const ctxMount = a.find(x => x.endsWith(':/context:ro')).slice(0, -':/context:ro'.length);
   const rl = require('node:readline').createInterface({ input: process.stdin });
   const send = x => process.stdout.write(JSON.stringify(x) + '\\n');
@@ -580,6 +582,7 @@ if (has('config')) {
       if (job.credentials['openai-codex'].token !== (job.continueRun ? 'fresh-token' : 'secret-fixture-token')) process.exit(3);
       if (job.orchestrator.model.modelId !== 'gpt-6.2-sol' || !job.orchestrator.instructions.includes('PINNED PROJECT NOTES') || !job.orchestrator.instructions.includes('PINNED INSTRUCTIONS') || job.orchestrator.tools.includes('restart')) process.exit(10);
       if (job.continueRun && !job.orchestrator.instructions.includes('updated-context.md')) process.exit(11);
+      if (!job.orchestrator.instructions.includes('Repository workspace: /workspace/repo')) process.exit(12);
       if (!fs.readFileSync(ctxMount + '/ticket.txt', 'utf8').includes('ISSUE-42')) process.exit(4);
       const session = a.find(x => x.endsWith(':/sessions')).slice(0, -':/sessions'.length);
       const db = session + '/' + job.id + '.sqlite';
@@ -863,7 +866,7 @@ if (has('config')) {
     networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
   }));
 } else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
-  const repoMount = a.find(x => x.endsWith(':/workspace')).slice(0, -':/workspace'.length);
+  const repoMount = a.find(x => x.endsWith(':/workspace/repo')).slice(0, -':/workspace/repo'.length);
   const rl = require('node:readline').createInterface({ input: process.stdin });
   rl.once('line', line => {
     const job = JSON.parse(line);
