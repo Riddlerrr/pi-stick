@@ -40,7 +40,7 @@ function stageFixture(t: TestContext, failure: "interrupt-stage" | "fail-stage" 
 		model: { provider: "groq", modelId: "llama-3.1-8b-instant" },
 		instructions: "Respond briefly.",
 		mode: "read-write",
-		tools: [],
+		tools: [] as string[],
 	};
 	const job = {
 		id: runId(),
@@ -65,8 +65,53 @@ function stageFixture(t: TestContext, failure: "interrupt-stage" | "fail-stage" 
 			encoding: "utf8",
 			timeout: 15000,
 		});
-	return { run, dir, job };
+	return { run, dir, job, stub };
 }
+
+test("resume aborts an interrupted delegate; only a fresh delegation runs", async (t) => {
+	const { run, dir, job, stub } = stageFixture(t);
+	job.stages = [];
+	job.orchestrator.tools = ["delegate"];
+	fs.writeFileSync(
+		stub,
+		`import fs from 'node:fs';
+		globalThis.fetch = async (_url, init) => {
+			const { messages } = JSON.parse(init.body);
+			const prompt = messages.find(m => m.role === 'user').content;
+			const results = messages.filter(m => m.role === 'tool');
+			let delta = {role:'assistant', content:prompt};
+			if (prompt !== 'task') {
+				fs.appendFileSync('workers', prompt + '\\n');
+				if (prompt === 'original') process.kill(process.pid, 'SIGKILL');
+			} else if (results.length < 2) {
+				if (results.length && !results[0].content.includes('delegate was interrupted')) throw Error('Expected interrupted delegate');
+				const tasks = [{agent:'worker', prompt: results.length ? 'fresh' : 'original'}];
+				delta = {role:'assistant', tool_calls:[{index:0,id:'call'+results.length,type:'function',function:{name:'delegate',arguments:JSON.stringify({tasks})}}]};
+			} else delta.content = results[1].content;
+			const data = {choices:[{index:0,delta,finish_reason:delta.tool_calls?'tool_calls':'stop'}]};
+			return new Response('data: ' + JSON.stringify(data) + '\\n\\ndata: [DONE]\\n\\n', {headers:{'content-type':'text/event-stream'}});
+		};`,
+	);
+	assert.equal(run().signal, "SIGKILL");
+	const resumed = run();
+	assert.equal(resumed.status, 0, resumed.stderr + resumed.stdout);
+	assert.match(JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).report, /worker \(ok\)\s+fresh/);
+	assert.equal(fs.readFileSync(join(dir, "workers"), "utf8"), "original\nfresh\n");
+	// A fast orchestrator can exit before a ghost's retry timer fires. Check its durable outcome too.
+	const storage = await openNodeSqliteStorage(join(dir, `${job.id}.sqlite`));
+	try {
+		const { items } = await storage.scanSubmissions({}, 10, undefined, BACKGROUND_CONTEXT);
+		assert.deepEqual(
+			items
+				.filter((s) => s.requestId === undefined)
+				.map((s) => (s.status === "unanswered" ? s.reason : s.status))
+				.sort(),
+			["aborted", "done"],
+		);
+	} finally {
+		await storage.close(BACKGROUND_CONTEXT);
+	}
+});
 
 test("an unavailable pinned subagent model fails explicitly before any model request", (t) => {
 	const { job, run, dir } = stageFixture(t);

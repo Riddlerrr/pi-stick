@@ -12,11 +12,13 @@ import {
 	createRegistry,
 	defineDoc,
 	defineExtension,
+	defineTask,
 	defineTool,
 	GenerationTask,
 	Harness,
 	hook,
 	ROOT_CONVERSATION_ID,
+	type TaskId,
 	type ToolRegistration,
 	ToolTask,
 } from "@earendil-works/pi-durable";
@@ -349,6 +351,7 @@ async function runSubagent(
 	spec: AgentRuntimeSpec,
 	promptText: string,
 	slot?: string,
+	ownerTaskId?: TaskId,
 ): Promise<{ agent: string; ok: boolean; output: string }> {
 	const scratchDir = join(SCRATCH_DIR, spec.name);
 	fs.mkdirSync(scratchDir, { recursive: true });
@@ -359,7 +362,7 @@ async function runSubagent(
 		? await h.conversation(existing, ctx)
 		: await h.createConversation(
 				{
-					ownership: { kind: "ownerless" },
+					ownership: ownerTaskId === undefined ? { kind: "ownerless" } : { kind: "task", taskId: ownerTaskId },
 					init: async (tx, id) => {
 						const state = await tx.doc(workflow);
 						state.agents[id] = { name: spec.name, mode: spec.mode };
@@ -370,7 +373,7 @@ async function runSubagent(
 						instructions: spec.instructions,
 						extensions,
 						tools,
-						...(spec.maxTurns ? { maxTurns: spec.maxTurns } : {}),
+						maxTurns: spec.maxTurns ?? null,
 					},
 				},
 				ctx,
@@ -419,8 +422,10 @@ async function runSubagent(
 async function runParallelBatch(
 	batch: Array<{ spec: AgentRuntimeSpec; prompt: string }>,
 	batchLabel: string,
-	stageKey?: string,
+	recovery: { stageKey: string } | { taskId: TaskId },
 ): Promise<BatchResult> {
+	const stageKey = "stageKey" in recovery ? recovery.stageKey : undefined;
+	const owner = "taskId" in recovery ? recovery.taskId : undefined;
 	const cached = stageKey ? (await h.snapshot(workflow, ctx))?.stages[stageKey] : undefined;
 	if (cached?.results.every((r) => r.ok)) {
 		for (const r of cached.results) recordAgentOutput(r.agent, r.output);
@@ -448,7 +453,9 @@ async function runParallelBatch(
 		if (!res.error) beforeClean = res.text;
 	}
 	const results = await Promise.all(
-		batch.map((item, i) => runSubagent(item.spec, item.prompt, stageKey && `${stageKey}:${i}:${item.spec.name}`)),
+		batch.map((item, i) =>
+			runSubagent(item.spec, item.prompt, stageKey && `${stageKey}:${i}:${item.spec.name}`, owner),
+		),
 	);
 	let cleanlinessWarning: string | undefined;
 	if (allReadOnly && beforeClean !== undefined) {
@@ -790,8 +797,34 @@ const restartTool = defineTool({
 	},
 });
 
+type DelegateTasks = Array<{ agent: string; prompt: string }>;
+// An abandoned batch is marked before recovery dispatches any of its owned conversations.
+const delegateBatch = defineTask<DelegateTasks, { phase: "run" }, BatchResult>({
+	name: "pi-stick.delegate-batch",
+	version: 1,
+	initial: () => ({ phase: "run" }),
+	phases: {
+		run: async (task, runtime, context) => {
+			const batch = task.input.map(({ agent, prompt }) => {
+				const spec = activeSubagents[agent];
+				if (!spec)
+					throw Error(
+						`Unknown subagent '${agent}'. Available: ${Object.keys(activeSubagents).join(", ") || "(none)"}`,
+					);
+				return { spec, prompt };
+			});
+			const result = await runParallelBatch(batch, "delegate", { taskId: runtime.taskId });
+			await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
+		},
+	},
+	abort: async (_task, runtime, context) => {
+		await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
+	},
+});
+
 const delegateTool = defineTool({
 	name: "delegate",
+	replay: "unsafe",
 	description:
 		"Run one or more configured subagents in parallel and collect their results. Multiple read-only subagents may run concurrently; read-write subagents must run one at a time.",
 	parameters: {
@@ -824,18 +857,17 @@ const delegateTool = defineTool({
 				isError: true,
 			};
 		}
-		const { tasks } = args as { tasks: Array<{ agent: string; prompt: string }> };
+		const { tasks } = args as { tasks: DelegateTasks };
 		try {
-			const batch: Array<{ spec: AgentRuntimeSpec; prompt: string }> = [];
-			for (const t of tasks) {
-				const spec = activeSubagents[t.agent];
-				if (!spec) {
-					const available = Object.keys(activeSubagents).join(", ") || "(none)";
-					throw Error(`Unknown subagent '${t.agent}'. Available: ${available}`);
-				}
-				batch.push({ spec, prompt: t.prompt });
-			}
-			const { results, cleanlinessWarning } = await runParallelBatch(batch, "delegate");
+			const id = await api.createTask(
+				delegateBatch,
+				tasks,
+				{ ownership: { kind: "task", taskId: api.taskId }, abandonOnRestart: true },
+				ctx,
+			);
+			const { outcome } = (await api.waitForTask(id, ctx)).state;
+			if (outcome.status !== "completed") throw Error(outcome.error?.message ?? `Delegate batch ${outcome.status}`);
+			const { results, cleanlinessWarning } = outcome.result;
 			const sections = results.map((r) => `### Agent: ${r.agent} (${r.ok ? "ok" : "error"})\n\n${r.output}`);
 			if (cleanlinessWarning) sections.push(`### Repository Cleanliness Warning\n\n${cleanlinessWarning}`);
 			return { output: [{ type: "text" as const, text: sections.join("\n\n") }] };
@@ -863,6 +895,7 @@ const toolMap = new Map<string, ToolRegistration>([
 
 const registry = createRegistry();
 const mainExtension = defineExtension({
+	tasks: [delegateBatch],
 	name: "pi-stick",
 	hooks: [
 		hook(GenerationTask, {
@@ -1058,11 +1091,9 @@ try {
 					if (!agentSpec) throw Error(`Stage '${stage.name}' references missing agent '${agentName}'`);
 					return { spec: agentSpec, prompt: stagePrompt };
 				});
-				const { results, cleanlinessWarning } = await runParallelBatch(
-					batch,
-					`stage:${stage.name}`,
-					`${job.requestId ?? job.id}:${index}:${stage.name}`,
-				);
+				const { results, cleanlinessWarning } = await runParallelBatch(batch, `stage:${stage.name}`, {
+					stageKey: `${job.requestId ?? job.id}:${index}:${stage.name}`,
+				});
 				const failures = results.filter((r) => !r.ok);
 				if (failures.length) {
 					const message = `Stage '${stage.name}' failed: ${failures.map((r) => r.agent).join(", ")}`;
