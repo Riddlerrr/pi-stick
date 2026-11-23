@@ -10,6 +10,7 @@ import {
 	AssistantEntry,
 	type ConversationId,
 	createRegistry,
+	defineDoc,
 	defineExtension,
 	defineTool,
 	GenerationTask,
@@ -315,7 +316,22 @@ const emitProgress = (line: string, label?: string) => {
 
 const activeSubagents: Record<string, AgentRuntimeSpec> = { ...(job.agents ?? {}) };
 const agentOutputs: Record<string, string> = {};
-let activeHarness: Harness | undefined;
+type BatchResult = {
+	results: Array<{ agent: string; ok: boolean; output: string }>;
+	cleanlinessWarning?: string;
+};
+
+const workflow = defineDoc<{
+	slots: Record<string, ConversationId>;
+	agents: Record<string, { name: string; mode: "read-only" | "read-write" }>;
+	stages: Record<string, BatchResult>;
+}>({
+	kind: "pi-stick.workflow",
+	version: 1,
+	scope: "session",
+	initial: () => ({ slots: {}, agents: {}, stages: {} }),
+	checkpointWhen: () => false,
+});
 
 function recordAgentOutput(agentName: string, text: string) {
 	if (agentOutputs[agentName]) agentOutputs[agentName] = `${agentOutputs[agentName]}\n\n---\n\n${text}`;
@@ -325,25 +341,34 @@ function recordAgentOutput(agentName: string, text: string) {
 async function runSubagent(
 	spec: AgentRuntimeSpec,
 	promptText: string,
+	slot?: string,
 ): Promise<{ agent: string; ok: boolean; output: string }> {
-	if (!activeHarness) throw Error("Harness not initialized");
 	const scratchDir = join(SCRATCH_DIR, spec.name);
 	fs.mkdirSync(scratchDir, { recursive: true });
 	const subTools = spec.tools.filter((t) => t !== "delegate");
 	const { extensions, tools } = selectToolsAndExtensions(subTools);
-	const conv = await activeHarness.createConversation(
-		{
-			ownership: { kind: "ownerless" },
-			agent: {
-				model: spec.model,
-				instructions: spec.instructions,
-				extensions,
-				tools,
-				...(spec.maxTurns ? { maxTurns: spec.maxTurns } : {}),
-			},
-		},
-		ctx,
-	);
+	const existing = slot && (await h.snapshot(workflow, ctx))?.slots[slot];
+	const conv = existing
+		? await h.conversation(existing, ctx)
+		: await h.createConversation(
+				{
+					ownership: { kind: "ownerless" },
+					init: async (tx, id) => {
+						const state = await tx.doc(workflow);
+						state.agents[id] = { name: spec.name, mode: spec.mode };
+						if (slot) state.slots[slot] = id;
+					},
+					agent: {
+						model: spec.model,
+						instructions: spec.instructions,
+						extensions,
+						tools,
+						...(spec.maxTurns ? { maxTurns: spec.maxTurns } : {}),
+					},
+				},
+				ctx,
+			);
+	if (!conv) throw Error(`Missing stage conversation: ${existing}`);
 	const label = `agent:${spec.name}`;
 	agentByConv.set(conv.id, {
 		name: spec.name,
@@ -353,7 +378,7 @@ async function runSubagent(
 	});
 	emitProgress("started", label);
 	try {
-		const sub = await conv.submit({ type: "input", content: promptText }, ctx);
+		const sub = await conv.submit({ type: "input", content: promptText, ...(slot ? { requestId: slot } : {}) }, ctx);
 		const settled = await sub.wait(ctx);
 		if (settled.status !== "done" || settled.type !== "input") {
 			const msg = `Subagent '${spec.name}' did not complete (${settled.status})`;
@@ -386,7 +411,14 @@ async function runSubagent(
 async function runParallelBatch(
 	batch: Array<{ spec: AgentRuntimeSpec; prompt: string }>,
 	batchLabel: string,
-): Promise<{ results: Array<{ agent: string; ok: boolean; output: string }>; cleanlinessWarning?: string }> {
+	stageKey?: string,
+): Promise<BatchResult> {
+	const cached = stageKey && (await h.snapshot(workflow, ctx))?.stages[stageKey];
+	if (cached) {
+		for (const r of cached.results) if (r.ok) recordAgentOutput(r.agent, r.output);
+		emitProgress(`Restored completed ${batchLabel}`, "orchestrator");
+		return cached;
+	}
 	const rwCount = batch.filter((b) => b.spec.mode === "read-write").length;
 	if (rwCount > 1) {
 		throw Error(
@@ -399,7 +431,9 @@ async function runParallelBatch(
 		const res = await callHostRpc("check_clean", {});
 		if (!res.error) beforeClean = res.text;
 	}
-	const results = await Promise.all(batch.map((item) => runSubagent(item.spec, item.prompt)));
+	const results = await Promise.all(
+		batch.map((item, i) => runSubagent(item.spec, item.prompt, stageKey && `${stageKey}:${i}:${item.spec.name}`)),
+	);
 	let cleanlinessWarning: string | undefined;
 	if (allReadOnly && beforeClean !== undefined) {
 		const after = await callHostRpc("check_clean", {});
@@ -408,7 +442,12 @@ async function runParallelBatch(
 			emitProgress(cleanlinessWarning, "orchestrator");
 		}
 	}
-	return { results, cleanlinessWarning };
+	const result = { results, ...(cleanlinessWarning ? { cleanlinessWarning } : {}) };
+	if (stageKey)
+		await h.commit(async (tx) => {
+			(await tx.doc(workflow)).stages[stageKey] = result;
+		}, ctx);
+	return result;
 }
 
 const readTool = defineTool({
@@ -866,7 +905,14 @@ const h = await Harness.open(
 	{ models, registry },
 	ctx,
 );
-activeHarness = h;
+// Scheduling can resume siblings as soon as the first input is submitted.
+for (const [id, agent] of Object.entries((await h.snapshot(workflow, ctx))?.agents ?? {})) {
+	agentByConv.set(Number(id) as ConversationId, {
+		...agent,
+		label: `agent:${agent.name}`,
+		scratchDir: join(SCRATCH_DIR, agent.name),
+	});
+}
 
 try {
 	if (job.check) {
@@ -979,7 +1025,7 @@ try {
 		let finalPrompt = job.prompt;
 		if (!job.continueRun && job.stages?.length) {
 			const stageSections: string[] = [];
-			for (const stage of job.stages) {
+			for (const [index, stage] of job.stages.entries()) {
 				emitProgress(`Starting parallel stage '${stage.name}': ${stage.parallel.join(", ")}`, "orchestrator");
 				const stagePrompt = stage.prompt ? `${stage.prompt}\n\nTask context:\n${job.prompt}` : job.prompt;
 				const batch = stage.parallel.map((agentName) => {
@@ -987,7 +1033,11 @@ try {
 					if (!agentSpec) throw Error(`Stage '${stage.name}' references missing agent '${agentName}'`);
 					return { spec: agentSpec, prompt: stagePrompt };
 				});
-				const { results, cleanlinessWarning } = await runParallelBatch(batch, `stage:${stage.name}`);
+				const { results, cleanlinessWarning } = await runParallelBatch(
+					batch,
+					`stage:${stage.name}`,
+					`${job.requestId ?? job.id}:${index}:${stage.name}`,
+				);
 				const lines = [`## Stage: ${stage.name}`];
 				for (const r of results) {
 					lines.push(`### Agent: ${r.agent} (${r.ok ? "ok" : "error"})\n\n${r.output}`);

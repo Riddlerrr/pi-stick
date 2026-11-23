@@ -26,7 +26,7 @@ const usage = {
 	run: "run PROJECT ACTION [--ref REF] [--input KEY=VALUE]... [--keep-up] [PROMPT]",
 	runs: "runs [--all]",
 	follow: "follow RUN_ID",
-	resume: "resume RUN_ID",
+	resume: "resume RUN_ID [--retry-hook]",
 	continue: "continue RUN_ID PROMPT [--keep-up]",
 	stop: "stop RUN_ID",
 	diff: "diff RUN_ID",
@@ -57,7 +57,7 @@ type Command =
 	  }
 	| { cmd: "runs"; all: boolean }
 	| { cmd: "follow"; id: string }
-	| { cmd: "resume"; id: string }
+	| { cmd: "resume"; id: string; retryHook: boolean }
 	| { cmd: "continue"; id: string; prompt: string; keepUp?: boolean }
 	| { cmd: "stop"; id: string }
 	| { cmd: "diff"; id: string }
@@ -115,8 +115,8 @@ function parse(cmd: string, args: string[]): Command {
 			break;
 		}
 		case "resume": {
-			const { positionals: p } = flags({});
-			if (p.length === 1) return { cmd: "resume", id: p[0] };
+			const { positionals: p, values: v } = flags({ "retry-hook": { type: "boolean" } });
+			if (p.length === 1) return { cmd: "resume", id: p[0], retryHook: v["retry-hook"] === true };
 			break;
 		}
 		case "continue": {
@@ -227,7 +227,7 @@ export async function main(rawArgs: string[]) {
 		case "follow":
 			return follow(action.id);
 		case "resume": {
-			const id = await launchResume(action.id);
+			const id = await launchResume(action.id, action.retryHook);
 			return follow(id);
 		}
 		case "continue": {

@@ -2,7 +2,16 @@ import type { ChildProcess, SpawnSyncOptionsWithBufferEncoding } from "node:chil
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { closeSync, existsSync, futimesSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	futimesSync,
+	openSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -40,7 +49,11 @@ export const ROOT = existsSync(dataRoot) ? realpathSync(dataRoot) : dataRoot;
 export const STATE = join(ROOT, "state");
 export const read = (path: string) => readFileSync(path, "utf8");
 export const json = (path: string) => JSON.parse(read(path));
-export const writeJson = (path: string, value: unknown) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+export const writeJson = (path: string, value: unknown) => {
+	const temp = `${path}.${randomUUID()}.tmp`;
+	writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+	renameSync(temp, path);
+};
 export const runId = () => randomUUID().replaceAll("-", "");
 
 export function touch(path: string) {

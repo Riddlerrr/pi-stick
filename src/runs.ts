@@ -50,6 +50,10 @@ export interface RunConfig {
 	requestId: string;
 	mode: "run" | "resume" | "continue";
 	prepared?: boolean;
+	hookPending?: "prepare" | "after";
+	prepareDone?: boolean;
+	afterDone?: boolean;
+	agentDone?: boolean;
 }
 
 export function runDir(id: string) {
@@ -233,19 +237,26 @@ export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 	return id;
 }
 
-export async function launchResume(id: string): Promise<string> {
+export async function launchResume(id: string, retryHook = false): Promise<string> {
 	const dir = runDir(id);
 	const exitFile = join(dir, "exit");
 	const cfgFile = join(dir, "run-config.json");
 	if (!fs.existsSync(cfgFile)) throw Error(`Unknown run: ${id}`);
-	if (fs.existsSync(exitFile) && read(exitFile).trim() === "0")
-		throw Error("Run already completed; use 'pistick continue' for follow-up instructions");
 	const fd = fs.openSync(runLock(id), "a");
 	try {
 		if (!tryLock(fd)) throw Error(`Run ${id} is currently active; use 'pistick follow ${id}'`);
 		const cfg = json(cfgFile) as RunConfig;
-		cfg.mode = "resume";
-		writeJson(cfgFile, cfg);
+		if (fs.existsSync(exitFile) && read(exitFile).trim() === "0")
+			throw Error("Run already completed; use 'pistick continue' for follow-up instructions");
+		if (cfg.hookPending && !retryHook)
+			throw Error(
+				`Outcome of ${cfg.hookPending} hook unknown; verify its side effects before using resume --retry-hook`,
+			);
+		// Older versions overwrote the turn kind on resume; only follow-ups have a fresh request ID.
+		if (cfg.mode === "resume") {
+			cfg.mode = cfg.requestId === id ? "run" : "continue";
+			writeJson(cfgFile, cfg);
+		}
 		fs.rmSync(exitFile, { force: true });
 		await spawnWorker(id, fd);
 	} finally {
@@ -268,6 +279,10 @@ export async function launchContinue(id: string, promptText: string, keepUp?: bo
 		const project = getProject(cfg.project);
 		const task = new TaskEnv(id, project);
 		if (!fs.existsSync(task.repo)) throw Error(`Workspace for run ${id} is no longer present`);
+		if (cfg.hookPending) throw Error(`Resolve pending ${cfg.hookPending} hook with resume first`);
+		if (!cfg.prepared) throw Error("Run preparation is incomplete; resume it first");
+		delete cfg.afterDone;
+		delete cfg.agentDone;
 		cfg.mode = "continue";
 		cfg.prompt = promptText.trim();
 		cfg.requestId = runId();
@@ -294,6 +309,7 @@ export async function worker(id: string): Promise<number> {
 	let stackStarted = false;
 
 	try {
+		if (cfg.hookPending && !action.hooks[cfg.hookPending]) throw Error(`Pending ${cfg.hookPending} hook is missing`);
 		let services: string[];
 		if (cfg.mode === "continue") {
 			status(dir, `Starting project stack for follow-up on ${project.name}…`);
@@ -305,7 +321,7 @@ export async function worker(id: string): Promise<number> {
 				task.up(false);
 			}
 			stackStarted = true;
-		} else if (cfg.mode === "resume" && cfg.prepared) {
+		} else if (cfg.prepared) {
 			status(dir, `Resuming run on ${project.name}…`);
 			if (!fs.existsSync(task.composeFile)) task.materializeCompose();
 			services = task.services();
@@ -313,11 +329,14 @@ export async function worker(id: string): Promise<number> {
 			stackStarted = true;
 		} else {
 			status(dir, `Preparing isolated workspace for ${project.name}…`);
-			const { baseHead } = task.prepareWorkspace(cfg.ref);
-			meta.baseHead = baseHead;
-			writeMeta(id, meta);
+			if (!cfg.prepareDone && !cfg.hookPending) {
+				meta.baseHead = task.prepareWorkspace(cfg.ref).baseHead;
+				writeMeta(id, meta);
+			}
 
-			if (action.hooks.prepare) {
+			if (action.hooks.prepare && !cfg.prepareDone) {
+				cfg.hookPending = "prepare";
+				writeJson(cfgFile, cfg);
 				status(dir, "Running prepare hook…");
 				runHook(action.hooks.prepare, {
 					runId: id,
@@ -334,6 +353,9 @@ export async function worker(id: string): Promise<number> {
 				});
 				meta.baseHead = output([...gitCommand(task.repo), "rev-parse", "HEAD"]);
 				writeMeta(id, meta);
+				delete cfg.hookPending;
+				cfg.prepareDone = true;
+				writeJson(cfgFile, cfg);
 			}
 
 			status(dir, "Starting project Compose stack…");
@@ -345,76 +367,83 @@ export async function worker(id: string): Promise<number> {
 			writeJson(cfgFile, cfg);
 		}
 
-		const contextFiles = fs.existsSync(task.context) ? fs.readdirSync(task.context).sort() : [];
-		const modelSpecs = [action.orchestrator.model, ...Object.values(action.agents).map((a) => a.model)];
-		const auth = resolveModels(modelSpecs);
-		const orchModel = parseModelSpec(action.orchestrator.model);
-
-		meta.status = "running";
-		meta.keepUp = cfg.keepUp;
-		writeMeta(id, meta);
-		status(dir, `Starting action '${action.name}' (${action.orchestrator.model})…`);
-
-		const subagentPayloads: Record<string, unknown> = {};
-		for (const [agentName, spec] of Object.entries(action.agents)) {
-			const parsedModel = parseModelSpec(spec.model);
-			subagentPayloads[agentName] = {
-				name: agentName,
-				description: spec.description,
-				model: { provider: parsedModel.provider, modelId: parsedModel.modelId },
-				instructions: composeInstructions(spec, project, services, contextFiles),
-				mode: spec.mode,
-				tools: spec.tools,
-				maxTurns: spec.maxTurns,
-			};
-		}
-
-		const jobPayload: Record<string, unknown> = {
-			id,
-			models: auth.models,
-			credentials: auth.credentials,
-			orchestrator: {
-				name: "orchestrator",
-				model: { provider: orchModel.provider, modelId: orchModel.modelId },
-				instructions: composeInstructions(action.orchestrator, project, services, contextFiles, action.agents),
-				mode: action.orchestrator.mode,
-				tools: action.orchestrator.tools,
-				maxTurns: action.orchestrator.maxTurns,
-			},
-			agents: subagentPayloads,
-			stages: action.stages,
-			prompt: cfg.prompt,
-			requestId: cfg.requestId,
-			continueRun: cfg.mode === "continue",
-		};
-
-		const result = await executeAgentContainer(
-			task,
-			jobPayload,
-			(agentName) => policyForAgent(action, agentName),
-			(line, agentName) => status(dir, line, agentName),
-		);
-
 		const reportFile = join(dir, "report.md");
-		fs.writeFileSync(reportFile, `${result.report}\n`);
 		const outputsDir = join(dir, "outputs");
-		if (result.outputs && Object.keys(result.outputs).length) {
-			fs.mkdirSync(outputsDir, { recursive: true, mode: 0o700 });
-			for (const [name, content] of Object.entries(result.outputs)) {
-				if (/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) {
-					fs.writeFileSync(join(outputsDir, `${name}.md`), `${content}\n`);
+		const patchFile = join(dir, "changes.patch");
+		if (!cfg.agentDone) {
+			const contextFiles = fs.existsSync(task.context) ? fs.readdirSync(task.context).sort() : [];
+			const modelSpecs = [action.orchestrator.model, ...Object.values(action.agents).map((a) => a.model)];
+			const auth = resolveModels(modelSpecs);
+			const orchModel = parseModelSpec(action.orchestrator.model);
+
+			meta.status = "running";
+			meta.keepUp = cfg.keepUp;
+			writeMeta(id, meta);
+			status(dir, `Starting action '${action.name}' (${action.orchestrator.model})…`);
+
+			const subagentPayloads: Record<string, unknown> = {};
+			for (const [agentName, spec] of Object.entries(action.agents)) {
+				const parsedModel = parseModelSpec(spec.model);
+				subagentPayloads[agentName] = {
+					name: agentName,
+					description: spec.description,
+					model: { provider: parsedModel.provider, modelId: parsedModel.modelId },
+					instructions: composeInstructions(spec, project, services, contextFiles),
+					mode: spec.mode,
+					tools: spec.tools,
+					maxTurns: spec.maxTurns,
+				};
+			}
+
+			const jobPayload: Record<string, unknown> = {
+				id,
+				models: auth.models,
+				credentials: auth.credentials,
+				orchestrator: {
+					name: "orchestrator",
+					model: { provider: orchModel.provider, modelId: orchModel.modelId },
+					instructions: composeInstructions(action.orchestrator, project, services, contextFiles, action.agents),
+					mode: action.orchestrator.mode,
+					tools: action.orchestrator.tools,
+					maxTurns: action.orchestrator.maxTurns,
+				},
+				agents: subagentPayloads,
+				stages: action.stages,
+				prompt: cfg.prompt,
+				requestId: cfg.requestId,
+				continueRun: cfg.mode === "continue",
+			};
+
+			const result = await executeAgentContainer(
+				task,
+				jobPayload,
+				(agentName) => policyForAgent(action, agentName),
+				(line, agentName) => status(dir, line, agentName),
+			);
+
+			fs.writeFileSync(reportFile, `${result.report}\n`);
+			if (result.outputs && Object.keys(result.outputs).length) {
+				fs.mkdirSync(outputsDir, { recursive: true, mode: 0o700 });
+				for (const [name, content] of Object.entries(result.outputs)) {
+					if (/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) {
+						fs.writeFileSync(join(outputsDir, `${name}.md`), `${content}\n`);
+					}
 				}
 			}
+
+			const { patch, untracked } = task.captureDiff(meta.baseHead);
+			status(dir, result.report, "orchestrator");
+			status(dir, `Wrote: ${reportFile}`);
+			if (patch.trim()) status(dir, `Patch: ${join(dir, "changes.patch")}`);
+			if (untracked.length) status(dir, `Untracked files: ${untracked.length}`);
+
+			cfg.agentDone = true;
+			writeJson(cfgFile, cfg);
 		}
 
-		const { patch, untracked } = task.captureDiff(meta.baseHead);
-		status(dir, result.report, "orchestrator");
-		status(dir, `Wrote: ${reportFile}`);
-		if (patch.trim()) status(dir, `Patch: ${join(dir, "changes.patch")}`);
-		if (untracked.length) status(dir, `Untracked files: ${untracked.length}`);
-		code = 0;
-
-		if (action.hooks.after) {
+		if (action.hooks.after && !cfg.afterDone) {
+			cfg.hookPending = "after";
+			writeJson(cfgFile, cfg);
 			status(dir, "Running after hook…");
 			runHook(action.hooks.after, {
 				runId: id,
@@ -428,12 +457,16 @@ export async function worker(id: string): Promise<number> {
 				baseHead: meta.baseHead,
 				prompt: cfg.prompt,
 				inputs: cfg.inputs,
-				exitCode: code,
+				exitCode: 0,
 				reportFile,
-				patchFile: patch.trim() ? join(dir, "changes.patch") : undefined,
+				patchFile: fs.existsSync(patchFile) ? patchFile : undefined,
 				outputsDir: fs.existsSync(outputsDir) ? outputsDir : undefined,
 			});
+			delete cfg.hookPending;
+			cfg.afterDone = true;
+			writeJson(cfgFile, cfg);
 		}
+		code = 0;
 	} catch (err) {
 		status(dir, `Failed; see private log: ${join(dir, "worker.log")}`);
 		console.error(err);

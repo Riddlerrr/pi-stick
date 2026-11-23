@@ -329,7 +329,7 @@ test("actions system starts empty, supports global/project override, and rejects
 });
 
 test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async (t) => {
-	const { app, tmp, source, ok, fail, stub } = fixture(t);
+	const { app, tmp, source, ok, fail, stub, invoke } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);
 	ok(["create", "action", "fix"]);
 
@@ -408,6 +408,8 @@ if (has('config')) {
       if (job.credentials['openai-codex'].token !== 'secret-fixture-token') process.exit(3);
       if (!fs.readFileSync(ctxMount + '/ticket.txt', 'utf8').includes('ISSUE-42')) process.exit(4);
       if (job.continueRun) {
+        if (!fs.existsSync(repoMount + '/followup-started')) { fs.writeFileSync(repoMount + '/followup-started', job.requestId); process.exit(7); }
+        if (fs.readFileSync(repoMount + '/followup-started', 'utf8') !== job.requestId) process.exit(8);
         fs.appendFileSync(repoMount + '/example.txt', 'followup\\n');
         send({ progress: 'Applying follow-up', agent: 'orchestrator' });
         send({ report: 'Follow-up complete' });
@@ -463,15 +465,19 @@ if (has('config')) {
 	}
 
 	// Continue run with follow-up prompt
-	const contOut = ok(["continue", id, "Also add followup line"]);
-	assert.match(contOut, /Follow-up complete/);
+	assert.equal(invoke(["continue", id, "Also add followup line"]).status, 1);
+	const script = read(afterScript);
+	fs.writeFileSync(afterScript, "#!/bin/sh\nexit 1\n");
+	assert.equal(invoke(["resume", id]).status, 1);
+	fail(["resume", id], /after hook unknown/);
+	fs.writeFileSync(afterScript, script);
+	ok(["resume", id, "--retry-hook"]);
+	assert.equal(read(join(runPath, "report.md")), "Follow-up complete\n");
+	assert.equal(read(join(runPath, "workspace/repo/example.txt")), "updated\nfollowup\n");
 	assert.match(ok(["diff", id]), /\+followup/);
 
-	// Resume refuses on already-succeeded run, works after simulated failure
+	// A completed follow-up cannot be resumed again.
 	fail(["resume", id], /already completed/);
-	fs.writeFileSync(join(runPath, "exit"), "1");
-	const resOut = ok(["resume", id]);
-	assert.match(resOut, /Follow-up complete/);
 });
 
 test("multi-agent action validates stages, resolves multi-provider auth, enforces per-agent RPC policies, and saves per-agent outputs", (t) => {

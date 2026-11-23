@@ -130,12 +130,16 @@ pistick run my-app my-action [--ref BRANCH_OR_SHA] [--input KEY=VALUE]... [--kee
 pistick runs [--all]                    # list active (or all) runs
 pistick follow RUN_ID                   # stream progress (Ctrl-C detaches)
 pistick continue RUN_ID "Follow-up"     # send another turn in the same session & workspace
-pistick resume RUN_ID                   # resume an interrupted or failed run
+pistick resume RUN_ID                   # resume the interrupted initial turn or follow-up
 pistick diff RUN_ID                     # show changes made in the task workspace
 pistick stop RUN_ID                     # stop a --keep-up task's project containers
 pistick cleanup [--dry-run] [--days 7]  # delete old finished runs, stacks, volumes & sessions
 pistick doctor                          # check Docker, image self-check, auth, recipes & actions
 pistick update [--yes]                  # rebuild pi-stick:current with latest dependencies
 ```
+
+For new runs, `resume` reuses completed static stages and their outputs, and reconnects to the same Pi Durable submissions in an interrupted stage. Resuming a follow-up never starts the initial stages. Runs created before stage checkpointing have no saved stage results. Keep the action definition unchanged while recovering a run.
+
+Host hooks may have external side effects. If a hook started but its success was not recorded, inspect the run and external state first. Use `pistick resume RUN_ID --retry-hook` only if it is safe to execute that hook again. This is not an exactly-once guarantee for commands interrupted mid-execution.
 
 Multiple tasks can run concurrently across the same or different projects. When a run finishes, its project containers are stopped (`docker compose stop`) to free CPU/RAM while preserving workspace files, volumes, `report.md`, `outputs/*.md`, `changes.patch`, and the Pi Durable SQLite session until `pistick cleanup` (pass `--keep-up` to keep containers running).
