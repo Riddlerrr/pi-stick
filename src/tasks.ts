@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { join, posix } from "node:path";
 import { IMAGE, isolatedRun } from "./container.ts";
 import { closed, command, gitCommand, output, run, STATE, touch } from "./platform.ts";
-import type { ProjectInfo } from "./workspace.ts";
+import { type ProjectInfo, projectSource } from "./workspace.ts";
 
 export const CONTAINER_REPO_DIR = "/workspace/repo";
 
@@ -149,6 +149,7 @@ export class TaskEnv {
 		fs.mkdirSync(this.workspace, { recursive: true, mode: 0o700 });
 		fs.mkdirSync(this.scratch, { recursive: true, mode: 0o700 });
 		fs.mkdirSync(this.context, { recursive: true, mode: 0o700 });
+		const source = projectSource(this.project.folder);
 		if (!fs.existsSync(this.repo)) {
 			if (!fs.existsSync(this.project.repo)) throw Error(`Project repository not found at ${this.project.repo}`);
 			run(
@@ -167,13 +168,14 @@ export class TaskEnv {
 			);
 		}
 		const git = gitCommand(this.repo);
+		if (source) run([...git, "remote", "set-url", "origin", source]);
 		if (ref) {
-			let targetSha: string | undefined;
-			try {
-				targetSha = output([...git, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-			} catch {
-				// Not present locally; try fetching from origin.
-			}
+			// Cloning the project copies its non-current branches as remote-tracking refs.
+			const localCommit = (name: string) =>
+				command([...git, "rev-parse", "--verify", "--quiet", `${name}^{commit}`], {}, [0, 1])
+					.toString()
+					.trim();
+			const targetSha = localCommit(ref) || localCommit(`refs/remotes/origin/${ref.replace(/^refs\/heads\//, "")}`);
 			if (targetSha) {
 				run([...git, "checkout", "--detach", targetSha]);
 			} else {

@@ -141,6 +141,8 @@ pistick doctor                          # check Docker, image self-check, auth, 
 pistick update [--yes]                  # rebuild pi-stick:current with latest dependencies
 ```
 
+A new task clones the local project checkout and points its `origin` at `project.json`’s `source` before running the `prepare` hook. Use a credential helper or SSH key; source URLs with embedded credentials, a query string, or a fragment are rejected. `--ref` uses a locally available commit or branch first; only a missing ref triggers a fetch from `origin`. It does not refresh existing branches or update the shared project checkout. For manually configured projects without `project.json`, `origin` remains the local project checkout.
+
 Each run mounts only `state/runs/<id>/session/` at `/sessions`; the orchestrator and its subagents share that SQLite database. `stop` preserves it and `cleanup` removes it with the run. Legacy `state/sessions/` databases are neither migrated nor used. `continue` refuses a missing session without changing the run. Before the first agent launch attempt, `resume` may initialize a session; after that attempt is recorded, a missing database is an error even if Docker never started.
 
 For new runs, `resume` reuses completed static stages and their outputs, and reconnects to the same Pi Durable submissions in an interrupted stage. Resuming a follow-up never starts the initial stages. Runs created before stage checkpointing have no saved stage results.

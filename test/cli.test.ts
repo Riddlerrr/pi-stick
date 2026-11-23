@@ -96,6 +96,34 @@ test("create project clones independent workspaces without GitHub coupling", (t)
 	assert.deepEqual(fs.readdirSync(join(app, "projects")).sort(), ["first", "second"]);
 });
 
+test("task refs resolve locally first, then fetch from the recorded project source", (t) => {
+	const { app, tmp, source, git, ok } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	const folder = join(app, "projects/demo");
+	const repo = join(folder, "repo");
+	const task = () => new TaskEnv(runId(), { name: "demo", folder, repo }, join(tmp, "state"));
+	const origin = (workspace: TaskEnv) =>
+		execFileSync("git", ["-C", workspace.repo, "remote", "get-url", "origin"], { encoding: "utf8" }).trim();
+	const initial = git("rev-parse", "HEAD");
+	execFileSync("git", ["-C", repo, "branch", "local-only"]);
+	git("checkout", "-qb", "new-upstream-branch");
+	git("commit", "--allow-empty", "-qm", "upstream only");
+	const upstream = task();
+	assert.equal(upstream.prepareWorkspace("new-upstream-branch").baseHead, git("rev-parse", "HEAD"));
+	assert.equal(origin(upstream), source);
+	assert.equal(execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), initial);
+
+	fs.renameSync(source, `${source}-offline`);
+	assert.equal(task().prepareWorkspace("local-only").baseHead, initial);
+	const metadata = join(folder, "project.json");
+	writeJson(metadata, { source: "https://user:secret@example.invalid/repo" });
+	assert.throws(() => task().prepareWorkspace(), /without embedded credentials/);
+	fs.unlinkSync(metadata);
+	const manual = task();
+	assert.equal(manual.prepareWorkspace().baseHead, initial);
+	assert.equal(origin(manual), repo);
+});
+
 test("settings projects_dir validation", (t) => {
 	const { app, source, tmp, ok, fail } = fixture(t);
 	const conf = join(tmp, ".config/pi-stick/settings.json");

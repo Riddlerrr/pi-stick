@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { ASSETS, prompt, ROOT, read, run, STATE, userSettings, writeJson } from "./platform.ts";
+import { ASSETS, json, prompt, ROOT, read, run, STATE, userSettings, writeJson } from "./platform.ts";
 
 export const NAME = "[a-z0-9][a-z0-9-]{0,62}";
 const validName = new RegExp(`^${NAME}$`);
@@ -63,14 +63,34 @@ export function getProject(name: string): ProjectInfo {
 	return { name, folder, repo: join(folder, "repo") };
 }
 
+function validateSource(source: unknown): asserts source is string {
+	if (typeof source !== "string" || !/^(https:\/\/|ssh:\/\/|git@|\/)/.test(source) || /[\r\n\0]/.test(source))
+		throw Error("Expected an HTTPS or SSH Git URL, or an absolute local path");
+	if (source.startsWith("https://") || source.startsWith("ssh://")) {
+		if (!URL.canParse(source)) throw Error("Invalid project source URL");
+		const url = new URL(source);
+		if (url.password || (url.protocol === "https:" && url.username) || url.search || url.hash)
+			throw Error("Use a project source URL without embedded credentials, query, or fragment");
+	}
+}
+
+export function projectSource(folder: string): string | undefined {
+	const file = join(folder, "project.json");
+	const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+	if (!stat) return undefined;
+	if (!stat.isFile()) throw Error("project.json must be a regular file");
+	const source = json(file)?.source;
+	validateSource(source);
+	return source;
+}
+
 export async function createProject(name: string, source?: string) {
 	if (!validName.test(name)) throw Error("Use a project name with lowercase letters, digits and hyphens");
 	const dir = projectsDir(),
 		dest = join(dir, name);
 	if (fs.lstatSync(dest, { throwIfNoEntry: false })) throw Error(`Project directory already exists: ${dest}`);
 	source ??= await prompt("Git URL (or absolute local repository path): ");
-	if (!/^(https:\/\/|ssh:\/\/|git@|\/)/.test(source))
-		throw Error("Expected an HTTPS or SSH Git URL, or an absolute local path");
+	validateSource(source);
 	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 	const tmp = fs.mkdtempSync(join(dir, ".create-")),
 		stage = join(tmp, name);
