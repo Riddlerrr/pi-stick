@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { IMAGE, isolatedRun } from "./container.ts";
 import { closed, command, gitCommand, output, run, STATE, touch } from "./platform.ts";
+import { RUNNER_SHELL } from "./runner-shell.ts";
 import { type ProjectInfo, projectSource } from "./workspace.ts";
 
 export const CONTAINER_REPO_DIR = "/workspace/repo";
@@ -391,6 +392,7 @@ export class TaskEnv {
 		params: Record<string, unknown> = {},
 		policy: RpcPolicy = {},
 		onChunk?: (chunk: Buffer) => Promise<void>,
+		abort?: AbortSignal,
 	): Promise<RpcResponse> {
 		switch (method) {
 			case "exec": {
@@ -413,24 +415,41 @@ export class TaskEnv {
 					"-w",
 					CONTAINER_REPO_DIR,
 					"runner",
-					...(timeout === undefined ? [] : ["timeout", "-k", "1", String(timeout)]),
 					"sh",
 					"-c",
-					'if command -v bash >/dev/null 2>&1; then exec bash -c -- "$0"; fi; exec sh -c -- "$0"',
+					RUNNER_SHELL,
 					cmd,
 				];
 				if (!onChunk) throw Error("Missing bash output stream");
-				const child = spawn(argv[0], argv.slice(1), { stdio: ["ignore", "pipe", "pipe"] });
+				const child = spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
+				child.stdin.on("error", () => {});
+				const cancel = () => {
+					if (!child.stdin.writableEnded) child.stdin.end("\n");
+				};
+				if (abort?.aborted) cancel();
+				else abort?.addEventListener("abort", cancel, { once: true });
+				let timedOut = false;
+				const timer =
+					timeout === undefined
+						? undefined
+						: setTimeout(() => {
+								timedOut = true;
+								cancel();
+							}, timeout * 1000);
 				const exit = closed(child);
 				const forward = async (source: NodeJS.ReadableStream) => {
 					for await (const chunk of source) await onChunk(chunk as Buffer);
 				};
 				try {
 					const [[code, signal]] = await Promise.all([exit, forward(child.stdout), forward(child.stderr)]);
+					if (abort?.aborted) throw Error("Command aborted");
+					if (timedOut) throw Error(`Command timed out after ${timeout} seconds`);
 					if (code === null) throw Error(`Command terminated by ${signal}`);
 					return { text: "", exitCode: code };
 				} finally {
-					child.kill();
+					clearTimeout(timer);
+					abort?.removeEventListener("abort", cancel);
+					cancel();
 				}
 			}
 			case "logs": {

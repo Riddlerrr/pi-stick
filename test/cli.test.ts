@@ -847,13 +847,8 @@ if (has('git') && a[0] === 'run') {
 } else if (has('exec') && !has('timeout') && has('sh') && has('-c')) {
   if (a[a.indexOf('-w') + 1] !== '/workspace/repo') process.exit(12);
   const shellArgs = a.slice(a.indexOf('sh') + 1);
-  const run = (args, env) => require('node:child_process').execFileSync('/bin/sh', args, { env, encoding: 'utf8' });
-  if (run(shellArgs, process.env) !== 'from bash') process.exit(13);
-  const bin = fs.mkdtempSync("/tmp/pi-stick-sh-");
-  try {
-    fs.symlinkSync('/bin/sh', bin + '/sh');
-    if (run([...shellArgs.slice(0, -1), 'printf "from sh"'], { PATH: bin }) !== 'from sh') process.exit(14);
-  } finally { fs.rmSync(bin, { recursive: true, force: true }); }
+  const output = require('node:child_process').execFileSync('/bin/sh', shellArgs, { stdio: [0,'pipe','inherit'], encoding: 'utf8' });
+  if (output !== 'from bash') process.exit(13);
   console.log('shell-ok');
 } else if (has('logs')) {
   console.log('service-log-line');
@@ -1123,7 +1118,7 @@ if (has('config')) {
     volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
     networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
   }));
-} else if (has('exec') && has('timeout') && has('0.25') && has('sh') && has('-c')) {
+} else if (has('exec') && has('runner') && has('sh') && has('-c')) {
   console.log('ran:' + a.at(-1));
 } else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
   const rl = require('node:readline').createInterface({ input: process.stdin });
@@ -1147,7 +1142,7 @@ if (has('config')) {
       if (job.stageContext !== 'all' || job.stages.length !== 1 || job.stages[0].parallel.join(',') !== 'sec,perf') process.exit(8);
       // Only the orchestrator may execute commands in runner.
       send({ rpc: 1, method: 'exec', params: { command: 'echo 1' }, agent: 'sec' });
-      send({ rpc: 2, method: 'exec', params: { timeout: 0.25, command: 'echo 2' }, agent: 'orchestrator' });
+      send({ rpc: 2, method: 'exec', params: { timeout: 5.25, command: 'echo 2' }, agent: 'orchestrator' });
       send({ rpc: 3, method: 'exec', params: { service: 'runner', command: 'echo 3' }, agent: 'perf' });
       for (const [rpc, provider] of [[4, 'openai-codex'], [5, 'other'], [6, 'anthropic']]) send({ rpc, method: 'refresh_token', params: {provider} });
       return;

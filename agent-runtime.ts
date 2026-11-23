@@ -126,6 +126,7 @@ function readInitialJob(): Promise<Job> {
 						try {
 							pending.onChunk?.(Buffer.from(reply.chunk, "base64"));
 						} catch (err) {
+							send({ cancelRpc: reply.rpc });
 							pending.reject(err as Error);
 							pendingRpc.delete(reply.rpc);
 						}
@@ -147,17 +148,25 @@ function readInitialJob(): Promise<Job> {
 	});
 }
 
-function callHostRpc(
+async function callHostRpc(
 	method: string,
 	params: Record<string, unknown>,
 	agent?: string,
 	onChunk?: (chunk: Buffer) => void,
+	signal?: AbortSignal,
 ): Promise<{ text: string; error?: boolean; exitCode?: number }> {
+	if (signal?.aborted) throw Error("Command aborted");
 	const id = ++rpcSeq;
-	return new Promise((resolve, reject) => {
-		pendingRpc.set(id, { resolve, reject, onChunk });
-		send({ rpc: id, method, params, ...(agent ? { agent } : {}) });
-	});
+	const cancel = () => send({ cancelRpc: id });
+	try {
+		return await new Promise((resolve, reject) => {
+			pendingRpc.set(id, { resolve, reject, onChunk });
+			send({ rpc: id, method, params, ...(agent ? { agent } : {}) });
+			signal?.addEventListener("abort", cancel, { once: true });
+		});
+	} finally {
+		signal?.removeEventListener("abort", cancel);
+	}
 }
 
 function canonicalBase(dir: string): string {
@@ -481,7 +490,7 @@ const toolMap = new Map<string, ToolRegistration>([
 	[
 		"bash",
 		createBashTool(
-			(args, id, onChunk) => callHostRpc("exec", args, getAgentCtx(id).name, onChunk),
+			(args, id, onChunk, signal) => callHostRpc("exec", args, getAgentCtx(id).name, onChunk, signal),
 			(id) => resolveAgentPath(`/scratch/${getAgentCtx(id).name}`, getAgentCtx(id), true),
 		),
 	],

@@ -677,6 +677,7 @@ export async function executeAgentContainer(
 
 	const lines = createInterface({ input: child.stdout });
 	const inflight = new Set<Promise<void>>();
+	const commands = new Map<number, AbortController>();
 	let report: string | undefined;
 	let outputs: Record<string, string> | undefined;
 	let rpcCount = 0;
@@ -685,6 +686,10 @@ export async function executeAgentContainer(
 		await send(jobPayload);
 		for await (const line of lines) {
 			const msg = JSON.parse(line);
+			if (typeof msg.cancelRpc === "number") {
+				commands.get(msg.cancelRpc)?.abort();
+				continue;
+			}
 			if (typeof msg.progress === "string") {
 				onProgress(msg.progress, typeof msg.agent === "string" ? msg.agent : undefined);
 				continue;
@@ -702,6 +707,9 @@ export async function executeAgentContainer(
 				if (++rpcCount > 500) throw Error("RPC call limit exceeded");
 				const rpcId = msg.rpc as number;
 				const method = msg.method as string;
+				if (commands.has(rpcId)) throw Error("Duplicate RPC id");
+				const controller = method === "exec" ? new AbortController() : undefined;
+				if (controller) commands.set(rpcId, controller);
 				const params = (msg.params && typeof msg.params === "object" ? msg.params : {}) as Record<string, unknown>;
 				const agentName = typeof msg.agent === "string" ? msg.agent : undefined;
 				const work = (async () => {
@@ -710,8 +718,12 @@ export async function executeAgentContainer(
 						result =
 							method === "refresh_token" && !agentName
 								? { text: await refreshToken(params.provider) }
-								: await task.handleRpc(method, params, resolvePolicy(agentName), (chunk) =>
-										send({ rpc: rpcId, chunk: chunk.toString("base64") }),
+								: await task.handleRpc(
+										method,
+										params,
+										resolvePolicy(agentName),
+										(chunk) => send({ rpc: rpcId, chunk: chunk.toString("base64") }),
+										controller?.signal,
 									);
 					} catch (err) {
 						result = {
@@ -719,14 +731,19 @@ export async function executeAgentContainer(
 							error: true,
 						};
 					}
+					commands.delete(rpcId);
 					await send({ rpc: rpcId, result });
 				})();
 				inflight.add(work);
-				work.finally(() => inflight.delete(work));
+				work.then(
+					() => inflight.delete(work),
+					() => inflight.delete(work),
+				);
 				continue;
 			}
 			throw Error("Unexpected message from agent container");
 		}
+		for (const controller of commands.values()) controller.abort();
 		await Promise.allSettled(inflight);
 		await writeQueue;
 		child.stdin.end();
@@ -734,6 +751,7 @@ export async function executeAgentContainer(
 		if (code !== 0 || !report?.trim()) throw Error("Agent container failed to return a report");
 		return { report, outputs };
 	} finally {
+		for (const controller of commands.values()) controller.abort();
 		lines.close();
 		child.stdin.destroy();
 		child.kill();
