@@ -79,7 +79,7 @@ services:
         target: /etc/nginx/nginx.conf
 ```
 
-Only regular files resolving inside the project folder and outside `repo/` are supported. External, inline and environment-sourced configs are not supported. Keep credentials out of these files.
+Only regular files resolving inside the project folder and outside `repo/` are supported. External, inline and environment-sourced configs are not supported. Keep credentials out of these files. Compose `secrets` are not supported in the base recipe.
 
 ## Author actions
 

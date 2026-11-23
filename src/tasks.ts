@@ -85,6 +85,7 @@ export function validateCompose(folder: string, key: string): ComposeConfig {
 	const conf: ComposeConfig = JSON.parse(
 		output(["docker", "compose", "-p", key, "-f", join(folder, "compose.yaml"), "config", "--format", "json"]),
 	);
+	if (conf.secrets) throw Error("Compose secrets are not supported in the base compose.yaml");
 	if (conf.configs) {
 		const project = fs.realpathSync(folder);
 		const repo = fs.realpathSync(join(project, "repo"));

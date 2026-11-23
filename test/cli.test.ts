@@ -193,6 +193,22 @@ test("TaskEnv validates base compose, materializes bind mounts, and isolates rep
 	assert.throws(() => task.validateBase(), /host mounts/);
 });
 
+test("task Compose recipes reject secrets before writing the task stack", (t) => {
+	const { app, tmp, source, ok } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	const folder = join(app, "projects/demo");
+	const task = new TaskEnv(runId(), { name: "demo", folder, repo: join(folder, "repo") }, join(tmp, "state"));
+	for (const secret of [{ file: join(source, "example.txt") }, { external: true }]) {
+		writeJson(join(folder, "compose.yaml"), {
+			services: { runner: { image: "alpine", volumes: ["source:/workspace"], secrets: ["sample"] } },
+			volumes: { source: {} },
+			secrets: { sample: secret },
+		});
+		assert.throws(() => task.materializeCompose(), /Compose secrets are not supported/);
+		assert.ok(!fs.existsSync(task.composeFile));
+	}
+});
+
 test("task Compose configs must resolve to regular trusted project files", (t) => {
 	const { app, tmp, source, ok } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);
