@@ -27,9 +27,11 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 
 import { type CredentialPayload, runtimeCredentials } from "./runtime-auth.ts";
 import { createEditTool } from "./runtime-tools/edit.ts";
+import { createExecTool } from "./runtime-tools/exec.ts";
 import { createFindTool } from "./runtime-tools/find.ts";
 import { createGrepTool } from "./runtime-tools/grep.ts";
 import { createReadTool } from "./runtime-tools/read.ts";
+import type { AgentRpc } from "./runtime-tools/rpc.ts";
 import { createWriteTool } from "./runtime-tools/write.ts";
 
 const SESSIONS_DIR = process.env.PI_STICK_SESSIONS_DIR ?? "/sessions";
@@ -430,28 +432,6 @@ async function runParallelBatch(
 	return result;
 }
 
-const execTool = defineTool({
-	name: "exec",
-	description: `Run a shell command inside a running project container (defaults to 'runner' at ${CONTAINER_REPO_DIR}). Returns exit status and output tail.`,
-	parameters: {
-		type: "object",
-		properties: {
-			command: { type: "string", description: "Shell command to execute inside the container." },
-			service: { type: "string", description: "Compose service name (defaults to 'runner')." },
-			workdir: { type: "string", description: `Working directory inside ${CONTAINER_REPO_DIR} or /scratch.` },
-			timeout: { type: "integer", minimum: 1, maximum: 900, description: "Timeout in seconds (default 300)." },
-		},
-		required: ["command"],
-		additionalProperties: false,
-	},
-	callers: ["model"],
-	execute: async (args, api) => {
-		const agentCtx = getAgentCtx(api.conversationId);
-		const res = await callHostRpc("exec", args as Record<string, unknown>, agentCtx.name);
-		return { output: [{ type: "text" as const, text: res.text }], isError: !!res.error };
-	},
-});
-
 const logsTool = defineTool({
 	name: "logs",
 	description: "Fetch recent container logs from the running project Compose stack.",
@@ -589,13 +569,15 @@ const delegateTool = defineTool({
 	},
 });
 
+const agentRpc: AgentRpc = (method, params, id) => callHostRpc(method, params, getAgentCtx(id).name);
+
 const toolMap = new Map<string, ToolRegistration>([
 	["read", createReadTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
 	["write", createWriteTool((path, id) => resolveAgentPath(path, getAgentCtx(id), true))],
 	["edit", createEditTool((path, id) => resolveAgentPath(path, getAgentCtx(id), true))],
 	["grep", createGrepTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
 	["find", createFindTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
-	["exec", execTool],
+	["exec", createExecTool(CONTAINER_REPO_DIR, agentRpc)],
 	["logs", logsTool],
 	["ps", psTool],
 	["restart", restartTool],
