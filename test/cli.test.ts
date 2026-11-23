@@ -147,6 +147,8 @@ test("TaskEnv validates base compose, materializes bind mounts, and isolates rep
 	const dev = JSON.parse(
 		execFileSync("docker", ["compose", "config", "--format", "json"], { cwd: folder, encoding: "utf8" }),
 	);
+	const buildArgs = { UID: String(process.getuid?.()), GID: String(process.getgid?.()) };
+	assert.deepEqual(dev.services.runner.build.args, buildArgs);
 	assert.equal(dev.name, "pi-dev-demo");
 	assert.ok(dev.services.runner.volumes.some((m: { source: string }) => m.source === join(folder, "repo")));
 
@@ -154,6 +156,7 @@ test("TaskEnv validates base compose, materializes bind mounts, and isolates rep
 	assert.equal(network, `${task.key}_default`);
 	assert.deepEqual(services, ["runner"]);
 	const mat = JSON.parse(read(task.composeFile).replaceAll("$$", "$"));
+	assert.deepEqual(mat.services.runner.build.args, buildArgs);
 	assert.ok(
 		mat.services.runner.volumes.some(
 			(m: { type: string; source: string; target: string }) =>

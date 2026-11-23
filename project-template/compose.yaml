@@ -1,6 +1,10 @@
 services:
   runner:
-    build: .
+    build:
+      context: .
+      args:
+        UID: "1000"
+        GID: "1000"
     init: true
     working_dir: /workspace
     volumes: [source:/workspace]

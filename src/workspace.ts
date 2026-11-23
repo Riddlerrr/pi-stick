@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { ASSETS, json, prompt, ROOT, read, run, STATE, userSettings, writeJson } from "./platform.ts";
 
@@ -98,7 +98,9 @@ export async function createProject(name: string, source?: string) {
 		fs.cpSync(join(ASSETS, "project-template"), stage, { recursive: true });
 		fs.chmodSync(stage, 0o700);
 		const compose = join(stage, "compose.yaml");
-		fs.writeFileSync(compose, `name: pi-dev-${name}\n${read(compose)}`);
+		const { uid, gid } = userInfo();
+		const recipe = read(compose).replace('UID: "1000"', `UID: "${uid}"`).replace('GID: "1000"', `GID: "${gid}"`);
+		fs.writeFileSync(compose, `name: pi-dev-${name}\n${recipe}`);
 		writeJson(join(stage, "project.json"), { name, source });
 		run(
 			[
