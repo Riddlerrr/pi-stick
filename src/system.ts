@@ -255,7 +255,8 @@ export async function update(yes: boolean, activeRunCount: number) {
 	const stage = fs.mkdtempSync(join(tmpdir(), "pi-stick-update-"));
 	const copy = (name: string, from: string, to: string) => fs.copyFileSync(join(from, name), join(to, name));
 	try {
-		for (const f of [...files, "agent-runtime.ts", "runtime-auth.ts", ".dockerignore"]) copy(f, ASSETS, stage);
+		for (const f of [...files, "agent-runtime.ts", "runtime-auth.ts", "runtime-read.ts", ".dockerignore"])
+			copy(f, ASSETS, stage);
 		const base = "node:current-bookworm-slim";
 		const digest = /^Digest:\s+(sha256:[0-9a-f]{64})$/m.exec(
 			output(["docker", "buildx", "imagetools", "inspect", base]),

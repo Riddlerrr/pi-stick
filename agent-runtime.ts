@@ -29,13 +29,14 @@ import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
 import { type CredentialPayload, runtimeCredentials } from "./runtime-auth.ts";
+import { createReadTool } from "./runtime-read.ts";
 
 const SESSIONS_DIR = process.env.PI_STICK_SESSIONS_DIR ?? "/sessions";
 const CONTAINER_REPO_DIR = "/workspace/repo";
 const WORKSPACE_DIR = process.env.PI_STICK_WORKSPACE_DIR ?? CONTAINER_REPO_DIR;
 const SCRATCH_DIR = process.env.PI_STICK_SCRATCH_DIR ?? "/scratch";
 const CONTEXT_DIR = process.env.PI_STICK_CONTEXT_DIR ?? "/context";
-const MAX_READ_CHARS = 32_000;
+const MAX_SEARCH_CHARS = 32_000;
 const MAX_FIND_RESULTS = 500;
 const MAX_GREP_MATCHES = 2000;
 const SEARCH_TIMEOUT_MS = 15_000;
@@ -193,14 +194,6 @@ function resolveAgentPath(rawPath: string, agentCtx: AgentContext, forWrite: boo
 		);
 	}
 	return assertWithin(resolve(WORKSPACE_DIR, sub), WORKSPACE_DIR, "workspace");
-}
-
-function isBinary(buf: Buffer): boolean {
-	const len = Math.min(buf.length, 4096);
-	for (let i = 0; i < len; i++) {
-		if (buf[i] === 0) return true;
-	}
-	return false;
 }
 
 function globToRegExp(pattern: string): RegExp {
@@ -519,57 +512,6 @@ async function runParallelBatch(
 	return result;
 }
 
-const readTool = defineTool({
-	name: "read",
-	description: `Read a UTF-8 file or list a directory. Relative paths start at ${CONTAINER_REPO_DIR}; /scratch/... and /context/... are also readable.`,
-	parameters: {
-		type: "object",
-		properties: {
-			path: { type: "string", description: "File or directory path." },
-			offset: { type: "integer", minimum: 0, description: "Character offset to start reading from." },
-			limit: { type: "integer", minimum: 1, maximum: 100000, description: "Max characters to return." },
-		},
-		required: ["path"],
-		additionalProperties: false,
-	},
-	replay: "safe",
-	execute: async (args, api) => {
-		const {
-			path,
-			offset = 0,
-			limit = MAX_READ_CHARS,
-		} = args as {
-			path: string;
-			offset?: number;
-			limit?: number;
-		};
-		try {
-			const resolved = resolveAgentPath(path, getAgentCtx(api.conversationId), false);
-			const stat = fs.statSync(resolved);
-			if (stat.isDirectory()) {
-				const entries = fs
-					.readdirSync(resolved, { withFileTypes: true })
-					.sort((a, b) => a.name.localeCompare(b.name))
-					.map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
-					.join("\n");
-				return { output: [{ type: "text" as const, text: entries || "(empty directory)" }] };
-			}
-			const buf = fs.readFileSync(resolved);
-			if (isBinary(buf))
-				return { output: [{ type: "text" as const, text: "Binary file cannot be read as text." }], isError: true };
-			const text = buf.toString("utf8");
-			const end = offset + Math.min(limit, 100_000);
-			const slice = text.slice(offset, end) + (text.length > end ? `\n[more at offset ${end}]` : "");
-			return { output: [{ type: "text" as const, text: slice }] };
-		} catch (err) {
-			return {
-				output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
-				isError: true,
-			};
-		}
-	},
-});
-
 const writeTool = defineTool({
 	name: "write",
 	description:
@@ -686,7 +628,7 @@ const grepTool = defineTool({
 			if (!directory && info.size > 2 * 1024 * 1024)
 				return { output: [{ type: "text" as const, text: "(no matches)" }] };
 			const matches: string[] = [];
-			const end = offset + MAX_READ_CHARS;
+			const end = offset + MAX_SEARCH_CHARS;
 			let length = 0;
 			const truncated = await scanRipgrep(
 				directory ? resolved : dirname(resolved),
@@ -771,7 +713,7 @@ const findTool = defineTool({
 					if (query && !(glob ? glob.test(file) : file.includes(query))) return true;
 					const display = file.replaceAll("\n", "\\n").replaceAll("\r", "\\r");
 					length += display.length + (files.length ? 1 : 0);
-					if (files.length === maxResults || length > MAX_READ_CHARS) return false;
+					if (files.length === maxResults || length > MAX_SEARCH_CHARS) return false;
 					files.push(display);
 					return true;
 				},
@@ -948,7 +890,7 @@ const delegateTool = defineTool({
 });
 
 const toolMap = new Map<string, ToolRegistration>([
-	["read", readTool],
+	["read", createReadTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
 	["write", writeTool],
 	["edit", editTool],
 	["grep", grepTool],
