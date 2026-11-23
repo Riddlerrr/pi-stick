@@ -52,6 +52,7 @@
     },
     "stages": {
       "type": "array",
+      "description": "Required stages in execution order. Each receives the preceding stage's results. A failed agent stops the action before the next stage or orchestrator.",
       "items": {
         "type": "object",
         "additionalProperties": false,

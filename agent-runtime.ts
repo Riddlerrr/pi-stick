@@ -404,6 +404,7 @@ async function runSubagent(
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		emitProgress(`error: ${msg}`, label);
+		if (slot) throw err; // Unknown submission outcome: resume the same slot.
 		return { agent: spec.name, ok: false, output: `Error: ${msg}` };
 	}
 }
@@ -413,11 +414,19 @@ async function runParallelBatch(
 	batchLabel: string,
 	stageKey?: string,
 ): Promise<BatchResult> {
-	const cached = stageKey && (await h.snapshot(workflow, ctx))?.stages[stageKey];
-	if (cached) {
-		for (const r of cached.results) if (r.ok) recordAgentOutput(r.agent, r.output);
+	const cached = stageKey ? (await h.snapshot(workflow, ctx))?.stages[stageKey] : undefined;
+	if (cached?.results.every((r) => r.ok)) {
+		for (const r of cached.results) recordAgentOutput(r.agent, r.output);
 		emitProgress(`Restored completed ${batchLabel}`, "orchestrator");
 		return cached;
+	}
+	if (stageKey && cached) {
+		// A settled failure needs a new conversation; successful siblings keep their durable submissions.
+		await h.commit(async (tx) => {
+			const state = await tx.doc(workflow);
+			for (const [i, r] of cached.results.entries()) if (!r.ok) delete state.slots[`${stageKey}:${i}:${r.agent}`];
+			delete state.stages[stageKey];
+		}, ctx);
 	}
 	const rwCount = batch.filter((b) => b.spec.mode === "read-write").length;
 	if (rwCount > 1) {
@@ -1027,7 +1036,8 @@ try {
 			const stageSections: string[] = [];
 			for (const [index, stage] of job.stages.entries()) {
 				emitProgress(`Starting parallel stage '${stage.name}': ${stage.parallel.join(", ")}`, "orchestrator");
-				const stagePrompt = stage.prompt ? `${stage.prompt}\n\nTask context:\n${job.prompt}` : job.prompt;
+				let stagePrompt = stage.prompt ? `${stage.prompt}\n\nTask context:\n${job.prompt}` : job.prompt;
+				if (index > 0) stagePrompt += `\n\n# Previous stage results\n\n${stageSections[index - 1]}`;
 				const batch = stage.parallel.map((agentName) => {
 					const agentSpec = activeSubagents[agentName];
 					if (!agentSpec) throw Error(`Stage '${stage.name}' references missing agent '${agentName}'`);
@@ -1038,9 +1048,15 @@ try {
 					`stage:${stage.name}`,
 					`${job.requestId ?? job.id}:${index}:${stage.name}`,
 				);
+				const failures = results.filter((r) => !r.ok);
+				if (failures.length) {
+					const message = `Stage '${stage.name}' failed: ${failures.map((r) => r.agent).join(", ")}`;
+					emitProgress(message, "orchestrator");
+					throw Error(message);
+				}
 				const lines = [`## Stage: ${stage.name}`];
 				for (const r of results) {
-					lines.push(`### Agent: ${r.agent} (${r.ok ? "ok" : "error"})\n\n${r.output}`);
+					lines.push(`### Agent: ${r.agent} (ok)\n\n${r.output}`);
 				}
 				if (cleanlinessWarning) lines.push(`### Repository Cleanliness Warning\n\n${cleanlinessWarning}`);
 				stageSections.push(lines.join("\n\n"));

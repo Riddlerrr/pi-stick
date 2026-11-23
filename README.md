@@ -118,7 +118,7 @@ Each action directory contains `action.json` (validated against `action.schema.j
 }
 ```
 
-- **Orchestration modes**: Configure static `stages` (parallel fan-out feeding into `orchestrator`) and/or enable `delegate` on `orchestrator` so it can dynamically spawn subagents in parallel across multiple rounds.
+- **Orchestration modes**: Static `stages` run in order. Each stage’s agents run in parallel and receive the task plus the immediately preceding stage’s results. Every agent in a static stage must finish successfully before the next stage runs. On `resume`, a failed agent gets a fresh attempt; successful siblings are not rerun. Inspect any changes a failed agent made before retrying. The orchestrator receives all stage results only after the last stage succeeds. For best-effort work where the orchestrator decides how to handle errors, enable `delegate` instead.
 - **Permissions & scratch isolation**: All agents in a task share `/workspace` and the running project stack. `read-only` agents cannot modify `/workspace` via file tools, but each agent gets its own writable `/scratch/<agent-name>` directory (visible in both the agent container and `runner`) for ad-hoc test scripts and experiments. Repository cleanliness is checked after `read-only` rounds.
 - **Trusted host hooks**: `prepare` runs on the host before starting the project stack (and can write read-only files into `$PI_STICK_CONTEXT`, mounted at `/context:ro`). `after` runs after completion with paths to the report and `changes.patch`.
 - **Models & auth**: Each agent can specify any `provider/modelId` supported by local Pi. Tokens are fetched dynamically via `pi auth print-bearer-token` and passed to the ephemeral container strictly over stdin.
