@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import * as fs from "node:fs";
-import { join, posix } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { IMAGE, isolatedRun } from "./container.ts";
 import { closed, command, gitCommand, output, run, STATE, touch } from "./platform.ts";
@@ -385,56 +385,34 @@ export class TaskEnv {
 		return service;
 	}
 
-	private resolveExecWorkdir(workdir?: unknown): string {
-		if (workdir === undefined || workdir === "") return CONTAINER_REPO_DIR;
-		if (typeof workdir !== "string" || workdir.includes("\0") || workdir.length > 512) throw Error("Invalid workdir");
-		if (workdir === "/scratch" || workdir.startsWith("/scratch/")) {
-			const norm = posix.normalize(workdir);
-			if (norm === "/scratch" || norm.startsWith("/scratch/")) return norm;
-			throw Error("Invalid scratch workdir");
-		}
-		const rel = workdir.startsWith(CONTAINER_REPO_DIR) ? workdir : posix.join(CONTAINER_REPO_DIR, workdir);
-		const norm = posix.normalize(rel);
-		if (norm !== CONTAINER_REPO_DIR && !norm.startsWith(`${CONTAINER_REPO_DIR}/`))
-			throw Error(`Workdir must stay inside ${CONTAINER_REPO_DIR} or /scratch`);
-		return norm;
-	}
-
 	async handleRpc(method: string, params: Record<string, unknown> = {}, policy: RpcPolicy = {}): Promise<RpcResponse> {
 		switch (method) {
 			case "exec": {
 				if (policy.allowExec === false) return { text: "bash is not permitted for this agent", error: true };
 				const cmd = params.command;
-				if (typeof cmd !== "string" || !cmd.length || cmd.length > 16384 || cmd.includes("\0"))
-					return { text: "bash requires a non-empty command string", error: true };
-				const service = this.validateService(typeof params.service === "string" ? params.service : "runner");
+				if (typeof cmd !== "string" || cmd.includes("\0")) return { text: "Invalid command", error: true };
 				const allowed = policy.allowedServices ?? ["runner"];
-				if (!allowed.includes("*") && !allowed.includes(service))
-					return { text: `bash in service '${service}' is not permitted`, error: true };
-				const workdir = this.resolveExecWorkdir(params.workdir);
-				const timeoutSec =
-					typeof params.timeout === "number" && Number.isSafeInteger(params.timeout) && params.timeout > 0
-						? Math.min(params.timeout, 900)
-						: 300;
-				const res = await spawnCapture(
-					[
-						...this.compose,
-						"exec",
-						"-T",
-						"-w",
-						workdir,
-						service,
-						"timeout",
-						"-k",
-						"15",
-						String(timeoutSec),
-						"sh",
-						"-c",
-						'if command -v bash >/dev/null 2>&1; then exec bash -c -- "$0"; fi; exec sh -c -- "$0"',
-						cmd,
-					],
-					(timeoutSec + 30) * 1000,
-				);
+				if (!allowed.includes("*") && !allowed.includes("runner"))
+					return { text: "bash in runner is not permitted", error: true };
+				const timeout = params.timeout;
+				if (
+					timeout !== undefined &&
+					(typeof timeout !== "number" || !Number.isFinite(timeout) || timeout <= 0 || timeout * 1000 > 2147483647)
+				)
+					return { text: "Invalid timeout", error: true };
+				const res = await spawnCapture([
+					...this.compose,
+					"exec",
+					"-T",
+					"-w",
+					CONTAINER_REPO_DIR,
+					"runner",
+					...(timeout === undefined ? [] : ["timeout", "-k", "1", String(timeout)]),
+					"sh",
+					"-c",
+					'if command -v bash >/dev/null 2>&1; then exec bash -c -- "$0"; fi; exec sh -c -- "$0"',
+					cmd,
+				]);
 				return {
 					text: `exit=${res.code ?? res.signal}\n${res.text}`,
 					error: res.code !== 0,

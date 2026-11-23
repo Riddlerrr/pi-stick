@@ -844,7 +844,7 @@ if (has('git') && a[0] === 'run') {
   }));
 } else if (has('stop') && fs.existsSync(${JSON.stringify(join(tmp, "fail-stop"))})) {
   process.exit(9);
-} else if (has('exec') && has('timeout') && has('sh') && has('-c')) {
+} else if (has('exec') && !has('timeout') && has('sh') && has('-c')) {
   if (a[a.indexOf('-w') + 1] !== '/workspace/repo') process.exit(12);
   const shellArgs = a.slice(a.indexOf('sh') + 1);
   const run = (args, env) => require('node:child_process').execFileSync('/bin/sh', args, { env, encoding: 'utf8' });
@@ -1083,7 +1083,7 @@ test("multi-agent action validates stages, resolves multi-provider auth, enforce
 				instructions: "agents/sec.md",
 				mode: "read-only",
 				tools: ["read", "grep", "find", "bash", "logs"],
-				allowedServices: ["runner"],
+				allowedServices: ["web"],
 			},
 			perf: {
 				description: "Performance specialist",
@@ -1122,7 +1122,7 @@ if (has('config')) {
     volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
     networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
   }));
-} else if (has('exec') && has('timeout') && has('sh') && has('-c')) {
+} else if (has('exec') && has('timeout') && has('0.25') && has('sh') && has('-c')) {
   console.log('ran:' + a.at(-1));
 } else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
   const rl = require('node:readline').createInterface({ input: process.stdin });
@@ -1144,9 +1144,9 @@ if (has('config')) {
       }
       if (job.agents.sec.thinkingLevel !== 'medium' || !job.orchestrator.instructions.includes('Security specialist')) process.exit(7);
       if (job.stageContext !== 'all' || job.stages.length !== 1 || job.stages[0].parallel.join(',') !== 'sec,perf') process.exit(8);
-      // Test per-agent host RPC policy: sec cannot exec on 'web', orchestrator can exec on 'web', perf cannot exec at all
-      send({ rpc: 1, method: 'exec', params: { service: 'web', command: 'echo 1' }, agent: 'sec' });
-      send({ rpc: 2, method: 'exec', params: { service: 'web', command: 'echo 2' }, agent: 'orchestrator' });
+      // Only the orchestrator may execute commands in runner.
+      send({ rpc: 1, method: 'exec', params: { command: 'echo 1' }, agent: 'sec' });
+      send({ rpc: 2, method: 'exec', params: { timeout: 0.25, command: 'echo 2' }, agent: 'orchestrator' });
       send({ rpc: 3, method: 'exec', params: { service: 'runner', command: 'echo 3' }, agent: 'perf' });
       for (const [rpc, provider] of [[4, 'openai-codex'], [5, 'other'], [6, 'anthropic']]) send({ rpc, method: 'refresh_token', params: {provider} });
       return;
