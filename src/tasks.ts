@@ -277,7 +277,18 @@ export class TaskEnv {
 	}
 
 	setup() {
-		run([...this.compose, "exec", "-T", "-w", CONTAINER_REPO_DIR, "runner", "/usr/local/bin/setup-project"]);
+		run([
+			...this.compose,
+			"exec",
+			"-T",
+			"-w",
+			CONTAINER_REPO_DIR,
+			"runner",
+			"/bin/sh",
+			"-c",
+			'if [ -e "$0" ] || [ -L "$0" ]; then exec "$0"; fi',
+			"/usr/local/bin/setup-project",
+		]);
 	}
 
 	start() {

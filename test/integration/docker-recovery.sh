@@ -47,7 +47,8 @@ git -C "$tmp/repo" add model.mjs
 git -C "$tmp/repo" -c user.name=Fixture -c user.email=fixture@localhost commit -qm fixture
 "$cli" create project demo --repo "$tmp/repo"
 project="$PI_STICK_DEV_HOME/projects/demo"
-printf 'FROM %s\nCOPY --chmod=755 setup-project /usr/local/bin/\n' "$PI_STICK_IMAGE" > "$project/Dockerfile"
+# Exercise run, resume and follow-up with no setup hook installed in the runner.
+printf 'FROM %s\n' "$PI_STICK_IMAGE" > "$project/Dockerfile"
 cat > "$project/compose.yaml" <<YAML
 services:
   runner:

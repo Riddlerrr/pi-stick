@@ -5,7 +5,7 @@ are the operator's trusted Docker recipe, not part of the application checkout.
 From this directory:
 
     docker compose up -d --build
-    docker compose exec runner setup-project
+    docker compose exec runner /usr/local/bin/setup-project  # only if installed
     docker compose exec runner sh
     docker compose down
 
