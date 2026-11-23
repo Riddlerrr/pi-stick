@@ -65,6 +65,22 @@ Each project contains `repo/` (your local Git clone), `project.json`, `Dockerfil
 - Keep host bind mounts and published host ports in `compose.override.yaml` (dev-only). Tasks use only the base `compose.yaml` with isolated per-task mounts and networks.
 - Document build, test, and local service URLs in `AGENTS.md`; it is automatically included in agent instructions.
 
+For a read-only service config, use Compose `configs` in the base `compose.yaml`. For example, if your project has an `nginx.conf` next to `compose.yaml`:
+
+```yaml
+configs:
+  nginx_conf:
+    file: ./nginx.conf
+services:
+  web:
+    image: nginx:alpine
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/nginx.conf
+```
+
+Only regular files resolving inside the project folder and outside `repo/` are supported. External, inline and environment-sourced configs are not supported. Keep credentials out of these files.
+
 ## Author actions
 
 A fresh install has no actions. Create global actions (`$PI_STICK_HOME/actions/<name>/`) or project-specific actions (`projects/<project>/actions/<name>/`, which override global actions of the same name):

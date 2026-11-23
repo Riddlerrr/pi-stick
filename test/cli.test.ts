@@ -183,6 +183,39 @@ test("TaskEnv validates base compose, materializes bind mounts, and isolates rep
 	assert.throws(() => task.validateBase(), /host mounts/);
 });
 
+test("task Compose configs must resolve to regular trusted project files", (t) => {
+	const { app, tmp, source, ok } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	const folder = join(app, "projects/demo");
+	const task = new TaskEnv(runId(), { name: "demo", folder, repo: join(folder, "repo") }, join(tmp, "state"));
+	const recipe = (config: object) =>
+		writeJson(join(folder, "compose.yaml"), {
+			services: { runner: { image: "alpine", volumes: ["source:/workspace"], configs: ["settings"] } },
+			volumes: { source: {} },
+			configs: { settings: config },
+		});
+	fs.symlinkSync("setup-project", join(folder, "settings"));
+	recipe({ file: "./settings" });
+	task.materializeCompose();
+	assert.equal(
+		JSON.parse(read(task.composeFile)).configs.settings.file,
+		fs.realpathSync(join(folder, "setup-project")),
+	);
+
+	fs.unlinkSync(join(folder, "settings"));
+	fs.symlinkSync("repo/example.txt", join(folder, "settings"));
+	for (const file of ["./settings", "./repo/example.txt", join(source, "example.txt"), "."])
+		assert.throws(() => {
+			recipe({ file });
+			task.validateBase();
+		}, /regular project file outside repo/);
+	for (const config of [{ external: true }, { content: "inline" }, { environment: "HOME" }])
+		assert.throws(() => {
+			recipe(config);
+			task.validateBase();
+		}, /must use a project file/);
+});
+
 test("runner must share the default network with the agent before run preparation", (t) => {
 	const { app, source, ok, fail } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);

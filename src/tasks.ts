@@ -34,6 +34,7 @@ export interface ComposeResource {
 export interface ComposeConfig {
 	name?: string;
 	services: Record<string, ComposeService>;
+	configs?: Record<string, { file?: string; external?: boolean }>;
 	volumes?: Record<string, ComposeResource>;
 	networks?: Record<string, ComposeResource>;
 	[key: string]: unknown;
@@ -84,6 +85,18 @@ export function validateCompose(folder: string, key: string): ComposeConfig {
 	const conf: ComposeConfig = JSON.parse(
 		output(["docker", "compose", "-p", key, "-f", join(folder, "compose.yaml"), "config", "--format", "json"]),
 	);
+	if (conf.configs) {
+		const project = fs.realpathSync(folder);
+		const repo = fs.realpathSync(join(project, "repo"));
+		for (const [name, config] of Object.entries(conf.configs)) {
+			if (config.external || typeof config.file !== "string")
+				throw Error(`Compose config '${name}' must use a project file`);
+			const file = fs.realpathSync(config.file);
+			if (!file.startsWith(`${project}/`) || file.startsWith(`${repo}/`) || !fs.statSync(file).isFile())
+				throw Error(`Compose config '${name}' must be a regular project file outside repo/`);
+			config.file = file;
+		}
+	}
 	for (const group of [conf.volumes, conf.networks]) {
 		for (const [name, resource] of Object.entries(group ?? {})) {
 			if (resource.external || Object.keys(resource.driver_opts ?? {}).length || resource.name !== `${key}_${name}`)
