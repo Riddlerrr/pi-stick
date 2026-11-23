@@ -138,6 +138,8 @@ pistick doctor                          # check Docker, image self-check, auth, 
 pistick update [--yes]                  # rebuild pi-stick:current with latest dependencies
 ```
 
+Each run mounts only `state/runs/<id>/session/` at `/sessions`; the orchestrator and its subagents share that SQLite database. `stop` preserves it and `cleanup` removes it with the run. Legacy `state/sessions/` databases are neither migrated nor used. `continue` refuses a missing session without changing the run. Before the first agent launch attempt, `resume` may initialize a session; after that attempt is recorded, a missing database is an error even if Docker never started.
+
 For new runs, `resume` reuses completed static stages and their outputs, and reconnects to the same Pi Durable submissions in an interrupted stage. Resuming a follow-up never starts the initial stages. Runs created before stage checkpointing have no saved stage results. Keep the action definition unchanged while recovering a run.
 
 Host hooks may have external side effects. If a hook started but its success was not recorded, inspect the run and external state first. Use `pistick resume RUN_ID --retry-hook` only if it is safe to execute that hook again. This is not an exactly-once guarantee for commands interrupted mid-execution.

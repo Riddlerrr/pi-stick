@@ -50,6 +50,7 @@ export interface RunConfig {
 	requestId: string;
 	mode: "run" | "resume" | "continue";
 	prepared?: boolean;
+	agentLaunchAttempted: boolean;
 	hookPending?: "prepare" | "after";
 	prepareDone?: boolean;
 	afterDone?: boolean;
@@ -228,6 +229,7 @@ export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 			requestId: id,
 			mode: "run",
 			prepared: false,
+			agentLaunchAttempted: false,
 		} satisfies RunConfig);
 		await spawnWorker(id, fd);
 	} finally {
@@ -235,6 +237,12 @@ export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 	}
 	console.log(`Run: ${id}\nFollow: pistick follow ${id}`);
 	return id;
+}
+
+function requireSession(id: string) {
+	const db = join(runDir(id), "session", `${id}.sqlite`);
+	if (!fs.lstatSync(db, { throwIfNoEntry: false })?.isFile())
+		throw Error(`Session database missing for run ${id}: ${db}; refusing to start without its history`);
 }
 
 export async function launchResume(id: string, retryHook = false): Promise<string> {
@@ -248,6 +256,8 @@ export async function launchResume(id: string, retryHook = false): Promise<strin
 		const cfg = json(cfgFile) as RunConfig;
 		if (fs.existsSync(exitFile) && read(exitFile).trim() === "0")
 			throw Error("Run already completed; use 'pistick continue' for follow-up instructions");
+		// A legacy config without the marker cannot prove the agent never started.
+		if (cfg.agentLaunchAttempted !== false) requireSession(id);
 		if (cfg.hookPending && !retryHook)
 			throw Error(
 				`Outcome of ${cfg.hookPending} hook unknown; verify its side effects before using resume --retry-hook`,
@@ -281,6 +291,7 @@ export async function launchContinue(id: string, promptText: string, keepUp?: bo
 		if (!fs.existsSync(task.repo)) throw Error(`Workspace for run ${id} is no longer present`);
 		if (cfg.hookPending) throw Error(`Resolve pending ${cfg.hookPending} hook with resume first`);
 		if (!cfg.prepared) throw Error("Run preparation is incomplete; resume it first");
+		requireSession(id);
 		delete cfg.afterDone;
 		delete cfg.agentDone;
 		cfg.mode = "continue";
@@ -414,6 +425,13 @@ export async function worker(id: string): Promise<number> {
 				continueRun: cfg.mode === "continue",
 			};
 
+			if (cfg.agentLaunchAttempted === false) {
+				fs.mkdirSync(join(dir, "session"), { recursive: true, mode: 0o700 });
+				cfg.agentLaunchAttempted = true;
+				writeJson(cfgFile, cfg);
+			} else {
+				requireSession(id);
+			}
 			const result = await executeAgentContainer(
 				task,
 				jobPayload,
@@ -540,7 +558,7 @@ export async function executeAgentContainer(
 		repo: task.repo,
 		scratch: task.scratch,
 		context: task.context,
-		sessions: join(STATE, "sessions"),
+		sessions: join(task.dir, "session"),
 	});
 	const child = spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "inherit"] });
 	const exit = closed(child);
@@ -693,7 +711,7 @@ export async function cleanup(days: number, dry: boolean) {
 		console.log("No eligible pi-stick runs.");
 		return;
 	}
-	const items: Array<{ id: string; dir: string; key: string; compose: string }> = [];
+	const items: Array<{ dir: string; key: string; compose: string }> = [];
 	for (const entry of fs.readdirSync(runsDir, { withFileTypes: true })) {
 		const id = entry.name;
 		if (!entry.isDirectory() || !VALID_ID.test(id)) continue;
@@ -706,7 +724,7 @@ export async function cleanup(days: number, dry: boolean) {
 		const project = fs.existsSync(metaFile) ? (json(metaFile) as Partial<RunMeta>).project : undefined;
 		const key = project ? `pi-stick-${project}-${id.slice(0, 12)}` : `pi-stick-run-${id.slice(0, 12)}`;
 		const compose = join(dir, "compose.yaml");
-		items.push({ id, dir, key, compose });
+		items.push({ dir, key, compose });
 		console.log(`${id} (${project ?? "unknown"}): workspace, scratch stack/volumes, reports and session`);
 	}
 	if (!items.length) {
@@ -714,12 +732,11 @@ export async function cleanup(days: number, dry: boolean) {
 		return;
 	}
 	if (dry || (await prompt("Permanently delete listed pi-stick runs? [y/N] ")).toLowerCase() !== "y") return;
-	for (const { id, dir, key, compose } of items) {
+	for (const { dir, key, compose } of items) {
 		if (fs.existsSync(compose)) {
 			const res = spawn("docker", ["compose", "-p", key, "-f", compose, "down", "--volumes"], { stdio: "inherit" });
 			await closed(res);
 		}
-		for (const ext of ["", "-wal", "-shm"]) fs.rmSync(join(STATE, "sessions", `${id}.sqlite${ext}`), { force: true });
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 }

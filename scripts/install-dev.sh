@@ -178,7 +178,7 @@ if [[ -e $dev_dir ]]; then
   fi
 fi
 
-mkdir -p -- "$dev_dir/projects" "$dev_dir/actions" "$dev_dir/state/runs" "$dev_dir/state/sessions"
+mkdir -p -- "$dev_dir/projects" "$dev_dir/actions" "$dev_dir/state/runs"
 : > "$dev_dir/.pi-stick-dev"
 
 # Discover suggested default_model:

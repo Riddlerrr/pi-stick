@@ -179,6 +179,9 @@ test("ephemeral container args enforce hardening and model spec validation", () 
 		assert.ok(argv.includes("/tmp/scratch:/scratch"));
 		assert.ok(argv.includes("/tmp/context:/context:ro"));
 		assert.ok(argv.includes("/tmp/sessions:/sessions"));
+		const probe = ephemeralArgs({ network: "none", tmpfsProbe: true });
+		assert.ok(probe.includes(`/sessions:rw,uid=${process.getuid()},mode=0700`));
+		assert.ok(!probe.includes("-v"));
 	}
 });
 
@@ -186,13 +189,12 @@ test("per-run locks allow concurrent runs, follow, diff, and selective cleanup",
 	const { app, ok, fail } = fixture(t);
 	ok(["cleanup", "--dry-run"]);
 	const runs = join(app, "state/runs");
-	const sessions = join(app, "state/sessions");
 	const idA = "a".repeat(32);
 	const idB = "b".repeat(32);
 	const dirA = join(runs, idA);
 	const dirB = join(runs, idB);
-	fs.mkdirSync(dirA, { recursive: true });
-	fs.mkdirSync(dirB, { recursive: true });
+	fs.mkdirSync(join(dirA, "session"), { recursive: true });
+	fs.mkdirSync(join(dirB, "session"), { recursive: true });
 	writeJson(join(dirA, "meta.json"), {
 		id: idA,
 		project: "demo",
@@ -213,7 +215,12 @@ test("per-run locks allow concurrent runs, follow, diff, and selective cleanup",
 	fs.writeFileSync(join(dirB, "exit"), "0");
 	fs.writeFileSync(join(dirB, "last-used"), "");
 	fs.utimesSync(join(dirB, "last-used"), 1, 1);
-	fs.writeFileSync(join(sessions, `${idB}.sqlite`), "");
+	for (const [dir, id] of [
+		[dirA, idA],
+		[dirB, idB],
+	]) {
+		for (const ext of ["", "-wal", "-shm"]) fs.writeFileSync(join(dir, "session", `${id}.sqlite${ext}`), id);
+	}
 
 	const fdA = fs.openSync(join(dirA, "lock"), "a");
 	try {
@@ -234,7 +241,7 @@ test("per-run locks allow concurrent runs, follow, diff, and selective cleanup",
 		ok(["cleanup"], "y\n");
 		assert.ok(fs.existsSync(dirA));
 		assert.ok(!fs.existsSync(dirB));
-		assert.ok(!fs.existsSync(join(sessions, `${idB}.sqlite`)));
+		for (const ext of ["", "-wal", "-shm"]) assert.equal(read(join(dirA, "session", `${idA}.sqlite${ext}`)), idA);
 	} finally {
 		fs.closeSync(fdA);
 	}
@@ -366,6 +373,58 @@ test("failed Compose startup or setup stops the task stack unless --keep-up was 
 	}
 });
 
+test("resume may initialize a session only before the first agent launch attempt", (t) => {
+	const { app, tmp, source, ok, fail, invoke, stub } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	ok(["create", "action", "check"]);
+	writeJson(join(app, "actions/check/action.json"), {
+		model: "test/model",
+		orchestrator: { instructions: "instructions.md" },
+	});
+	const attempts = join(tmp, "agent-attempts");
+	stub(
+		"docker",
+		`const fs = require('node:fs');
+		const args = process.argv.slice(2);
+		if (args.includes('config')) console.log(JSON.stringify({services:{runner:{volumes:[{type:'volume',source:'source',target:'/workspace'}]}}}));
+		if (args[0] === 'run') {
+			const session = args.find(a => a.endsWith(':/sessions')).slice(0, -':/sessions'.length);
+			const config = JSON.parse(fs.readFileSync(session + '/../run-config.json'));
+			if (config.agentLaunchAttempted !== true) process.exit(2);
+			fs.appendFileSync(${JSON.stringify(attempts)}, 'attempt\\n');
+			if (fs.existsSync(${JSON.stringify(join(tmp, "fail-launch"))})) process.exit(1);
+			require('node:readline').createInterface({input:process.stdin}).once('line', line => {
+				fs.writeFileSync(session + '/' + JSON.parse(line).id + '.sqlite', 'initial history');
+				console.log(JSON.stringify({ report: 'done' }));
+			});
+		}`,
+	);
+	stub("pi", "process.exit(1)");
+	const interruptedRun = () => {
+		const result = invoke(["run", "demo", "check"]);
+		assert.equal(result.status, 1, result.stdout + result.stderr);
+		const id = /Run: ([0-9a-f]{32})/.exec(result.stdout)?.[1];
+		assert.ok(id, result.stdout);
+		return id;
+	};
+	const unstarted = interruptedRun();
+	const first = join(app, "state/runs", unstarted);
+	assert.equal(JSON.parse(read(join(first, "run-config.json"))).agentLaunchAttempted, false);
+	assert.ok(!fs.existsSync(join(first, "session")));
+	stub("pi", "console.log('test-token')");
+	ok(["resume", unstarted]);
+	assert.equal(read(join(first, "session", `${unstarted}.sqlite`)), "initial history");
+
+	fs.writeFileSync(join(tmp, "fail-launch"), "");
+	const attempted = interruptedRun();
+	const second = join(app, "state/runs", attempted);
+	assert.equal(JSON.parse(read(join(second, "run-config.json"))).agentLaunchAttempted, true);
+	fail(["resume", attempted], /Session database missing/);
+	assert.deepEqual(fs.readdirSync(join(second, "session")), []);
+	assert.equal(read(join(second, "exit")), "1");
+	assert.equal(read(attempts), "attempt\nattempt\n");
+});
+
 test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async (t) => {
 	const { app, tmp, source, ok, fail, stub, invoke } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);
@@ -447,7 +506,10 @@ if (has('config')) {
       job = m;
       if (job.credentials['openai-codex'].token !== 'secret-fixture-token') process.exit(3);
       if (!fs.readFileSync(ctxMount + '/ticket.txt', 'utf8').includes('ISSUE-42')) process.exit(4);
+      const session = a.find(x => x.endsWith(':/sessions')).slice(0, -':/sessions'.length);
+      const db = session + '/' + job.id + '.sqlite';
       if (job.continueRun) {
+        if (fs.readFileSync(db, 'utf8') !== job.id) process.exit(6);
         if (!fs.existsSync(repoMount + '/followup-started')) { fs.writeFileSync(repoMount + '/followup-started', job.requestId); process.exit(7); }
         if (fs.readFileSync(repoMount + '/followup-started', 'utf8') !== job.requestId) process.exit(8);
         fs.appendFileSync(repoMount + '/example.txt', 'followup\\n');
@@ -456,6 +518,7 @@ if (has('config')) {
         rl.close();
         return;
       }
+      fs.writeFileSync(db, job.id);
       fs.writeFileSync(repoMount + '/example.txt', 'updated\\n');
       // Fire 2 concurrent RPC calls + 1 disallowed restart call
       send({ rpc: 1, method: 'exec', params: { command: 'echo hi' }, agent: 'orchestrator' });
@@ -503,6 +566,17 @@ if (has('config')) {
 		const p = join(runPath, f);
 		if (fs.statSync(p).isFile()) assert.ok(!read(p).includes("secret-fixture-token"), `Token leaked in ${f}`);
 	}
+
+	const db = join(runPath, "session", `${id}.sqlite`);
+	assert.equal(read(db), id);
+	fs.unlinkSync(db);
+	const snapshot = () =>
+		["run-config.json", "meta.json", "progress", "exit"].map((f) => read(join(runPath, f))).concat(read(dockerLog));
+	const before = snapshot();
+	fail(["continue", id, "must not be saved"], /Session database missing/);
+	assert.deepEqual(snapshot(), before);
+	assert.ok(!fs.existsSync(db));
+	fs.writeFileSync(db, id);
 
 	// Continue run with follow-up prompt
 	assert.equal(invoke(["continue", id, "Also add followup line"]).status, 1);
@@ -690,6 +764,9 @@ if (has('config')) {
   const rl = require('node:readline').createInterface({ input: process.stdin });
   rl.once('line', line => {
     const job = JSON.parse(line);
+    const session = a.find(x => x.endsWith(':/sessions')).slice(0, -':/sessions'.length);
+    if (session !== ${JSON.stringify(join(app, "state/runs"))} + '/' + job.id + '/session') process.exit(2);
+    fs.writeFileSync(session + '/' + job.id + '.sqlite', job.prompt);
     fs.writeFileSync(${JSON.stringify(gateDir)} + '/' + job.id + '.ready', '');
     fs.writeFileSync(repoMount + '/marker.txt', job.prompt + '\\n');
     const iv = setInterval(() => {
@@ -732,7 +809,10 @@ if (has('config')) {
 			.map((f) => f.replace(/\.ready$/, ""));
 		assert.equal(readyIds.length, 2, "both runs should be active concurrently");
 		const activeOut = ok(["runs"]);
-		for (const id of readyIds) assert.match(activeOut, new RegExp(id));
+		for (const id of readyIds) {
+			assert.match(activeOut, new RegExp(id));
+			assert.deepEqual(fs.readdirSync(join(app, "state/runs", id, "session")), [`${id}.sqlite`]);
+		}
 	} finally {
 		fs.writeFileSync(releaseFile, "go");
 	}
@@ -860,7 +940,7 @@ test("install-dev.sh prepares dev folder, suggests Pi default model, supports fr
 	assert.ok(fs.existsSync(join(devDir, "projects")));
 	assert.ok(fs.existsSync(join(devDir, "actions")));
 	assert.ok(fs.existsSync(join(devDir, "state/runs")));
-	assert.ok(fs.existsSync(join(devDir, "state/sessions")));
+	assert.ok(!fs.existsSync(join(devDir, "state/sessions")));
 	assert.ok(fs.existsSync(join(devDir, ".pi-stick-dev")));
 	assert.deepEqual(JSON.parse(read(join(devDir, "settings.json"))), { default_model: "openai-codex/smart" });
 	assert.ok(!fs.existsSync(join(tmp, ".local/bin")), "should not install launcher into ~/.local/bin");

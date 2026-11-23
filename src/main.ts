@@ -188,7 +188,7 @@ export async function main(rawArgs: string[]) {
 		return worker(id);
 	}
 	const action = parse(cmd, args);
-	for (const d of ["runs", "sessions"]) fs.mkdirSync(join(STATE, d), { recursive: true, mode: 0o700 });
+	fs.mkdirSync(join(STATE, "runs"), { recursive: true, mode: 0o700 });
 	switch (action.cmd) {
 		case "create-project":
 			console.log("Created:", await createProject(action.name, action.repo));

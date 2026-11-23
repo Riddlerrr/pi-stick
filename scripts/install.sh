@@ -105,7 +105,7 @@ else
   mkdir -- "$app"
   cp -R -- "$files/." "$app/"
   install -m 755 -- "$binary" "$app/pistick"
-  mkdir -p -- "$app/projects" "$app/actions" "$app/state/"{runs,sessions}
+  mkdir -p -- "$app/projects" "$app/actions" "$app/state/runs"
   write_launcher "$app" > "$tmp/launcher"
   chmod 755 "$tmp/launcher"
   mv -T -- "$tmp/launcher" "$launcher"
