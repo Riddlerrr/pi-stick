@@ -31,6 +31,7 @@ import { createExecTool } from "./runtime-tools/exec.ts";
 import { createFindTool } from "./runtime-tools/find.ts";
 import { createGrepTool } from "./runtime-tools/grep.ts";
 import { createLogsTool } from "./runtime-tools/logs.ts";
+import { createPsTool } from "./runtime-tools/ps.ts";
 import { createReadTool } from "./runtime-tools/read.ts";
 import type { AgentRpc } from "./runtime-tools/rpc.ts";
 import { createWriteTool } from "./runtime-tools/write.ts";
@@ -433,22 +434,6 @@ async function runParallelBatch(
 	return result;
 }
 
-const psTool = defineTool({
-	name: "ps",
-	description: "List running services and health statuses in the project Compose stack.",
-	parameters: {
-		type: "object",
-		properties: {},
-		additionalProperties: false,
-	},
-	replay: "safe",
-	execute: async (_args, api) => {
-		const agentCtx = getAgentCtx(api.conversationId);
-		const res = await callHostRpc("ps", {}, agentCtx.name);
-		return { output: [{ type: "text" as const, text: res.text }], isError: !!res.error };
-	},
-});
-
 const restartTool = defineTool({
 	name: "restart",
 	description: "Restart a service in the project Compose stack.",
@@ -561,7 +546,7 @@ const toolMap = new Map<string, ToolRegistration>([
 	["find", createFindTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
 	["exec", createExecTool(CONTAINER_REPO_DIR, agentRpc)],
 	["logs", createLogsTool(agentRpc)],
-	["ps", psTool],
+	["ps", createPsTool(agentRpc)],
 	["restart", restartTool],
 	["delegate", delegateTool],
 ]);
