@@ -29,7 +29,7 @@ function fixture(t: TestContext) {
 			"project-template",
 			"agent-runtime.ts",
 			"runtime-auth.ts",
-			"runtime-read.ts",
+			"runtime-tools",
 			"Dockerfile",
 			"action.schema.json",
 		])
@@ -1298,7 +1298,7 @@ test("stage-release.sh packages updated runtime files and excludes removed legac
 	for (const rel of [
 		"share/agent-runtime.ts",
 		"share/runtime-auth.ts",
-		"share/runtime-read.ts",
+		"share/runtime-tools/read.ts",
 		"share/action.schema.json",
 		"share/Dockerfile",
 		"share/.dockerignore",

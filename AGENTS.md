@@ -13,7 +13,7 @@
   - `src/runs.ts` — Per-run locks, concurrent detached workers, `run`/`runs`/`follow`/`resume`/`continue`/`containers stop`/`diff`/`cleanup`, and ephemeral container JSON-RPC bridge.
   - `src/system.ts` — Ephemeral container args, multi-provider Pi model/token resolution, offline runtime probe, `doctor`, and `containers update`.
 - `agent-runtime.ts`, `Dockerfile`, `.dockerignore` — Ephemeral containerized agent runtime (runs inside Docker with `@earendil-works/*` dependencies, native file tools, Codemode, static stages, and dynamic parallel `delegate`).
-- `runtime-read.ts` — Container `read` tool; the agent runtime supplies its path policy.
+- `runtime-tools/` — Container tool implementations; `agent-runtime.ts` supplies runtime policies and registers tools.
 - `action.schema.json` — JSON Schema for user-authored `action.json` manifests.
 - `project-template/` — Scaffold copied verbatim into new project workspaces.
 - `scripts/` — Release staging (`stage-release.sh`), Linux binary/npm packaging (`build-linux.sh`, `pack-npm.sh`), interactive installers (`install.sh`, `install-dev.sh`), and Biome plugins.

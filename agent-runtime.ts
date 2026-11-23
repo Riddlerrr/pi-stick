@@ -29,7 +29,7 @@ import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
 import { type CredentialPayload, runtimeCredentials } from "./runtime-auth.ts";
-import { createReadTool } from "./runtime-read.ts";
+import { createReadTool } from "./runtime-tools/read.ts";
 
 const SESSIONS_DIR = process.env.PI_STICK_SESSIONS_DIR ?? "/sessions";
 const CONTAINER_REPO_DIR = "/workspace/repo";
