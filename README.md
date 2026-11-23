@@ -59,8 +59,7 @@ By default workspaces live under `$PI_STICK_HOME/projects/`. To override, create
 Each project contains `repo/` (your local Git clone), `project.json`, `Dockerfile`, `compose.yaml`, `compose.override.yaml`, `setup-project`, and `AGENTS.md`.
 
 - Edit `compose.yaml`, `Dockerfile`, and `setup-project` so `runner` and any companion services (`web`, `db`, `redis`, etc.) bring up your full local dev environment.
-- `create project` records your numeric UID and GID in `services.runner.build.args` so the runner can use the private workspace and scratch directories. If you move the project to another account, update `UID` and `GID` to the outputs of `id -u` and `id -g` and rebuild the runner.
-- Existing projects are not rewritten. To migrate an older runner, copy the `ARG` declarations and account creation from `project-template/Dockerfile`, then change `runner.build` from `.` to `{context: ., args: {UID: "1001", GID: "1001"}}` (use your actual IDs). For custom images, match the host IDs only for services that access the workspace; services using only their own volumes need no change.
+- `create project` records your numeric UID and GID in `services.runner.build.args` so the runner can use the private workspace and scratch directories. Custom services that access these directories should use the same IDs.
 - Each service targeted by the agent’s `exec` tool needs `sh` and `timeout` with `-k` support (GNU coreutils or modern BusyBox).
 - Keep `runner` on the default task network so the agent can reach it. Omitting `networks` uses the default; if you list networks explicitly, include `default`. Other services may use private networks.
 - Keep host bind mounts and published host ports in `compose.override.yaml` (dev-only). Tasks use only the base `compose.yaml` with isolated per-task mounts and networks.
