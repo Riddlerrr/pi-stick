@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { open, readFile, writeFile } from "node:fs/promises";
+import { type FileHandle, open, readFile, writeFile } from "node:fs/promises";
 import { createEditTool as createPiEditTool, type EditToolInput } from "@earendil-works/pi-coding-agent";
 import { type ConversationId, defineTool } from "@earendil-works/pi-durable";
 
@@ -16,22 +16,26 @@ export function createEditTool(resolvePath: (path: string, conversationId: Conve
 			const { path, edits } = input as EditToolInput;
 			context.abortSignal?.throwIfAborted();
 			const resolved = resolvePath(path.replace(/^@/, ""), api.conversationId);
-			const file = await open(resolved, constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+			let file: FileHandle | undefined;
 			try {
-				if (!(await file.stat()).isFile()) throw Error(`Cannot edit ${path}: not a regular file`);
-				// Pin Pi's file operations to the authorized inode even if the workspace path is replaced.
-				const pinned = `/proc/self/fd/${file.fd}`;
 				const tool = createPiEditTool("/", {
 					operations: {
-						access: async () => {},
-						readFile: () => readFile(pinned),
-						writeFile: (_, content) => writeFile(pinned, content),
+						// Open inside Pi's queue: an earlier write may be creating this file.
+						access: async () => {
+							file = await open(
+								resolvePath(path.replace(/^@/, ""), api.conversationId),
+								constants.O_RDWR | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+							);
+							if (!(await file.stat()).isFile()) throw Error(`Cannot edit ${path}: not a regular file`);
+						},
+						readFile: () => readFile(`/proc/self/fd/${file!.fd}`),
+						writeFile: (_, content) => writeFile(`/proc/self/fd/${file!.fd}`, content),
 					},
 				});
 				const result = await tool.execute(api.callId, { path: resolved, edits }, context.abortSignal);
 				return { output: result.content, details: result.details };
 			} finally {
-				await file.close();
+				await file?.close();
 			}
 		},
 	});

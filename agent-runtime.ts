@@ -596,7 +596,7 @@ try {
 			model: fauxModel,
 			instructions: "Offline read-only probe subagent B",
 			mode: "read-only",
-			tools: ["read", "write", "find"],
+			tools: ["read", "write", "find", "codemode"],
 		};
 
 		for (const [path, data] of Object.entries({
@@ -651,7 +651,15 @@ try {
 						[
 							fauxToolCall("find", { path: "probe-src", query: "**/*.ts", maxResults: 1 }),
 							fauxToolCall("find", { path: "probe-src", maxResults: 1 }),
-							fauxToolCall("write", { path: "/scratch/checker-b/note.txt", content: "ok-b" }),
+							fauxToolCall("codemode", {
+								code: `
+								const own = await tools.write({path: "/scratch/checker-b/note.txt", content: "ok-b"});
+								for (const path of ["should-fail.txt", "/scratch/checker-a/forbidden.txt", "/context/forbidden.txt"]) {
+									const [attempt] = await Promise.allSettled([tools.write({path, content: "nope"})]);
+									if (attempt.status !== "rejected") throw Error("Unexpected write access: " + path);
+								}
+								return own;`,
+							}),
 						],
 						{ stopReason: "toolUse" },
 					);
@@ -660,7 +668,13 @@ try {
 				const find =
 					results.includes("z/.visible.ts") &&
 					results.includes("000.txt\n[More files omitted; narrow the search.]");
-				return fauxAssistantMessage([fauxText(find ? "subagent-b-ok" : "subagent-b-fail")]);
+				return fauxAssistantMessage([
+					fauxText(
+						find && results.some((r) => r.includes("Successfully wrote to /scratch/checker-b/note.txt"))
+							? "subagent-b-ok"
+							: "subagent-b-fail",
+					),
+				]);
 			}
 			// Orchestrator sequence: (1) Codemode multiplexed RPC, (2) parallel delegate, (3) final ready
 			const toolResults = transcript.messages.filter((m) => m.role === "toolResult");
