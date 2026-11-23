@@ -25,9 +25,9 @@ import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
 import { type CredentialPayload, runtimeCredentials } from "./runtime-auth.ts";
+import { createBashTool } from "./runtime-tools/bash.ts";
 import { type BatchResult, createDelegateTool, type DelegateTasks } from "./runtime-tools/delegate.ts";
 import { createEditTool } from "./runtime-tools/edit.ts";
-import { createExecTool } from "./runtime-tools/exec.ts";
 import { createFindTool } from "./runtime-tools/find.ts";
 import { createGrepTool } from "./runtime-tools/grep.ts";
 import { createLogsTool } from "./runtime-tools/logs.ts";
@@ -463,7 +463,7 @@ const toolMap = new Map<string, ToolRegistration>([
 	["edit", createEditTool((path, id) => resolveAgentPath(path, getAgentCtx(id), true))],
 	["grep", createGrepTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
 	["find", createFindTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
-	["exec", createExecTool(CONTAINER_REPO_DIR, agentRpc)],
+	["bash", createBashTool(CONTAINER_REPO_DIR, agentRpc)],
 	["logs", createLogsTool(agentRpc)],
 	["ps", createPsTool(agentRpc)],
 	["restart", createRestartTool(agentRpc)],
@@ -493,8 +493,8 @@ const mainExtension = defineExtension({
 				else if (call.name === "delegate" && Array.isArray(call.arguments?.tasks)) {
 					const names = (call.arguments.tasks as Array<{ agent?: string }>).map((t) => t.agent ?? "?").join(", ");
 					emitProgress(`delegate: [${names}]`, agentLabel);
-				} else if (call.name === "exec" && typeof call.arguments?.command === "string")
-					emitProgress(`exec: ${JSON.stringify(call.arguments.command.slice(0, 200))}`, agentLabel);
+				} else if (call.name === "bash" && typeof call.arguments?.command === "string")
+					emitProgress(`bash: ${JSON.stringify(call.arguments.command.slice(0, 200))}`, agentLabel);
 				else if (typeof call.arguments?.path === "string")
 					emitProgress(`${call.name}: ${JSON.stringify(call.arguments.path.slice(0, 200))}`, agentLabel);
 				else emitProgress(call.name, agentLabel);

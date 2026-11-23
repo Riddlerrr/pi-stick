@@ -784,7 +784,7 @@ test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async
 			thinkingLevel: "high",
 			instructions: "instructions.md",
 			mode: "read-write",
-			tools: ["read", "write", "edit", "grep", "find", "codemode", "exec", "logs", "ps"],
+			tools: ["read", "write", "edit", "grep", "find", "codemode", "bash", "logs", "ps"],
 			allowedServices: ["runner"],
 		},
 	});
@@ -844,9 +844,17 @@ if (has('git') && a[0] === 'run') {
   }));
 } else if (has('stop') && fs.existsSync(${JSON.stringify(join(tmp, "fail-stop"))})) {
   process.exit(9);
-} else if (has('exec') && has('sh') && has('-lc')) {
+} else if (has('exec') && has('timeout') && has('sh') && has('-c')) {
   if (a[a.indexOf('-w') + 1] !== '/workspace/repo') process.exit(12);
-  console.log('exec-ok:' + a.at(-1));
+  const shellArgs = a.slice(a.indexOf('sh') + 1);
+  const run = (args, env) => require('node:child_process').execFileSync('/bin/sh', args, { env, encoding: 'utf8' });
+  if (run(shellArgs, process.env) !== 'from bash') process.exit(13);
+  const bin = fs.mkdtempSync("/tmp/pi-stick-sh-");
+  try {
+    fs.symlinkSync('/bin/sh', bin + '/sh');
+    if (run([...shellArgs.slice(0, -1), 'printf "from sh"'], { PATH: bin }) !== 'from sh') process.exit(14);
+  } finally { fs.rmSync(bin, { recursive: true, force: true }); }
+  console.log('shell-ok');
 } else if (has('logs')) {
   console.log('service-log-line');
 } else if (a[0] === 'compose' && has('ps')) {
@@ -890,12 +898,12 @@ if (has('git') && a[0] === 'run') {
       fs.rmSync(repoMount + '/../overflow', {force:true});
       send({ rpc: 4, method: 'check_clean', params: {} });
       send({ rpc: 5, method: 'ps', params: {}, agent:'orchestrator' });
-      send({ rpc: 1, method: 'exec', params: { command: 'echo hi' }, agent: 'orchestrator' });
+      send({ rpc: 1, method: 'exec', params: { command: '[[ -n "$BASH_VERSION" ]] && printf "from bash"' }, agent: 'orchestrator' });
       send({ rpc: 2, method: 'logs', params: { tail: 10 }, agent: 'orchestrator' });
       send({ rpc: 3, method: 'restart', params: { service: 'runner' }, agent: 'orchestrator' });
       return;
     }
-    if (m.rpc === 1 && !m.result.error && m.result.text.includes('exec-ok:echo hi')) got |= 1;
+    if (m.rpc === 1 && !m.result.error && m.result.text.includes('shell-ok')) got |= 1;
     else if (m.rpc === 2 && !m.result.error && m.result.text.includes('service-log-line')) got |= 2;
     else if (m.rpc === 3 && m.result.error && m.result.text.includes('not permitted')) got |= 4;
     else if (m.rpc === 5 && !m.result.error && m.result.text.includes('runner')) {
@@ -1064,7 +1072,7 @@ test("multi-agent action validates stages, resolves multi-provider auth, enforce
 			model: "openai-codex/gpt-6.2-sol",
 			instructions: "instructions.md",
 			mode: "read-write",
-			tools: ["read", "write", "edit", "grep", "find", "codemode", "exec", "logs", "ps", "restart", "delegate"],
+			tools: ["read", "write", "edit", "grep", "find", "codemode", "bash", "logs", "ps", "restart", "delegate"],
 			allowedServices: ["*"],
 		},
 		agents: {
@@ -1074,7 +1082,7 @@ test("multi-agent action validates stages, resolves multi-provider auth, enforce
 				thinkingLevel: "medium",
 				instructions: "agents/sec.md",
 				mode: "read-only",
-				tools: ["read", "grep", "find", "exec", "logs"],
+				tools: ["read", "grep", "find", "bash", "logs"],
 				allowedServices: ["runner"],
 			},
 			perf: {
@@ -1114,7 +1122,7 @@ if (has('config')) {
     volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
     networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
   }));
-} else if (has('exec') && has('sh') && has('-lc')) {
+} else if (has('exec') && has('timeout') && has('sh') && has('-c')) {
   console.log('ran:' + a.at(-1));
 } else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
   const rl = require('node:readline').createInterface({ input: process.stdin });

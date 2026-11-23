@@ -84,14 +84,14 @@ flowchart LR
   2. **Dynamic orchestration**: The orchestrator agent can invoke configured subagents (individually or in parallel batches) via a delegation tool across multiple rounds as it investigates and verifies results.
 - **Shared workspace, per-agent permissions**:
   - All agents in a task share the task's `/workspace/repo` and running project stack.
-  - Each agent role in `action.json` declares its own permission profile: filesystem mode (`read-only` or `read-write`), allowed tools (`read`, `write`, `edit`, `grep`, `find`, `codemode`, `exec`, `logs`, `ps`, `restart`, `delegate`), and allowed Compose services for `exec`.
-  - **`read-only` + per-agent scratch**: `read-only` agents cannot call write/edit tools on `/workspace/repo`, but each agent receives its own writable `/scratch/<agent-id>` directory (mounted in both the agent container and `runner`) to write ad-hoc test scripts, fixtures, or dumps and execute them against the running project. After a `read-only` round finishes, the runtime checks repository cleanliness to catch unintended modifications made via `exec`.
+  - Each agent role in `action.json` declares its own permission profile: filesystem mode (`read-only` or `read-write`), allowed tools (`read`, `write`, `edit`, `grep`, `find`, `codemode`, `bash`, `logs`, `ps`, `restart`, `delegate`), and allowed Compose services for `bash`.
+  - **`read-only` + per-agent scratch**: `read-only` agents cannot call write/edit tools on `/workspace/repo`, but each agent receives its own writable `/scratch/<agent-id>` directory (mounted in both the agent container and `runner`) to write ad-hoc test scripts, fixtures, or dumps and execute them against the running project. After a `read-only` round finishes, the runtime checks repository cleanliness to catch unintended modifications made via `bash`.
 - **Prefixed plain-text progress**: Output from concurrent agents is written to the run's progress stream with clear agent prefixes (e.g., `[orchestrator]`, `[agent:security]`) so `follow`, pipes, and reattached terminals remain readable.
 
 ### 3.6 Agent Toolset
 - **In-container native tools**: `read`, `write`, `edit`, `grep`, `find`, Pi Codemode, and `delegate` (for orchestrators), plus direct network access to project services.
 - **Host-brokered project tools** (multiplexed JSON-RPC with `requestId` for concurrent callers):
-  - `exec` — run shell commands in `runner` (or another explicitly permitted Compose service)
+  - `bash` — run shell commands in `runner` (or another explicitly permitted Compose service)
   - `logs` — inspect recent logs from project Compose services
   - `ps` — inspect running/health status of project Compose services
   - `restart` — restart a project service (e.g., after code edits when hot-reload is unavailable)
@@ -151,7 +151,7 @@ pistick version
 
 ### Phase 3: Multi-Agent Orchestration & Permission Enforcement
 *Goal: Support parallel subagents, orchestrator synthesis, and safe shared-workspace concurrency.*
-1. Implement per-agent permission enforcement (`read-only` vs `read-write`, tool allowlists, allowed `exec` services), per-agent `/scratch/<agent-id>` directories, and post-round git cleanliness checks for `read-only` agents.
+1. Implement per-agent permission enforcement (`read-only` vs `read-write`, tool allowlists, allowed `bash` services), per-agent `/scratch/<agent-id>` directories, and post-round git cleanliness checks for `read-only` agents.
 2. Implement declarative static stages (parallel fan-out -> orchestrator synthesis) on Pi Durable.
 3. Implement dynamic orchestration via a `delegate` / `run_agents` tool allowing orchestrators to spawn configured subagents in parallel across multiple rounds.
 4. Add prefixed plain-text progress streaming (`[orchestrator]`, `[agent:<name>]`) and persist per-agent outputs alongside the final report.

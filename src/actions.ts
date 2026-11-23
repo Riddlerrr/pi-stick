@@ -12,7 +12,7 @@ export const ALL_TOOLS = [
 	"grep",
 	"find",
 	"codemode",
-	"exec",
+	"bash",
 	"logs",
 	"ps",
 	"restart",
@@ -156,12 +156,12 @@ const DEFAULT_RW_TOOLS: ToolName[] = [
 	"grep",
 	"find",
 	"codemode",
-	"exec",
+	"bash",
 	"logs",
 	"ps",
 	"restart",
 ];
-const DEFAULT_RO_TOOLS: ToolName[] = ["read", "write", "edit", "grep", "find", "codemode", "exec", "logs", "ps"];
+const DEFAULT_RO_TOOLS: ToolName[] = ["read", "write", "edit", "grep", "find", "codemode", "bash", "logs", "ps"];
 
 export function globalActionsDir() {
 	return join(ROOT, "actions");
@@ -408,7 +408,7 @@ export function createAction(name: string, project?: ProjectInfo): string {
 		orchestrator: {
 			instructions: "instructions.md",
 			mode: "read-write",
-			tools: ["read", "write", "edit", "grep", "find", "codemode", "exec", "logs", "ps", "restart"],
+			tools: ["read", "write", "edit", "grep", "find", "codemode", "bash", "logs", "ps", "restart"],
 			allowedServices: ["runner"],
 		},
 	};

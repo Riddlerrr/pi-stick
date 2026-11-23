@@ -60,7 +60,7 @@ Each project contains `repo/` (your local Git clone), `project.json`, `Dockerfil
 
 - Edit `compose.yaml`, `Dockerfile`, and `setup-project` so `runner` and any companion services (`web`, `db`, `redis`, etc.) bring up your full local dev environment.
 - `create project` records your numeric UID and GID in `services.runner.build.args` so the runner can use the private workspace and scratch directories. Custom services that access these directories should use the same IDs.
-- Each service targeted by the agent’s `exec` tool needs `sh` and `timeout` with `-k` support (GNU coreutils or modern BusyBox).
+- Each service targeted by the agent’s `bash` tool needs `sh` and `timeout` with `-k` support (GNU coreutils or modern BusyBox). Commands use Bash when installed, otherwise `sh`. When upgrading, replace `exec` with `bash` in action tool lists and prompts, and rebuild the agent image. Finish existing runs before upgrading; their pinned tool lists are not migrated.
 - Keep `runner` on the default task network so the agent can reach it. Omitting `networks` uses the default; if you list networks explicitly, include `default`. Other services may use private networks.
 - Keep host bind mounts and published host ports in `compose.override.yaml` (dev-only). Tasks use only the base `compose.yaml` with isolated per-task mounts and networks.
 - Document build, test, and local service URLs in `AGENTS.md`; it is automatically included in agent instructions.
@@ -108,7 +108,7 @@ Each action directory contains `action.json` (validated against `action.schema.j
   "orchestrator": {
     "instructions": "orchestrator.md",
     "mode": "read-write",
-    "tools": ["read", "write", "edit", "grep", "find", "codemode", "exec", "logs", "ps", "restart", "delegate"],
+    "tools": ["read", "write", "edit", "grep", "find", "codemode", "bash", "logs", "ps", "restart", "delegate"],
     "allowedServices": ["runner"]
   },
   "agents": {
@@ -117,14 +117,14 @@ Each action directory contains `action.json` (validated against `action.schema.j
       "model": "anthropic/claude-sonnet-4-5",
       "instructions": "agents/security.md",
       "mode": "read-only",
-      "tools": ["read", "write", "grep", "find", "codemode", "exec", "logs", "ps"],
+      "tools": ["read", "write", "grep", "find", "codemode", "bash", "logs", "ps"],
       "allowedServices": ["runner"]
     },
     "tests": {
       "description": "Verify behavior against the running stack",
       "instructions": "agents/tests.md",
       "mode": "read-only",
-      "tools": ["read", "write", "grep", "find", "codemode", "exec", "logs", "ps"],
+      "tools": ["read", "write", "grep", "find", "codemode", "bash", "logs", "ps"],
       "allowedServices": ["runner"]
     }
   },
@@ -142,7 +142,7 @@ Each action directory contains `action.json` (validated against `action.schema.j
 - **Thinking level**: Set `"thinkingLevel": "high"` (for example) in `orchestrator` or `agents.<name>`. It applies to both staged and delegated work, and is pinned for `resume` and `continue`. Omit it to keep the existing default: pi-stick requests no particular reasoning effort. When set, the level must be one of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and supported by the configured model catalog; the run fails before the first model request otherwise.
 - **Final stage as report**: Omit `orchestrator` when the last stage has exactly one agent. Its nonempty answer becomes `report.md` without a synthesis call. `resume`, per-agent outputs, diff capture, and the `after` hook work as usual; `continue` requires an orchestrator.
 - **Interrupted delegation**: `pistick resume RUN_ID` aborts unfinished workers from an interrupted `delegate` call and reports the interruption to the orchestrator. It does not replay the call or roll back changes. Inspect partial work before delegating the remainder. If the run already succeeded, use `pistick continue RUN_ID "Inspect partial work and delegate what remains"`. This protection applies to delegations started with this version or later.
-- **Permissions & scratch isolation**: All agents in a task share the checkout at `/workspace/repo`, the same path used by `exec` in `runner`. Repo-relative paths work in file tools and in the runner’s default working directory. `read-only` agents cannot modify the checkout via file tools, but each agent gets its own writable `/scratch/<agent-name>` directory (visible in both containers) for ad-hoc test scripts and experiments. Repository cleanliness is checked after `read-only` rounds.
+- **Permissions & scratch isolation**: All agents in a task share the checkout at `/workspace/repo`, the same path used by `bash` in `runner`. Repo-relative paths work in file tools and in the runner’s default working directory. `read-only` agents cannot modify the checkout via file tools, but each agent gets its own writable `/scratch/<agent-name>` directory (visible in both containers) for ad-hoc test scripts and experiments. Repository cleanliness is checked after `read-only` rounds.
 - **File search**: `grep` and `find` use ripgrep in the agent container. Directory searches respect `.gitignore` and skip `.git` and `node_modules`. `grep` is literal by default; `regex: true` uses ripgrep's default regex syntax, which does not support JavaScript lookaround or backreferences.
 - **Trusted host hooks**: `prepare` runs on the host before starting the project stack (and can write read-only files into `$PI_STICK_CONTEXT`, mounted at `/context:ro`). `after` runs after completion with paths to the report and `changes.patch`.
 - **Models & auth**: Each agent can specify any `provider/modelId` supported by local Pi. Tokens are fetched dynamically via `pi auth print-bearer-token` and passed to the ephemeral container strictly over stdin.

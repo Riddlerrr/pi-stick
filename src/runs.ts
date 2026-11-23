@@ -126,7 +126,7 @@ function composeInstructions(
 	}
 	if (services.length) {
 		parts.push(
-			`Running project Compose services on your Docker network: ${services.join(", ")}. You can reach them directly over the network or use exec/logs/ps/restart as permitted.`,
+			`Running project Compose services on your Docker network: ${services.join(", ")}. You can reach them directly over the network or use bash/logs/ps/restart as permitted.`,
 		);
 	}
 	if (contextFiles.length) {
@@ -164,7 +164,7 @@ function policyForAgent(action: Pick<LoadedAction, "agents" | "orchestrator">, a
 	if (!spec) return { allowExec: false, allowLogs: false, allowPs: false, allowRestart: false };
 	return {
 		allowedServices: spec.allowedServices,
-		allowExec: spec.tools.includes("exec"),
+		allowExec: spec.tools.includes("bash"),
 		allowLogs: spec.tools.includes("logs"),
 		allowPs: spec.tools.includes("ps"),
 		allowRestart: spec.tools.includes("restart"),

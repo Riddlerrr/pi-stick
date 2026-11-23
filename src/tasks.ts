@@ -403,14 +403,14 @@ export class TaskEnv {
 	async handleRpc(method: string, params: Record<string, unknown> = {}, policy: RpcPolicy = {}): Promise<RpcResponse> {
 		switch (method) {
 			case "exec": {
-				if (policy.allowExec === false) return { text: "exec is not permitted for this agent", error: true };
+				if (policy.allowExec === false) return { text: "bash is not permitted for this agent", error: true };
 				const cmd = params.command;
 				if (typeof cmd !== "string" || !cmd.length || cmd.length > 16384 || cmd.includes("\0"))
-					return { text: "exec requires a non-empty command string", error: true };
+					return { text: "bash requires a non-empty command string", error: true };
 				const service = this.validateService(typeof params.service === "string" ? params.service : "runner");
 				const allowed = policy.allowedServices ?? ["runner"];
 				if (!allowed.includes("*") && !allowed.includes(service))
-					return { text: `exec in service '${service}' is not permitted`, error: true };
+					return { text: `bash in service '${service}' is not permitted`, error: true };
 				const workdir = this.resolveExecWorkdir(params.workdir);
 				const timeoutSec =
 					typeof params.timeout === "number" && Number.isSafeInteger(params.timeout) && params.timeout > 0
@@ -429,7 +429,8 @@ export class TaskEnv {
 						"15",
 						String(timeoutSec),
 						"sh",
-						"-lc",
+						"-c",
+						'if command -v bash >/dev/null 2>&1; then exec bash -c -- "$0"; fi; exec sh -c -- "$0"',
 						cmd,
 					],
 					(timeoutSec + 30) * 1000,

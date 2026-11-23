@@ -1,10 +1,10 @@
 import { defineTool } from "@earendil-works/pi-durable";
 import type { AgentRpc } from "./rpc.ts";
 
-export function createExecTool(repoDir: string, call: AgentRpc) {
+export function createBashTool(repoDir: string, call: AgentRpc) {
 	return defineTool({
-		name: "exec",
-		description: `Run a shell command inside a running project container (defaults to 'runner' at ${repoDir}). Returns exit status and output tail.`,
+		name: "bash",
+		description: `Run a Bash command (sh if Bash is unavailable) inside a running project container (defaults to 'runner' at ${repoDir}). Returns exit status and output tail.`,
 		parameters: {
 			type: "object",
 			properties: {
