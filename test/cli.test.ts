@@ -476,6 +476,27 @@ test("agent-runtime offline self-check exercises canonical repo paths, read-only
 	assert.equal(read(join(scratch, "checker-b/note.txt")), "ok-b");
 });
 
+test("doctor checks Git in the selected image independently of its bundled runtime", (t) => {
+	const { invoke, stub, tmp } = fixture(t);
+	const installed = join(tmp, "git-installed");
+	stub(
+		"docker",
+		`const a = process.argv.slice(2);
+		if (a[0] !== 'run') process.exit(0);
+		if (a.includes('/app/agent-runtime.ts')) console.log(JSON.stringify({ ready: true }));
+		else if (a.slice(-3).join(' ') === 'pi-stick:current git --version' && a[a.indexOf('--network')+1] === 'none' && !a.includes('-v')) {
+			if (!require('node:fs').existsSync(${JSON.stringify(installed)})) process.exit(127);
+			console.log('git version 2.39.5');
+		} else process.exit(1);`,
+	);
+	const missing = invoke(["doctor"]);
+	assert.equal(missing.status, 1);
+	assert.match(missing.stdout, /FAIL.*Cannot run git --version in agent image 'pi-stick:current'/);
+	fs.writeFileSync(installed, "");
+	const ready = invoke(["doctor"]);
+	assert.equal(ready.status, 0, ready.stdout + ready.stderr);
+});
+
 test("doctor stops early when Docker daemon is unavailable", (t) => {
 	const { stub, invoke } = fixture(t);
 	stub("docker", `process.exit(1);`);

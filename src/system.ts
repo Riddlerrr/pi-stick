@@ -149,6 +149,17 @@ export function ephemeralArgs(opts: EphemeralContainerOptions): string[] {
 }
 
 export async function probe(image = IMAGE): Promise<void> {
+	// Check from the host: an older image's bundled self-check may not exercise Git.
+	const [docker, ...args] = isolatedRun("none");
+	try {
+		const { stdout } = await promisify(execFile)(docker, [...args, image, "git", "--version"], {
+			timeout: 30_000,
+			killSignal: "SIGKILL",
+		});
+		if (!stdout.startsWith("git version ")) throw Error("Unexpected git --version output");
+	} catch (cause) {
+		throw Error(`Cannot run git --version in agent image '${image}'; check or rebuild the image`, { cause });
+	}
 	const argv = ephemeralArgs({ image, network: "none", tmpfsProbe: true });
 	const child = spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "inherit"] });
 	const exit = closed(child);
@@ -199,7 +210,7 @@ export async function doctor(extraChecks: Array<[string, () => unknown | Promise
 	const checks: Array<[string, () => unknown | Promise<unknown>]> = [
 		["Docker daemon", () => output(["docker", "info", "--format", "{{.ServerVersion}}"])],
 		[`Agent image (${IMAGE})`, () => output(["docker", "image", "inspect", IMAGE, "--format", "{{.Id}}"])],
-		["Ephemeral runtime self-check (durable SQLite, Codemode, JSON-RPC; no model call)", () => probe(IMAGE)],
+		["Ephemeral runtime self-check (Git, durable SQLite, Codemode, JSON-RPC; no model call)", () => probe(IMAGE)],
 		[
 			settings.default_model
 				? `Pi default model auth (${settings.default_model})`
