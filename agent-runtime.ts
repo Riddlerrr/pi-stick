@@ -1,5 +1,4 @@
 import * as fs from "node:fs";
-import { stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -28,9 +27,9 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 
 import { type CredentialPayload, runtimeCredentials } from "./runtime-auth.ts";
 import { createEditTool } from "./runtime-tools/edit.ts";
+import { createFindTool } from "./runtime-tools/find.ts";
 import { createGrepTool } from "./runtime-tools/grep.ts";
 import { createReadTool } from "./runtime-tools/read.ts";
-import { MAX_SEARCH_CHARS, scanRipgrep } from "./runtime-tools/ripgrep.ts";
 import { createWriteTool } from "./runtime-tools/write.ts";
 
 const SESSIONS_DIR = process.env.PI_STICK_SESSIONS_DIR ?? "/sessions";
@@ -38,7 +37,6 @@ const CONTAINER_REPO_DIR = "/workspace/repo";
 const WORKSPACE_DIR = process.env.PI_STICK_WORKSPACE_DIR ?? CONTAINER_REPO_DIR;
 const SCRATCH_DIR = process.env.PI_STICK_SCRATCH_DIR ?? "/scratch";
 const CONTEXT_DIR = process.env.PI_STICK_CONTEXT_DIR ?? "/context";
-const MAX_FIND_RESULTS = 500;
 
 interface AgentRuntimeSpec {
 	name: string;
@@ -193,27 +191,6 @@ function resolveAgentPath(rawPath: string, agentCtx: AgentContext, forWrite: boo
 		);
 	}
 	return assertWithin(resolve(WORKSPACE_DIR, sub), WORKSPACE_DIR, "workspace");
-}
-
-function globToRegExp(pattern: string): RegExp {
-	let re = "";
-	for (let i = 0; i < pattern.length; i++) {
-		const ch = pattern[i];
-		if (ch === "*" && pattern[i + 1] === "*") {
-			re += ".*";
-			i++;
-			if (pattern[i + 1] === "/") i++;
-		} else if (ch === "*") {
-			re += "[^/]*";
-		} else if (ch === "?") {
-			re += "[^/]";
-		} else if ("\\^$+?.()|[]{}".includes(ch)) {
-			re += `\\${ch}`;
-		} else {
-			re += ch;
-		}
-	}
-	return new RegExp(`^${re}$`);
 }
 
 // Docker forwards EOF when the worker dies, even during an outstanding model request.
@@ -453,62 +430,6 @@ async function runParallelBatch(
 	return result;
 }
 
-const findTool = defineTool({
-	name: "find",
-	description: `List files under a directory (defaults to ${CONTAINER_REPO_DIR}), optionally matching a glob or substring. Respects .gitignore and skips .git and node_modules.`,
-	parameters: {
-		type: "object",
-		properties: {
-			path: { type: "string", description: `Directory to search (defaults to ${CONTAINER_REPO_DIR}).` },
-			query: { type: "string", description: "Optional glob pattern (e.g. '**/*.ts') or substring filter." },
-			maxResults: { type: "integer", minimum: 1, maximum: 2000, description: "Max files to return (default 500)." },
-		},
-		additionalProperties: false,
-	},
-	replay: "safe",
-	execute: async (args, api, context) => {
-		const {
-			path = CONTAINER_REPO_DIR,
-			query,
-			maxResults = MAX_FIND_RESULTS,
-		} = args as {
-			path?: string;
-			query?: string;
-			maxResults?: number;
-		};
-		try {
-			const resolved = resolveAgentPath(path, getAgentCtx(api.conversationId), false);
-			if (!(await stat(resolved)).isDirectory()) return { output: [{ type: "text" as const, text: "(no files)" }] };
-			const glob = query && /[*?]/.test(query) ? globToRegExp(query) : null;
-			const files: string[] = [];
-			let length = 0;
-			const truncated = await scanRipgrep(
-				resolved,
-				["--files", "--null", "--", "."],
-				"\0",
-				(entry) => {
-					const file = entry.replace(/^\.\//, "");
-					// Positive ripgrep globs override .gitignore, so filter after discovery.
-					if (query && !(glob ? glob.test(file) : file.includes(query))) return true;
-					const display = file.replaceAll("\n", "\\n").replaceAll("\r", "\\r");
-					length += display.length + (files.length ? 1 : 0);
-					if (files.length === maxResults || length > MAX_SEARCH_CHARS) return false;
-					files.push(display);
-					return true;
-				},
-				context.abortSignal,
-			);
-			const suffix = truncated ? "\n[More files omitted; narrow the search.]" : "";
-			return { output: [{ type: "text" as const, text: (files.join("\n") || "(no files)") + suffix }] };
-		} catch (err) {
-			return {
-				output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
-				isError: true,
-			};
-		}
-	},
-});
-
 const execTool = defineTool({
 	name: "exec",
 	description: `Run a shell command inside a running project container (defaults to 'runner' at ${CONTAINER_REPO_DIR}). Returns exit status and output tail.`,
@@ -673,7 +594,7 @@ const toolMap = new Map<string, ToolRegistration>([
 	["write", createWriteTool((path, id) => resolveAgentPath(path, getAgentCtx(id), true))],
 	["edit", createEditTool((path, id) => resolveAgentPath(path, getAgentCtx(id), true))],
 	["grep", createGrepTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
-	["find", findTool],
+	["find", createFindTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
 	["exec", execTool],
 	["logs", logsTool],
 	["ps", psTool],
