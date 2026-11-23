@@ -20,6 +20,7 @@ export interface ComposeService {
 	privileged?: boolean;
 	container_name?: string;
 	network_mode?: string;
+	networks?: Record<string, unknown>;
 	[key: string]: unknown;
 }
 
@@ -105,6 +106,8 @@ export function validateCompose(folder: string, key: string): ComposeConfig {
 		)
 	)
 		throw Error("The runner service needs a private source volume mounted at /workspace");
+	if (!Object.hasOwn(conf.services.runner.networks ?? {}, "default"))
+		throw Error("Attach the runner service to the default network in compose.yaml so the agent can reach it");
 	return conf;
 }
 

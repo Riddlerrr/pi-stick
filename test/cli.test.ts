@@ -152,6 +152,29 @@ test("TaskEnv validates base compose, materializes bind mounts, and isolates rep
 	assert.throws(() => task.validateBase(), /host mounts/);
 });
 
+test("runner must share the default network with the agent before run preparation", (t) => {
+	const { app, source, ok, fail } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	ok(["create", "action", "check"]);
+	writeJson(join(app, "actions/check/action.json"), { model: "test/model", orchestrator: {} });
+	const folder = join(app, "projects/demo");
+	const recipe = {
+		services: {
+			runner: { image: "busybox", volumes: ["source:/workspace"], networks: ["default", "private"] },
+			other: { image: "busybox" },
+		},
+		networks: { private: {}, default: {} },
+		volumes: { source: {} },
+	};
+	const compose = join(folder, "compose.yaml");
+	writeJson(compose, recipe);
+	new TaskEnv(runId(), { name: "demo", folder, repo: join(folder, "repo") }).validateBase();
+	recipe.services.runner.networks = ["private"];
+	writeJson(compose, recipe);
+	fail(["run", "demo", "check"], /Attach the runner service to the default network/);
+	assert.deepEqual(fs.readdirSync(join(app, "state/runs")), []);
+});
+
 test("ephemeral container args enforce hardening and model spec validation", () => {
 	assert.deepEqual(parseModelSpec("openai-codex/gpt-6.2-sol"), {
 		provider: "openai-codex",
@@ -414,7 +437,7 @@ test("failed Compose startup or setup stops the task stack unless --keep-up was 
 		stub(
 			"docker",
 			`const args = process.argv.slice(2);
-			if (args.includes('config')) console.log(JSON.stringify({services:{runner:{volumes:[{type:'volume',source:'source',target:'/workspace'}]}}}));
+			if (args.includes('config')) console.log(JSON.stringify({services:{runner: {networks: {default: null}, volumes:[{type:'volume',source:'source',target:'/workspace'}]}}}));
 			else {
 				const cmd = args.find(arg => ['up','exec','stop'].includes(arg));
 				require('node:fs').appendFileSync(${JSON.stringify(calls)}, cmd + '\\n');
@@ -477,7 +500,7 @@ test("resume may initialize a session only before the first agent launch attempt
 		"docker",
 		`const fs = require('node:fs');
 		const args = process.argv.slice(2);
-		if (args.includes('config')) console.log(JSON.stringify({services:{runner:{volumes:[{type:'volume',source:'source',target:'/workspace'}]}}}));
+		if (args.includes('config')) console.log(JSON.stringify({services:{runner: {networks: {default: null}, volumes:[{type:'volume',source:'source',target:'/workspace'}]}}}));
 		if (args[0] === 'run' && args.includes('/app/agent-runtime.ts')) {
 			const session = args.find(a => a.endsWith(':/sessions')).slice(0, -':/sessions'.length);
 			const config = JSON.parse(fs.readFileSync(session + '/../run-config.json'));
@@ -594,7 +617,7 @@ if (has('git') && a[0] === 'run') {
   fs.mkdirSync(override, {recursive:true});
   fs.writeFileSync(override + '/action.json', JSON.stringify({orchestrator:{model:'changed/model',tools:['restart']}}));
   console.log(JSON.stringify({
-    services: { runner: { volumes: [{ type: 'volume', source: 'source', target: '/workspace' }] } },
+    services: { runner: { networks: {default: null}, volumes: [{ type: 'volume', source: 'source', target: '/workspace' }] } },
     volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
     networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
   }));
@@ -830,7 +853,7 @@ const has = s => a.includes(s);
 if (has('config')) {
   console.log(JSON.stringify({
     services: {
-      runner: { volumes: [{ type: 'volume', source: 'source', target: '/workspace' }] },
+      runner: { networks: {default: null}, volumes: [{ type: 'volume', source: 'source', target: '/workspace' }] },
       web: {}
     },
     volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
@@ -911,7 +934,7 @@ const a = process.argv.slice(2);
 const has = s => a.includes(s);
 if (has('config')) {
   console.log(JSON.stringify({
-    services: { runner: { volumes: [{ type: 'volume', source: 'source', target: '/workspace' }] } },
+    services: { runner: { networks: {default: null}, volumes: [{ type: 'volume', source: 'source', target: '/workspace' }] } },
     volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
     networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
   }));
