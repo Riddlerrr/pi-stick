@@ -182,4 +182,6 @@ Host hooks may have external side effects. If a hook started but its success was
 
 Once a task can run project code, Git inspection (including `pistick diff`) runs in the pi-stick image with a read-only workspace and no network. Rebuild the image after upgrading to a version that requires Git in the image. Trusted host hooks remain the operator’s responsibility.
 
+After an agent turn succeeds or returns an error, `state/runs/<id>/meta.json` records the latest session-wide `usage` snapshot: token counts and costs by model (`usage.models`) and by tool reporting usage (`usage.tools`). It includes committed stage, delegation, and compaction usage. `resume` and `continue` replace the snapshot rather than adding to it. A hard stop can leave an older snapshot, or no `usage` field at all; missing data is not zero cost. These figures are not a provider invoice.
+
 Multiple tasks can run concurrently across the same or different projects. When a run finishes, its project containers are stopped (`docker compose stop`) to free CPU/RAM while preserving workspace files, volumes, `report.md`, `outputs/*.md`, `changes.patch`, and the Pi Durable SQLite session until `pistick cleanup` (pass `--keep-up` to keep containers running).

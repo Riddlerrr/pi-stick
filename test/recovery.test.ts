@@ -37,7 +37,7 @@ function stageFixture(
 				if (calls < 2) return new Response('invalid request', {status: 400});
 				if (calls === 2) process.kill(process.pid, 'SIGKILL');
 			}
-			const data = { choices: [{index:0, delta:{role:'assistant',content:${failure === "empty-final"} && stage === 'B' && !seen.includes('B') ? '   ' : 'answer-' + stage}, finish_reason:'stop'}] };
+			const data = { usage: {prompt_tokens:10,completion_tokens:2,total_tokens:12}, choices: [{index:0, delta:{role:'assistant',content:${failure === "empty-final"} && stage === 'B' && !seen.includes('B') ? '   ' : 'answer-' + stage}, finish_reason:'stop'}] };
 			return new Response('data: ' + JSON.stringify(data) + '\\n\\ndata: [DONE]\\n\\n', {headers:{'content-type':'text/event-stream'}});
 		};`,
 	);
@@ -207,10 +207,17 @@ test("a final-stage report retries an empty answer, then restores without synthe
 	const failed = await run(payload);
 	assert.equal(failed.status, 1);
 	assert.match(failed.stdout, /returned an empty report/);
+	const model = "groq/llama-3.1-8b-instant";
+	const partial = JSON.parse(failed.stdout.trim().split("\n").at(-1)!);
+	assert.equal(partial.report, undefined);
+	assert.equal(partial.usage.models[model].totalTokens, 24);
 	for (let i = 0; i < 2; i++) {
 		const result = await run(payload);
 		assert.equal(result.status, 0, result.stderr);
-		const { report, outputs } = JSON.parse(result.stdout.trim().split("\n").at(-1)!);
+		const { report, outputs, usage } = JSON.parse(result.stdout.trim().split("\n").at(-1)!);
+		assert.equal(usage.models[model].totalTokens, 36);
+		assert.ok(usage.models[model].cost.total > 0);
+		assert.deepEqual(usage.tools, {});
 		assert.equal(report, "answer-B");
 		assert.equal(outputs.worker, "answer-A\n\n---\n\nanswer-B");
 	}

@@ -1079,8 +1079,18 @@ try {
 			throw Error(`Unexpected probe progress events: ${JSON.stringify(probeEvents)}`);
 		send({ ready: true });
 	} else {
-		const report = await runAction();
-		send({ report, ...(Object.keys(agentOutputs).length ? { outputs: agentOutputs } : {}) });
+		let report: string | undefined;
+		try {
+			report = await runAction();
+		} finally {
+			const usage = await h.usage(ctx).catch(() => {
+				emitProgress("Warning: session usage snapshot unavailable");
+				return undefined;
+			});
+			if (report !== undefined || usage) {
+				send({ report, usage, ...(report && Object.keys(agentOutputs).length ? { outputs: agentOutputs } : {}) });
+			}
+		}
 	}
 } finally {
 	process.stdin.off("end", hostDisconnected);

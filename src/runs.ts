@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
+import type { UsageState } from "@earendil-works/pi-durable";
 import { readActionSnapshot, saveActionSnapshot } from "./action-snapshot.ts";
 import { type LoadedAction, loadAction, type ResolvedAgentSpec, resolveInputs, runHook } from "./actions.ts";
 import { agentName } from "./container.ts";
@@ -40,6 +41,7 @@ export interface RunMeta {
 	createdAt: string;
 	updatedAt: string;
 	status: "preparing" | "running" | "done" | "failed";
+	usage?: UsageState;
 }
 
 export interface RunConfig {
@@ -499,6 +501,10 @@ export async function worker(id: string): Promise<number> {
 						throw Error("OAuth refresh not permitted");
 					return JSON.stringify(await exportAccessLease(spec));
 				},
+				(usage) => {
+					meta.usage = usage;
+					writeMeta(id, meta);
+				},
 			);
 
 			fs.writeFileSync(reportFile, `${result.report}\n`);
@@ -604,6 +610,33 @@ export async function follow(id: string) {
 	}
 }
 
+function isUsageSnapshot(value: unknown): value is UsageState {
+	const record = (v: unknown): v is Record<string, unknown> =>
+		v !== null && typeof v === "object" && !Array.isArray(v);
+	const amount = (n: unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0;
+	if (!record(value) || Object.keys(value).length !== 2 || !record(value.models) || !record(value.tools)) return false;
+	const common = ["input", "output", "cacheRead", "cacheWrite"];
+	const tokens = [...common, "totalTokens"];
+	const costs = [...common, "total"];
+	return [value.models, value.tools].every((bucket) =>
+		Object.values(bucket).every((entry) => {
+			if (!record(entry) || !record(entry.cost)) return false;
+			const cost = entry.cost;
+			return (
+				tokens.every((k) => amount(entry[k])) &&
+				Object.entries(entry).every(
+					([k, v]) =>
+						k === "cost" || tokens.includes(k) || ((k === "cacheWrite1h" || k === "reasoning") && amount(v)),
+				) &&
+				costs.every((k) => amount(cost[k])) &&
+				Object.entries(cost).every(([k, v]) =>
+					k === "totalFromProvider" ? typeof v === "boolean" : costs.includes(k),
+				)
+			);
+		}),
+	);
+}
+
 export interface AgentRunResult {
 	report: string;
 	outputs?: Record<string, string>;
@@ -615,6 +648,7 @@ export async function executeAgentContainer(
 	resolvePolicy: (agent?: string) => RpcPolicy,
 	onProgress: (line: string, agent?: string) => void,
 	refreshToken: (provider: unknown) => Promise<string>,
+	onUsage: (usage: UsageState) => void,
 ): Promise<AgentRunResult> {
 	const argv = ephemeralArgs({
 		runId: task.id,
@@ -655,8 +689,12 @@ export async function executeAgentContainer(
 				onProgress(msg.progress, typeof msg.agent === "string" ? msg.agent : undefined);
 				continue;
 			}
-			if (typeof msg.report === "string") {
-				report = msg.report;
+			if (typeof msg.report === "string" || Object.hasOwn(msg, "usage")) {
+				if (Object.hasOwn(msg, "usage")) {
+					if (!isUsageSnapshot(msg.usage)) throw Error("Invalid agent usage snapshot");
+					onUsage(msg.usage);
+				}
+				report = typeof msg.report === "string" ? msg.report : undefined;
 				if (msg.outputs && typeof msg.outputs === "object") outputs = msg.outputs as Record<string, string>;
 				break;
 			}

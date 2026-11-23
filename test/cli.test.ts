@@ -828,6 +828,8 @@ if (has('git') && a[0] === 'run') {
   console.log('[{"Service":"runner","State":"running"}]');
 } else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
   const repoMount = a.find(x => x.endsWith(':/workspace/repo')).slice(0, -':/workspace/repo'.length);
+  const usage = input => ({ models: { 'test/model': { input, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: input+2,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }, tools: {} });
   const ctxMount = a.find(x => x.endsWith(':/context:ro')).slice(0, -':/context:ro'.length);
   const rl = require('node:readline').createInterface({ input: process.stdin });
   const send = x => process.stdout.write(JSON.stringify(x) + '\\n');
@@ -846,11 +848,12 @@ if (has('git') && a[0] === 'run') {
       const db = session + '/' + job.id + '.sqlite';
       if (job.continueRun) {
         if (fs.readFileSync(db, 'utf8') !== job.id) process.exit(6);
-        if (!fs.existsSync(repoMount + '/followup-started')) { fs.writeFileSync(repoMount + '/followup-started', job.requestId); process.exit(7); }
+        if (!fs.existsSync(repoMount + '/followup-started')) { fs.writeFileSync(repoMount + '/followup-started', job.requestId); send({usage:usage(15)}); rl.close(); process.exitCode=7; return; }
         if (fs.readFileSync(repoMount + '/followup-started', 'utf8') !== job.requestId) process.exit(8);
+        if (fs.existsSync(repoMount + '/invalid-usage')) { send({usage:{models:{bad:'not counters'},tools:{}}}); rl.close(); return; }
         fs.appendFileSync(repoMount + '/example.txt', 'followup\\n');
         send({ progress: 'Applying follow-up', agent: 'orchestrator' });
-        send({ report: 'Follow-up complete' });
+        send({ report: 'Follow-up complete', usage: usage(20) });
         rl.close();
         return;
       }
@@ -881,7 +884,7 @@ if (has('git') && a[0] === 'run') {
     else process.exit(5);
     if (got === 63) {
       send({ progress: 'All checks passed', agent: 'orchestrator' });
-      send({ report: 'Initial report' });
+      send({ report: 'Initial report', usage: usage(10) });
       rl.close();
     }
   });
@@ -901,6 +904,8 @@ if (has('git') && a[0] === 'run') {
 
 	const runPath = join(app, "state/runs", id);
 	assert.equal(read(join(runPath, "report.md")), "Initial report\n");
+	const usedTokens = () => JSON.parse(read(join(runPath, "meta.json"))).usage.models["test/model"].totalTokens;
+	assert.equal(usedTokens(), 12);
 	const patch = read(join(runPath, "changes.patch"));
 	assert.match(ok(["diff", id]), /\+created/);
 	execFileSync(realGit, ["-C", source, "apply", "-"], { input: patch });
@@ -945,6 +950,7 @@ if (has('git') && a[0] === 'run') {
 
 	// Continue run with follow-up prompt
 	assert.equal(invoke(["continue", id, "Also add followup line"]).status, 1);
+	assert.equal(usedTokens(), 17);
 	const failedState = snapshot();
 	const resumeFirst = new RegExp(`pistick resume ${id}`);
 	fail(["continue", id, "do not replace failed follow-up"], resumeFirst);
@@ -976,6 +982,11 @@ if (has('git') && a[0] === 'run') {
 	fail(["continue", id, "do not start"], /after checksum mismatch/);
 	assert.deepEqual(snapshot(), failedState);
 	fs.writeFileSync(savedHook, script);
+	const invalidUsage = join(runPath, "workspace/repo/invalid-usage");
+	fs.writeFileSync(invalidUsage, "");
+	assert.equal(invoke(["resume", id]).status, 1);
+	assert.equal(usedTokens(), 17, "invalid snapshot must not replace the last valid one");
+	fs.unlinkSync(invalidUsage);
 	fs.writeFileSync(failHook, "");
 	assert.equal(invoke(["resume", id]).status, 1);
 	fail(["resume", id], /after hook unknown/);
@@ -989,6 +1000,7 @@ if (has('git') && a[0] === 'run') {
 	fs.unlinkSync(stopFailure);
 	ok(["resume", id]);
 	assert.equal(read(join(runPath, "report.md")), "Follow-up complete\n");
+	assert.equal(usedTokens(), 22);
 	assert.equal(read(join(runPath, "workspace/repo/example.txt")), "committed\nfollowup\n");
 	assert.match(ok(["diff", id]), /\+followup/);
 
@@ -1238,6 +1250,7 @@ if (has('config')) {
 		)!;
 		assert.match(ok(["kill", target]), /Killed run/);
 		assert.match(ok(["runs", "--all"]), new RegExp(`${target}  interrupted`));
+		assert.ok(!Object.hasOwn(JSON.parse(read(join(app, "state/runs", target, "meta.json"))), "usage"));
 		assert.equal(read(join(app, "state/runs", target, "workspace/repo/marker.txt")), "task-one\n");
 		assert.equal(spawnSync(join(bin, "pistick"), ["kill", target], { env }).status, 1);
 	} finally {
