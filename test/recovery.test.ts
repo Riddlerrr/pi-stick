@@ -5,10 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { runId } from "../src/platform.ts";
 
-function stageFixture(t: TestContext, failFirst = false) {
+function stageFixture(t: TestContext, failure: "interrupt-stage" | "fail-stage" | "fail-root" = "interrupt-stage") {
 	const dir = fs.mkdtempSync(join(tmpdir(), "pi-stick-recovery-"));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 	const stub = join(dir, "model.mjs");
@@ -22,8 +24,14 @@ function stageFixture(t: TestContext, failFirst = false) {
 			fs.writeFileSync(stage + '-prompt', task);
 			const seen = fs.existsSync('requests') ? fs.readFileSync('requests', 'utf8') : '';
 			fs.appendFileSync('requests', stage + '\\n');
-			if (${failFirst} && stage === 'A' && !seen.includes('A')) return new Response('invalid request', {status: 400});
-			if (!${failFirst} && stage === 'B' && !seen.includes('B')) process.kill(process.pid, 'SIGKILL');
+			if (${failure === "fail-stage"} && stage === 'A' && !seen.includes('A')) return new Response('invalid request', {status: 400});
+			if (${failure === "interrupt-stage"} && stage === 'B' && !seen.includes('B')) process.kill(process.pid, 'SIGKILL');
+			if (${failure === "fail-root"} && stage === 'root') {
+				if (messages.filter(m => m.role === 'user').length !== 1) throw Error('Duplicated root prompt');
+				const calls = seen.split('\\n').filter(s => s === 'root').length;
+				if (calls < 2) return new Response('invalid request', {status: 400});
+				if (calls === 2) process.kill(process.pid, 'SIGKILL');
+			}
 			const data = { choices: [{index:0, delta:{role:'assistant',content:'answer-' + stage}, finish_reason:'stop'}] };
 			return new Response('data: ' + JSON.stringify(data) + '\\n\\ndata: [DONE]\\n\\n', {headers:{'content-type':'text/event-stream'}});
 		};`,
@@ -46,7 +54,7 @@ function stageFixture(t: TestContext, failFirst = false) {
 		stages: ["first", "second"].map((name) => ({
 			name,
 			prompt: name,
-			parallel: name === "first" && failFirst ? ["worker", "sibling"] : ["worker"],
+			parallel: name === "first" && failure === "fail-stage" ? ["worker", "sibling"] : ["worker"],
 		})),
 	};
 	const run = () =>
@@ -92,11 +100,54 @@ test("after process death, resume restores the first stage's output and complete
 	assert.equal(fs.readFileSync(join(dir, "requests"), "utf8"), "A\nB\nB\nroot\n");
 });
 
+test("resume retries an unanswered root once and reattaches after interruption without replaying stages", (t) => {
+	const { run, dir } = stageFixture(t, "fail-root");
+	for (let i = 0; i < 2; i++) {
+		const failed = run();
+		assert.equal(failed.status, 1);
+		assert.match(failed.stderr, /Task submission did not complete: unanswered: model_error/);
+	}
+	assert.equal(run().signal, "SIGKILL");
+	for (let i = 0; i < 2; i++) {
+		const resumed = run();
+		assert.equal(resumed.status, 0, resumed.stderr);
+		assert.equal(JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).report, "answer-root");
+	}
+	assert.equal(fs.readFileSync(join(dir, "requests"), "utf8"), "A\nB\nroot\nroot\nroot\nroot\n");
+});
+
+test("resume resubmits an unanswered input that never entered the transcript", async (t) => {
+	const { job, run, dir } = stageFixture(t);
+	job.stages = [];
+	const storage = await openNodeSqliteStorage(join(dir, `${job.id}.sqlite`));
+	const h = await Harness.open(storage, { models: createModels(), registry: createRegistry() }, BACKGROUND_CONTEXT);
+	try {
+		const root = await h.root(BACKGROUND_CONTEXT, { agent: { model: job.orchestrator.model } });
+		await root.commit(
+			(tx) =>
+				tx.createSubmission({
+					conversationId: root.id,
+					requestId: job.id,
+					type: "input",
+					status: "unanswered",
+					reason: "aborted",
+				}),
+			BACKGROUND_CONTEXT,
+		);
+	} finally {
+		await h.close(BACKGROUND_CONTEXT);
+	}
+	const resumed = run();
+	assert.equal(resumed.status, 0, resumed.stderr);
+	assert.equal(fs.readFileSync(join(dir, "root-prompt"), "utf8"), job.prompt);
+});
+
 test("a failed required agent blocks downstream work; resume retries only the failed agent", (t) => {
-	const { run, dir } = stageFixture(t, true);
+	const { run, dir } = stageFixture(t, "fail-stage");
 	const first = run();
 	assert.equal(first.status, 1, first.stdout + first.stderr);
 	assert.match(first.stdout, /Stage 'first' failed: worker/);
+	assert.match(first.stdout, /unanswered: model_error/);
 	const requests = () => fs.readFileSync(join(dir, "requests"), "utf8").trim().split("\n");
 	assert.deepEqual(requests().sort(), ["A", "sibling"]);
 	const resumed = run();

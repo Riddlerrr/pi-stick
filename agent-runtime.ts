@@ -388,7 +388,7 @@ async function runSubagent(
 		const sub = await conv.submit({ type: "input", content: promptText, ...(slot ? { requestId: slot } : {}) }, ctx);
 		const settled = await sub.wait(ctx);
 		if (settled.status !== "done" || settled.type !== "input") {
-			const msg = `Subagent '${spec.name}' did not complete (${settled.status})`;
+			const msg = `Subagent '${spec.name}' did not complete (${settled.status}${settled.reason ? `: ${settled.reason}` : ""})`;
 			emitProgress(msg, label);
 			return { agent: spec.name, ok: false, output: msg };
 		}
@@ -914,11 +914,19 @@ function selectToolsAndExtensions(toolNames: string[]) {
 	return { extensions, tools: selectedTools };
 }
 
-const h = await Harness.open(
-	await openNodeSqliteStorage(`${SESSIONS_DIR}/${job.id}.sqlite`),
-	{ models, registry },
-	ctx,
-);
+const storage = await openNodeSqliteStorage(`${SESSIONS_DIR}/${job.id}.sqlite`);
+const turnKey = job.requestId ?? job.id;
+let rootRequestId = turnKey;
+let continueRoot = false;
+// Inspect before opening the harness: only retry failures that predate this launch.
+for (let attempt = 1; ; attempt++) {
+	const prior = await storage.submissionByRequest(ROOT_CONVERSATION_ID, rootRequestId, ctx);
+	if (prior?.status !== "unanswered") break;
+	emitProgress(`Root attempt ${attempt} was unanswered: ${prior.reason}`, "orchestrator");
+	continueRoot = prior.type === "continue" || prior.entry !== undefined;
+	rootRequestId = `${turnKey}:retry:${attempt}`;
+}
+const h = await Harness.open(storage, { models, registry }, ctx);
 // Scheduling can resume siblings as soon as the first input is submitted.
 for (const [id, agent] of Object.entries((await h.snapshot(workflow, ctx))?.agents ?? {})) {
 	agentByConv.set(Number(id) as ConversationId, {
@@ -1082,10 +1090,17 @@ try {
 			},
 		});
 		if (job.continueRun) await root.configure({ instructions: spec.instructions }, ctx);
-		const sub = await root.submit({ type: "input", content: finalPrompt, requestId: job.requestId ?? job.id }, ctx);
+		const sub = await root.submit(
+			continueRoot
+				? { type: "continue", requestId: rootRequestId }
+				: { type: "input", content: finalPrompt, requestId: rootRequestId },
+			ctx,
+		);
 		const settled = await sub.wait(ctx);
-		if (settled.status !== "done" || settled.type !== "input")
-			throw Error(`Task submission did not complete: ${settled.status}`);
+		if (settled.status !== "done" || settled.type === "write")
+			throw Error(
+				`Task submission did not complete: ${settled.status}${settled.reason ? `: ${settled.reason}` : ""}`,
+			);
 		const entry = await root.commit((tx) => tx.entry(AssistantEntry, settled.answer), ctx);
 		const message = entry?.model?.[0];
 		if (message?.role !== "assistant") throw Error("Missing assistant answer");
