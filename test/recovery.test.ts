@@ -338,20 +338,24 @@ test("resume retries an unanswered root once and reattaches after interruption w
 	assert.equal(fs.readFileSync(join(dir, "requests"), "utf8"), "A\nB\nroot\nroot\nroot\nroot\n");
 });
 
-test("unexpected action exceptions do not expose their detail in the failure response", async (t) => {
+test("unexpected action exceptions log only a safe category and runtime location", async (t) => {
 	const { job, run, stub } = stageFixture(t);
 	job.stages = [];
 	fs.writeFileSync(
 		stub,
 		`import { Harness } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-durable"))};
  const open = Harness.open;
- Harness.open = async (...args) => { const h = await open(...args); h.root = () => {throw Error("private-fixture")}; return h; };`,
+ Harness.open = async (...args) => { const h = await open(...args); h.root = () => {
+   throw Object.assign(new TypeError("failure\\nprivate-fixture-message"), { name: "private-fixture-name", code: "private-fixture-code" });
+ }; return h; };`,
 	);
 	const failed = await run();
 	assert.equal(failed.status, 1);
 	const msg = JSON.parse(failed.stdout.trim().split("\n").at(-1)!);
 	assert.equal(msg.success, false);
 	assert.equal(msg.error, "Action failed");
+	assert.match(failed.stderr, /^Unexpected TypeError at agent-runtime\.ts:\d+:\d+$/m);
+	assert.doesNotMatch(failed.stdout, /Unexpected TypeError|agent-runtime\.ts/);
 	assert.doesNotMatch(failed.stderr + failed.stdout, /private-fixture/);
 });
 

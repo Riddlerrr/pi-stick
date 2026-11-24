@@ -734,7 +734,11 @@ try {
 		try {
 			result = await runAction();
 		} catch (err) {
-			result = err instanceof RunFailure ? err : new RunFailure("Action failed");
+			if (err instanceof RunFailure) result = err;
+			else {
+				console.error(unexpectedActionDiagnostic(err));
+				result = new RunFailure("Action failed");
+			}
 		}
 		protocol.signal.throwIfAborted();
 		const usage = await h.usage(ctx).catch(() => {
@@ -759,6 +763,23 @@ try {
 	await sandbox.close();
 	await h.close(BACKGROUND_CONTEXT);
 	protocol.signal.throwIfAborted();
+}
+
+function unexpectedActionDiagnostic(err: unknown): string {
+	const kind = err instanceof TypeError ? "TypeError" : err instanceof RangeError ? "RangeError" : "error";
+	const summary = `Unexpected ${kind}`;
+	try {
+		const stack = err instanceof Error ? err.stack : undefined;
+		if (typeof stack === "string") {
+			// Only emit coordinates in this module, never arbitrary stack or message text.
+			for (const frame of stack.matchAll(/^ {4}at (?:[^\n]* \()?([^\s()]+):(\d{1,6}):(\d{1,6})\)?$/gm)) {
+				if (frame[1] === import.meta.url) return `${summary} at agent-runtime.ts:${frame[2]}:${frame[3]}`;
+			}
+		}
+	} catch {
+		// A custom stack getter can throw.
+	}
+	return summary;
 }
 
 async function runAction(): Promise<string> {
