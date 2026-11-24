@@ -201,7 +201,7 @@ function resolveAgent(
 	}
 	if (!isOrchestrator && tools.includes("delegate"))
 		throw Error(`Subagent '${name}' cannot enable 'delegate'; only the orchestrator may delegate`);
-	const allowedServices = raw.allowedServices ?? ["runner"];
+	const allowedServices = raw.allowedServices ?? ["*"];
 	if (allowedServices.some((s) => !s.length))
 		throw Error(`Agent '${name}' allowedServices must be an array of service names`);
 	return {
@@ -398,7 +398,6 @@ export function createAction(name: string, project?: ProjectInfo): string {
 			instructions: "instructions.md",
 			mode: "read-write",
 			tools: DEFAULT_RW_TOOLS,
-			allowedServices: ["runner"],
 		},
 	};
 	writeJson(join(dest, "action.json"), manifest);

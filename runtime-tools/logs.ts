@@ -8,7 +8,10 @@ export function createLogsTool(call: AgentRpc) {
 		parameters: {
 			type: "object",
 			properties: {
-				service: { type: "string", description: "Optional Compose service name." },
+				service: {
+					type: "string",
+					description: "Compose service name; omit to read logs from all permitted services.",
+				},
 				tail: { type: "integer", minimum: 1, maximum: 2000, description: "Number of lines (default 200)." },
 			},
 			additionalProperties: false,

@@ -1097,7 +1097,6 @@ test("multi-agent action validates stages, resolves multi-provider auth, enforce
 			instructions: "instructions.md",
 			mode: "read-write",
 			tools: ["read", "write", "edit", "grep", "find", "codemode", "bash", "logs", "ps", "restart", "delegate"],
-			allowedServices: ["*"],
 		},
 		agents: {
 			sec: {
@@ -1106,7 +1105,7 @@ test("multi-agent action validates stages, resolves multi-provider auth, enforce
 				thinkingLevel: "medium",
 				instructions: "agents/sec.md",
 				mode: "read-only",
-				tools: ["read", "grep", "find", "bash", "logs"],
+				tools: ["read", "grep", "find", "bash", "logs", "restart"],
 				allowedServices: ["web"],
 			},
 			perf: {
@@ -1114,8 +1113,8 @@ test("multi-agent action validates stages, resolves multi-provider auth, enforce
 				model: "openai-codex/gpt-6.2-sol",
 				instructions: "agents/perf.md",
 				mode: "read-only",
-				tools: ["read", "grep", "find", "ps"],
-				allowedServices: ["runner"],
+				tools: ["read", "grep", "find", "ps", "logs"],
+				allowedServices: [],
 			},
 		},
 		stages: [{ name: "analyze", parallel: ["sec", "perf"], prompt: "Audit codebase" }],
@@ -1146,6 +1145,10 @@ if (has('config')) {
     volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
     networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
   }));
+} else if (has('logs')) {
+  console.log(has('--') ? a.slice(a.indexOf('--') + 1).join(',') : 'all');
+} else if (has('restart')) {
+  process.exit(a.slice(-3).join(' ') === '--no-deps -- web' ? 0 : 1);
 } else if (has('exec') && a.at(-1) === 'echo web') {
   process.exit(a[a.indexOf('--') + 1] === 'web' && !has('-w') ? 0 : 1);
 } else if (has('exec') && has('runner') && has('sh') && has('-c')) {
@@ -1154,6 +1157,16 @@ if (has('config')) {
   const rl = require('node:readline').createInterface({ input: process.stdin });
   const send = x => process.stdout.write(JSON.stringify(x) + '\\n');
   let got = 0;
+  const serviceCases = [
+    ['orchestrator', 'logs', {}, 'all'],
+    ['sec', 'logs', {}, 'web'],
+    ['sec', 'logs', {service:'runner'}, /not permitted/],
+    ['sec', 'restart', {service:'runner'}, /not permitted/],
+    ['sec', 'restart', {service:'web'}, "Restarted service 'web'."],
+    ['perf', 'logs', {}, /No services are permitted/],
+    ['orchestrator', 'restart', {service:'web'}, "Restarted service 'web'."],
+  ];
+  let pending = serviceCases.length;
   let job = null;
   rl.on('line', line => {
     const m = JSON.parse(line);
@@ -1170,6 +1183,7 @@ if (has('config')) {
       }
       if (job.agents.sec.thinkingLevel !== 'medium' || !job.orchestrator.instructions.includes('Security specialist')) process.exit(7);
       if (job.stageContext !== 'all' || job.stages.length !== 1 || job.stages[0].parallel.join(',') !== 'sec,perf') process.exit(8);
+      serviceCases.forEach(([agent, method, params], i) => send({ rpc: 10+i, agent, method, params }));
       send({ rpc: 7, method: 'exec', params: { service: 'web', command: 'echo web' }, agent: 'sec' });
       send({ rpc: 8, method: 'exec', params: { service: 'missing', command: 'true' }, agent: 'orchestrator' });
       send({ rpc: 1, method: 'exec', params: { command: 'echo 1' }, agent: 'sec' });
@@ -1186,8 +1200,12 @@ if (has('config')) {
     else if ((m.rpc === 5 || m.rpc === 6) && m.result.error) got |= 1 << (m.rpc - 1);
     else if (m.rpc === 7 && m.result.exitCode === 0) got |= 64;
     else if (m.rpc === 8 && m.result.error && m.result.text.includes('Unknown Compose service')) got |= 128;
-    else process.exit(9);
-    if (got === 255) {
+    else if (m.rpc >= 10) {
+      const expected = serviceCases[m.rpc - 10][3];
+      if (expected instanceof RegExp ? !m.result.error || !expected.test(m.result.text) : m.result.error || m.result.text.trim() !== expected) process.exit(9);
+      pending--;
+    } else process.exit(9);
+    if (got === 255 && !pending) {
       send({ progress: 'checked auth', agent: 'agent:sec' });
       send({ progress: 'checked queries', agent: 'agent:perf' });
       send({

@@ -108,7 +108,7 @@
           }
         },
         "allowedServices": {
-          "description": "Compose services targeted by bash. Defaults to runner; * permits any service in the project.",
+          "description": "Permitted targets for enabled bash, logs and restart tools. Omit or use * for all project services; an empty list permits none.",
           "type": "array",
           "items": { "type": "string" }
         },

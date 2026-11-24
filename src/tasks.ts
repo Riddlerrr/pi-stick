@@ -380,10 +380,11 @@ export class TaskEnv {
 		return { patch, untracked };
 	}
 
-	private validateService(service: string): string {
-		if (!SERVICE_NAME.test(service)) throw Error(`Invalid service name: ${service}`);
+	private validateService(service: unknown, allowed: string[]): string {
+		if (typeof service !== "string" || !SERVICE_NAME.test(service)) throw Error(`Invalid service name: ${service}`);
 		const known = this.services();
 		if (!known.includes(service)) throw Error(`Unknown Compose service: ${service}`);
+		if (!allowed.includes("*") && !allowed.includes(service)) throw Error(`Service ${service} is not permitted`);
 		return service;
 	}
 
@@ -394,17 +395,14 @@ export class TaskEnv {
 		onChunk?: (chunk: Buffer) => Promise<void>,
 		abort?: AbortSignal,
 	): Promise<RpcResponse> {
+		const allowed = policy.allowedServices ?? ["*"];
 		switch (method) {
 			case "exec": {
 				if (policy.allowExec === false) return { text: "bash is not permitted for this agent", error: true };
 				const cmd = params.command;
 				if (typeof cmd !== "string" || cmd.includes("\0")) return { text: "Invalid command", error: true };
 				const target = params.service === undefined ? "runner" : params.service;
-				if (typeof target !== "string") return { text: "Invalid bash service", error: true };
-				const service = this.validateService(target);
-				const allowed = policy.allowedServices ?? ["runner"];
-				if (!allowed.includes("*") && !allowed.includes(service))
-					return { text: `bash in ${service} is not permitted`, error: true };
+				const service = this.validateService(target, allowed);
 				const timeout = params.timeout;
 				if (
 					timeout !== undefined &&
@@ -462,8 +460,10 @@ export class TaskEnv {
 						? Math.min(params.tail, 2000)
 						: 200;
 				const argv = [...this.compose, "logs", "--no-color", "--tail", String(tail)];
-				if (typeof params.service === "string" && params.service.length) {
-					argv.push(this.validateService(params.service));
+				if (params.service !== undefined) argv.push("--", this.validateService(params.service, allowed));
+				else if (!allowed.includes("*")) {
+					if (!allowed.length) return { text: "No services are permitted", error: true };
+					argv.push("--", ...allowed.map((service) => this.validateService(service, allowed)));
 				}
 				const res = await spawnCapture(argv, 30_000);
 				return { text: res.text || "(no logs)", error: res.code !== 0 };
@@ -477,8 +477,8 @@ export class TaskEnv {
 				if (policy.allowRestart === false) return { text: "restart is not permitted for this agent", error: true };
 				if (typeof params.service !== "string" || !params.service.length)
 					return { text: "restart requires a service name", error: true };
-				const service = this.validateService(params.service);
-				const res = await spawnCapture([...this.compose, "restart", service], 120_000);
+				const service = this.validateService(params.service, allowed);
+				const res = await spawnCapture([...this.compose, "restart", "--no-deps", "--", service], 120_000);
 				return {
 					text: res.code === 0 ? `Restarted service '${service}'.\n${res.text}`.trim() : res.text,
 					error: res.code !== 0,
