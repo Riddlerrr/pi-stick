@@ -1311,7 +1311,8 @@ test("multi-agent action validates stages, resolves multi-provider auth, enforce
 	const piDir = join(tmp, ".pi/agent");
 	fs.mkdirSync(piDir, { recursive: true });
 	writeJson(join(piDir, "models-store.json"), { "openai-codex": { models: [{ id: "gpt-6.2-sol" }] } });
-	writeJson(join(piDir, "auth.json"), { "openai-codex": { type: "oauth" }, anthropic: { type: "api_key" } });
+	// Codex has no local metadata; its successful bearer export must still allow refresh.
+	writeJson(join(piDir, "auth.json"), { anthropic: { type: "api_key" } });
 	stub(
 		"pi",
 		`const idx = process.argv.indexOf('--model');

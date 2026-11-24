@@ -96,7 +96,7 @@ export async function resolveModels(specs: string[]): Promise<ResolvedAuth> {
 		}
 		if (!credentials[provider]) {
 			// Tokens travel only over stdin to the ephemeral container; never log or put in argv/env.
-			const authType = authTypes[provider];
+			const authType = authTypes[provider] ?? "oauth";
 			credentials[provider] = { ...(await exportAccessLease(raw, authType)), authType };
 		}
 	}
