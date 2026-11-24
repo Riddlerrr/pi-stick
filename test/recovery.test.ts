@@ -63,10 +63,15 @@ function stageFixture(
 			parallel: name === "first" && failure === "fail-stage" ? ["worker", "sibling"] : ["worker"],
 		})),
 	};
-	const run = async (payload: unknown = job) => {
+	const run = async (payload: unknown = job, workspace = dir) => {
 		const child = spawn(process.execPath, ["--import", stub, join(import.meta.dirname, "../agent-runtime.ts")], {
 			cwd: dir,
-			env: { ...process.env, PI_STICK_SESSIONS_DIR: dir, PI_STICK_SCRATCH_DIR: dir },
+			env: {
+				...process.env,
+				PI_STICK_SESSIONS_DIR: dir,
+				PI_STICK_SCRATCH_DIR: dir,
+				PI_STICK_WORKSPACE_DIR: workspace,
+			},
 			timeout: 15000,
 		});
 		const exit = closed(child);
@@ -90,6 +95,21 @@ test("runtime rejects an untyped job from an incompatible launcher", async (t) =
 	const result = await run({ ...job, type: undefined });
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /Expected run command/);
+});
+
+test("runtime requires a real checkout directory", async (t) => {
+	const { dir, job, run } = stageFixture(t);
+	const workspace = join(dir, "workspace");
+	const repo = join(workspace, "repo");
+	fs.mkdirSync(workspace);
+	for (const linked of [false, true]) {
+		if (linked) fs.symlinkSync(dir, repo);
+		const result = await run(job, repo);
+		assert.equal(result.status, 1, result.stderr);
+		assert.match(result.stderr, /Expected a real checkout directory/);
+		assert.equal(result.stdout, "");
+	}
+	assert.ok(!fs.existsSync(join(dir, `${job.id}.sqlite`)));
 });
 
 test("delegate rejects a repeated agent before dispatch, even with different prompts", async (t) => {

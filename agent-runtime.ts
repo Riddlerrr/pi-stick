@@ -2,7 +2,7 @@
 import { writeProtocol } from "./runtime-tools/protocol-stdout.ts";
 
 import * as fs from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -202,9 +202,8 @@ function nearestExistingRealpath(target: string): string {
 }
 
 function assertWithin(target: string, root: string, label: string): string {
-	const realRoot = canonicalBase(root);
 	const resolved = nearestExistingRealpath(target);
-	const rel = relative(realRoot, resolved);
+	const rel = relative(root, resolved);
 	if (rel.startsWith("..") || isAbsolute(rel)) throw Error(`Path escapes allowed ${label} directory`);
 	return resolved;
 }
@@ -214,16 +213,20 @@ function resolveAgentPath(rawPath: string, agentCtx: AgentContext, forWrite: boo
 	if (rawPath === "/context" || rawPath.startsWith("/context/")) {
 		if (forWrite) throw Error("/context is read-only");
 		const sub = rawPath === "/context" ? "" : rawPath.slice("/context/".length);
-		return assertWithin(resolve(CONTEXT_DIR, sub), CONTEXT_DIR, "context");
+		return assertWithin(resolve(CONTEXT_DIR, sub), canonicalBase(CONTEXT_DIR), "context");
 	}
 	if (rawPath === "/scratch" || rawPath.startsWith("/scratch/")) {
 		const sub = rawPath === "/scratch" ? "" : rawPath.slice("/scratch/".length);
 		const candidate = resolve(SCRATCH_DIR, sub);
 		if (forWrite) {
 			fs.mkdirSync(agentCtx.scratchDir, { recursive: true });
-			return assertWithin(candidate, agentCtx.scratchDir, `agent scratch (/scratch/${agentCtx.name})`);
+			return assertWithin(
+				candidate,
+				canonicalBase(agentCtx.scratchDir),
+				`agent scratch (/scratch/${agentCtx.name})`,
+			);
 		}
-		return assertWithin(candidate, SCRATCH_DIR, "scratch");
+		return assertWithin(candidate, canonicalBase(SCRATCH_DIR), "scratch");
 	}
 	const prefix = `${CONTAINER_REPO_DIR}/`;
 	const sub =
@@ -234,7 +237,7 @@ function resolveAgentPath(rawPath: string, agentCtx: AgentContext, forWrite: boo
 			`Write/edit in ${CONTAINER_REPO_DIR} is disabled in read-only mode. Write temporary files under /scratch/${agentCtx.name} instead.`,
 		);
 	}
-	return assertWithin(resolve(WORKSPACE_DIR, sub), WORKSPACE_DIR, "workspace");
+	return assertWithin(resolve(workspaceRoot, sub), workspaceRoot, "workspace");
 }
 
 // Docker forwards EOF when the worker dies, even during an outstanding model request.
@@ -242,6 +245,10 @@ const hostDisconnected = () => process.exit(1);
 process.stdin.once("end", hostDisconnected);
 const job = await readInitialJob();
 if (!/^[0-9a-f]{32}$/.test(job.id)) throw Error("Invalid run ID");
+// Resolve only the mount parent so a replacement symlink cannot redefine the workspace boundary.
+const workspaceRoot = join(canonicalBase(dirname(WORKSPACE_DIR)), basename(WORKSPACE_DIR));
+if (!fs.lstatSync(workspaceRoot, { throwIfNoEntry: false })?.isDirectory())
+	throw Error(`Expected a real checkout directory at ${WORKSPACE_DIR}`);
 
 const allProviders = builtinProviders();
 const models = createModels({

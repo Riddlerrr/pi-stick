@@ -49,7 +49,7 @@ export async function executeAgentContainer(
 	const argv = ephemeralArgs({
 		runId: task.id,
 		network: task.network(),
-		repo: task.repo,
+		workspace: task.workspace,
 		scratch: task.scratch,
 		context: task.context,
 		sessions: join(task.dir, "session"),

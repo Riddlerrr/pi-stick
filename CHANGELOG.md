@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The agent mounts the task workspace rather than the nested checkout path and rejects a missing or symlinked checkout at startup. Rebuild the agent image to enable the startup check. The checkout path remains `/workspace/repo`.
+
 - Added `pistick kill RUN_ID` to interrupt an active task while preserving its workspace and session for inspection or resume.
 
 - Moved `pistick stop` and `pistick update` to `pistick containers stop` and `pistick containers update`. The old top-level commands are no longer accepted.

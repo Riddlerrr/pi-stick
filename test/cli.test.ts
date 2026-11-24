@@ -311,7 +311,7 @@ test("ephemeral container args enforce hardening and model spec validation", () 
 	if (process.getuid?.()) {
 		const argv = ephemeralArgs({
 			network: "pi-stick-demo-abc_default",
-			repo: "/tmp/repo",
+			workspace: "/tmp/workspace",
 			scratch: "/tmp/scratch",
 			context: "/tmp/context",
 			sessions: "/tmp/sessions",
@@ -321,7 +321,8 @@ test("ephemeral container args enforce hardening and model spec validation", () 
 		assert.ok(argv.includes("ALL"));
 		assert.ok(argv.includes("no-new-privileges:true"));
 		assert.ok(argv.includes("pi-stick-demo-abc_default"));
-		assert.ok(argv.includes("/tmp/repo:/workspace/repo"));
+		assert.ok(argv.includes("/tmp/workspace:/workspace"));
+		assert.ok(!argv.some((arg) => arg.endsWith(":/workspace/repo")));
 		assert.ok(argv.includes("/tmp/scratch:/scratch"));
 		assert.ok(argv.includes("/tmp/context:/context:ro"));
 		assert.ok(argv.includes("/tmp/sessions:/sessions"));
@@ -956,7 +957,8 @@ if (has('git') && a[0] === 'run') {
 } else if (a[0] === 'compose' && has('ps')) {
   console.log('[{"Service":"runner","State":"running"}]');
 } else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
-  const repoMount = a.find(x => x.endsWith(':/workspace/repo')).slice(0, -':/workspace/repo'.length);
+  const workspaceMount = a.find(x => x.endsWith(':/workspace'));
+  const repoMount = workspaceMount.slice(0, -':/workspace'.length) + '/repo';
   const usage = input => ({ models: { 'test/model': { input, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: input+2,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }, tools: {} });
   const ctxMount = a.find(x => x.endsWith(':/context:ro')).slice(0, -':/context:ro'.length);
@@ -972,6 +974,7 @@ if (has('git') && a[0] === 'run') {
       if (job.credentials['openai-codex'].token !== (job.continueRun ? 'fresh-token' : 'secret-fixture-token')) process.exit(3);
       if (job.orchestrator.thinkingLevel !== 'high' || job.orchestrator.model.modelId !== 'gpt-6.2-sol' || !job.orchestrator.instructions.includes('PINNED PROJECT NOTES') || !job.orchestrator.instructions.includes('PINNED INSTRUCTIONS') || job.orchestrator.tools.includes('restart')) process.exit(10);
       if (job.continueRun && !job.orchestrator.instructions.includes('updated-context.md')) process.exit(11);
+      if (workspaceMount !== ${JSON.stringify(join(app, "state/runs"))} + '/' + job.id + '/workspace:/workspace') process.exit(15);
       if (!job.orchestrator.instructions.includes('Repository workspace: /workspace/repo')) process.exit(12);
       if (!fs.readFileSync(ctxMount + '/ticket.txt', 'utf8').includes('ISSUE-42')) process.exit(4);
       const session = a.find(x => x.endsWith(':/sessions')).slice(0, -':/sessions'.length);
@@ -1348,7 +1351,7 @@ if (has('config')) {
     networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
   }));
 } else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
-  const repoMount = a.find(x => x.endsWith(':/workspace/repo')).slice(0, -':/workspace/repo'.length);
+  const repoMount = a.find(x => x.endsWith(':/workspace')).slice(0, -':/workspace'.length) + '/repo';
   const rl = require('node:readline').createInterface({ input: process.stdin });
   rl.once('line', line => {
     const job = JSON.parse(line);

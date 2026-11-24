@@ -21,7 +21,7 @@ import {
 	settingsPath,
 	userSettings,
 } from "./platform.ts";
-import { CONTAINER_REPO_DIR, validateCompose } from "./tasks.ts";
+import { CONTAINER_REPO_DIR, CONTAINER_WORKSPACE_DIR, validateCompose } from "./tasks.ts";
 import { listProjects } from "./workspace.ts";
 
 export interface ModelSpec {
@@ -118,7 +118,7 @@ export interface EphemeralContainerOptions {
 	runId?: string;
 	image?: string;
 	network: string;
-	repo?: string;
+	workspace?: string;
 	scratch?: string;
 	context?: string;
 	sessions?: string;
@@ -139,7 +139,8 @@ export function ephemeralArgs(opts: EphemeralContainerOptions): string[] {
 			`/sessions:rw,uid=${uid},mode=0700`,
 		);
 	} else {
-		if (opts.repo) args.push("-v", `${opts.repo}:${CONTAINER_REPO_DIR}`);
+		// The runner controls entries inside workspace; do not let Docker resolve repo on the host.
+		if (opts.workspace) args.push("-v", `${opts.workspace}:${CONTAINER_WORKSPACE_DIR}`);
 		if (opts.scratch) args.push("-v", `${opts.scratch}:/scratch`);
 		if (opts.context) args.push("-v", `${opts.context}:/context:ro`);
 		if (opts.sessions) args.push("-v", `${opts.sessions}:/sessions`);

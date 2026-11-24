@@ -7,7 +7,8 @@ import { closed, command, gitCommand, output, run, STATE, touch } from "./platfo
 import { RUNNER_SHELL } from "./runner-shell.ts";
 import { type ProjectInfo, projectSource } from "./workspace.ts";
 
-export const CONTAINER_REPO_DIR = "/workspace/repo";
+export const CONTAINER_WORKSPACE_DIR = "/workspace";
+export const CONTAINER_REPO_DIR = `${CONTAINER_WORKSPACE_DIR}/repo`;
 
 export interface Mount {
 	type: string;
@@ -313,7 +314,7 @@ export class TaskEnv {
 
 	private inspectionArgs(...args: string[]) {
 		// Mount the trusted parent: the runner can replace entries inside workspace, including repo.
-		return [...isolatedRun("none"), "-v", `${this.workspace}:/workspace:ro`, IMAGE, ...args];
+		return [...isolatedRun("none"), "-v", `${this.workspace}:${CONTAINER_WORKSPACE_DIR}:ro`, IMAGE, ...args];
 	}
 
 	private inspectWorkspace(...args: string[]): string {
