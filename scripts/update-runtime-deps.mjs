@@ -1,0 +1,30 @@
+import { execFileSync } from "node:child_process";
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+process.chdir(join(import.meta.dirname, ".."));
+const dockerfile = readFileSync("Dockerfile", "utf8");
+const from = /^FROM (node:\d+-[\w-]+)@sha256:[a-f0-9]{64}$/m.exec(dockerfile);
+const npmPin = /^ARG NPM_VERSION=\d+\.\d+\.\d+$/m;
+if (!from || !npmPin.test(dockerfile)) throw Error("Expected pinned Node and npm versions in Dockerfile");
+const manifest = execFileSync("docker", ["buildx", "imagetools", "inspect", from[1]], { encoding: "utf8" });
+const digest = /^Digest:\s+(sha256:[a-f0-9]{64})$/m.exec(manifest)?.[1];
+const npm = execFileSync("npm", ["view", "npm@latest", "version"], { encoding: "utf8" }).trim();
+if (!digest || !/^\d+\.\d+\.\d+$/.test(npm)) throw Error("Cannot resolve Node digest or npm version");
+
+const files = ["package.json", "package-lock.json"];
+const stage = mkdtempSync(join(tmpdir(), "pi-stick-deps-"));
+try {
+	for (const file of files) copyFileSync(file, join(stage, file));
+	const { dependencies } = JSON.parse(readFileSync(join(stage, "package.json"), "utf8"));
+	execFileSync("npm", [
+		"install", "--package-lock-only", "--save-exact", "--ignore-scripts", "--no-audit", "--no-fund",
+		...Object.keys(dependencies).map((name) => `${name}@latest`),
+	], { cwd: stage, stdio: "inherit" });
+	for (const file of files) copyFileSync(join(stage, file), file);
+	writeFileSync("Dockerfile", dockerfile.replace(from[0], `FROM ${from[1]}@${digest}`).replace(npmPin, `ARG NPM_VERSION=${npm}`));
+	console.log("Review: git diff -- Dockerfile package.json package-lock.json");
+} finally {
+	rmSync(stage, { recursive: true, force: true });
+}
