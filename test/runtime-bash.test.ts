@@ -56,8 +56,47 @@ for (const [label, text, spill, truncated] of [
 		if (spill) {
 			const path = join(dir, files[0]);
 			assert.equal(await readFile(path, "utf8"), text);
-			assert.ok(diagnostics.includes(`Full output: ${path}`));
+			assert.ok(diagnostics.includes(`Output log (up to 32 MiB): ${path}`));
 			if (truncated) assert.equal(out.full_output_path, path);
 		}
+	});
+}
+
+for (const extra of [0, 1, 600_000]) {
+	test(`bash caps its spill at 32 MiB with ${extra} excess bytes`, async (t) => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-stick-bash-"));
+		t.after(() => rm(dir, { recursive: true, force: true }));
+		const block = Buffer.alloc(1024 * 1024, "a");
+		const tool = createBashTool(
+			async (_args, _id, chunk) => {
+				for (let i = 0; i < 31; i++) chunk(block);
+				chunk(block.subarray(1));
+				chunk(Buffer.from(extra ? "bc" : "b"));
+				if (extra > 1) chunk(Buffer.alloc(extra - 1, "d"));
+				return { text: "", exitCode: 0 };
+			},
+			() => dir,
+		);
+		const warnings: string[] = [];
+		const api = {
+			conversationId: ROOT_CONVERSATION_ID,
+			output(_text: string) {},
+			retainedOutput: () => ({ text: "", truncated: false }),
+			diagnostic(d: { severity: string; message: string }) {
+				if (d.severity === "warn") warnings.push(d.message);
+			},
+		} as Parameters<typeof tool.execute>[1];
+		const res = await tool.execute({ command: "example" }, api, BACKGROUND_CONTEXT);
+		const out = res.structuredOutput as { output: string; full_output_path?: string; exit_code: number };
+		const path = join(dir, (await readdir(dir))[0]);
+		const saved = await readFile(path);
+		assert.equal(saved.length, 32 * block.length);
+		assert.equal(saved.at(-1), 98); // 'b', the final byte before the cap
+		assert.equal(out.exit_code, 0);
+		assert.equal(out.full_output_path, extra ? undefined : path);
+		assert.equal(warnings.length, Number(extra > 0));
+		const tail =
+			extra > 1 ? "d".repeat(block.length / 2) : `${"a".repeat(block.length / 2 - 1 - extra)}b${extra ? "c" : ""}`;
+		assert.ok(out.output.endsWith(tail));
 	});
 }
