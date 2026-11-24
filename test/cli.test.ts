@@ -383,6 +383,25 @@ test("per-run locks allow concurrent runs, follow, diff, and selective cleanup",
 	fail(["follow", idA], /Worker interrupted/);
 });
 
+test("cleanup includes old interrupted runs but preserves recent ones", (t) => {
+	const { app, ok } = fixture(t);
+	const runs = join(app, "state/runs");
+	const [old, early, recent] = [runId(), runId(), runId()];
+	for (const id of [old, early, recent]) {
+		const dir = join(runs, id);
+		fs.mkdirSync(dir, { recursive: true });
+		writeJson(join(dir, "meta.json"), { project: "demo" });
+		if (id !== early) fs.writeFileSync(join(dir, "last-used"), "");
+		if (id !== recent) fs.utimesSync(join(dir, id === early ? "meta.json" : "last-used"), 1, 1);
+	}
+	const preview = ok(["cleanup", "--dry-run"]);
+	for (const id of [old, early]) assert.ok(preview.includes(`${id} (demo, interrupted)`));
+	assert.ok(!preview.includes(recent));
+	ok(["cleanup"], "y\n");
+	for (const id of [old, early]) assert.ok(!fs.existsSync(join(runs, id)));
+	assert.ok(fs.existsSync(join(runs, recent)));
+});
+
 test("cleanup rechecks listed runs after confirmation", async (t) => {
 	const { app, bin, env } = fixture(t);
 	const [busy, reused, interrupted, gone, eligible] = Array.from({ length: 5 }, () =>

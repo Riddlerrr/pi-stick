@@ -161,7 +161,7 @@ pistick resume RUN_ID                   # resume the interrupted initial turn or
 pistick diff RUN_ID                     # show changes made in the task workspace
 pistick kill RUN_ID                     # forcibly interrupt an active attempt
 pistick containers stop RUN_ID          # stop an inactive run's project containers; keep its workspace and history
-pistick cleanup [--dry-run] [--days 7]  # delete old finished runs, stacks, volumes & sessions
+pistick cleanup [--dry-run] [--days 7]  # delete old finished or interrupted runs, including volumes & sessions
 pistick doctor                          # check Docker, image self-check, auth, recipes & actions
 pistick containers update [--yes]       # rebuild pi-stick:current with latest dependencies
 ```

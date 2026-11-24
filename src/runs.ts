@@ -173,6 +173,7 @@ function policyForAgent(action: Pick<LoadedAction, "agents" | "orchestrator">, a
 
 async function spawnWorker(id: string, fd: number) {
 	const dir = runDir(id);
+	touch(join(dir, "last-used"));
 	const fifo = join(dir, "kill.fifo");
 	fs.rmSync(fifo, { force: true });
 	command(["mkfifo", "-m", "600", fifo]);
@@ -901,31 +902,36 @@ export async function cleanup(days: number, dry: boolean) {
 		console.log("No eligible pi-stick runs.");
 		return;
 	}
-	function eligibleLastUsed(dir: string) {
-		if (!fs.existsSync(join(dir, "exit"))) return;
-		const last = fs.statSync(join(dir, "last-used"), { throwIfNoEntry: false });
+	const isInterrupted = (dir: string) => !fs.existsSync(join(dir, "exit"));
+	function eligibleLastUsed(dir: string, interrupted: boolean) {
+		const last =
+			fs.statSync(join(dir, "last-used"), { throwIfNoEntry: false }) ??
+			(interrupted ? fs.statSync(join(dir, "meta.json"), { throwIfNoEntry: false }) : undefined);
 		return last?.isFile() && last.mtimeMs <= cutoff ? last.mtimeMs : undefined;
 	}
-	const items: Array<{ id: string; key: string; lastUsed: number }> = [];
+	const items: Array<{ id: string; key: string; lastUsed: number; interrupted: boolean }> = [];
 	for (const entry of fs.readdirSync(runsDir, { withFileTypes: true })) {
 		const id = entry.name;
 		if (!entry.isDirectory() || !VALID_ID.test(id)) continue;
 		const dir = join(runsDir, id);
 		if (isLocked(join(dir, "lock"))) continue;
-		const lastUsed = eligibleLastUsed(dir);
+		const interrupted = isInterrupted(dir);
+		const lastUsed = eligibleLastUsed(dir, interrupted);
 		if (lastUsed === undefined) continue;
 		const metaFile = join(dir, "meta.json");
 		const project = fs.existsSync(metaFile) ? (json(metaFile) as Partial<RunMeta>).project : undefined;
 		const key = project ? `pi-stick-${project}-${id.slice(0, 12)}` : `pi-stick-run-${id.slice(0, 12)}`;
-		items.push({ id, key, lastUsed });
-		console.log(`${id} (${project ?? "unknown"}): workspace, scratch stack/volumes, reports and session`);
+		items.push({ id, key, lastUsed, interrupted });
+		console.log(
+			`${id} (${project ?? "unknown"}${interrupted ? ", interrupted" : ""}): workspace, scratch stack/volumes, reports and session`,
+		);
 	}
 	if (!items.length) {
 		console.log("No eligible pi-stick runs.");
 		return;
 	}
 	if (dry || (await prompt("Permanently delete listed pi-stick runs? [y/N] ")).toLowerCase() !== "y") return;
-	for (const { id, key, lastUsed } of items) {
+	for (const { id, key, lastUsed, interrupted } of items) {
 		const dir = runDir(id);
 		let fd: number;
 		try {
@@ -935,7 +941,7 @@ export async function cleanup(days: number, dry: boolean) {
 			throw err;
 		}
 		try {
-			if (!tryLock(fd) || eligibleLastUsed(dir) !== lastUsed) {
+			if (!tryLock(fd) || isInterrupted(dir) !== interrupted || eligibleLastUsed(dir, interrupted) !== lastUsed) {
 				console.log(`Skipping ${id}: active or changed since listing.`);
 				continue;
 			}
