@@ -206,6 +206,8 @@ export interface LaunchRunOptions {
 
 export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 	const project = getProject(opts.projectName);
+	if (!fs.statSync(project.repo, { throwIfNoEntry: false })?.isDirectory())
+		throw Error(`Project repository not found at ${project.repo}`);
 	const action = loadAction(opts.actionName, project, true);
 	const inputs = resolveInputs(action, opts.rawInputs);
 	const id = runId();

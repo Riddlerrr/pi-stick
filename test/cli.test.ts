@@ -263,6 +263,21 @@ test("task Compose configs must resolve to regular trusted project files", (t) =
 		}, /must use a project file/);
 });
 
+test("new runs reject a missing project checkout before validating Compose or creating run state", (t) => {
+	const { app, source, ok, fail } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	ok(["create", "action", "check"]);
+	const folder = join(app, "projects/demo");
+	fs.rmSync(join(folder, "repo"), { recursive: true });
+	const compose = join(folder, "compose.yaml");
+	const base = read(compose);
+	for (const configs of ["", "\nconfigs:\n  settings:\n    file: ./setup-project\n"]) {
+		fs.writeFileSync(compose, base + configs);
+		fail(["run", "demo", "check"], /Project repository not found at .*\/projects\/demo\/repo/);
+		assert.deepEqual(fs.readdirSync(join(app, "state/runs")), []);
+	}
+});
+
 test("runner must share the default network with the agent before run preparation", (t) => {
 	const { app, source, ok, fail } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);
