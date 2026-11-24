@@ -10,8 +10,8 @@ test("maintainer update preserves Node line, requests only runtime deps and publ
 	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 	const scripts = join(root, "scripts");
 	fs.mkdirSync(scripts);
-	const script = join(scripts, "update-runtime-deps.mjs");
-	fs.copyFileSync(join(import.meta.dirname, "../scripts/update-runtime-deps.mjs"), script);
+	const script = join(scripts, "update-deps.mjs");
+	fs.copyFileSync(join(import.meta.dirname, "../scripts/update-deps.mjs"), script);
 	fs.symlinkSync(join(import.meta.dirname, "../src"), join(root, "src"));
 	fs.mkdirSync(join(root, "runtime-tools"));
 	for (const name of [".dockerignore", "agent-runtime.ts", "runtime-auth.ts"]) fs.writeFileSync(join(root, name), "");
@@ -55,7 +55,7 @@ const assert = require('node:assert/strict'), fs = require('node:fs');
 const args = process.argv.slice(2);
 if (args[0] === 'view') { assert.deepEqual(args, ['view','npm@latest','version']); console.log('11.0.0'); }
 else {
-  assert.deepEqual(args.sort(), ['install','--package-lock-only','--save-exact','--ignore-scripts','--no-audit','--no-fund','runtime@latest'].sort());
+  assert.deepEqual(args.sort(), ['install','--save-prod','--package-lock-only','--save-exact','--ignore-scripts','--no-audit','--no-fund','runtime@latest'].sort());
   assert.equal(fs.readFileSync('package-lock.json','utf8'), 'original lock');
   const pkg = JSON.parse(fs.readFileSync('package.json')); pkg.dependencies.runtime = '2.0.0';
   fs.writeFileSync('package.json', JSON.stringify(pkg)); fs.writeFileSync('package-lock.json', 'updated lock');
@@ -64,7 +64,7 @@ else {
 		{ mode: 0o700 },
 	);
 	const run = (fail: string) =>
-		spawnSync(process.execPath, [script], {
+		spawnSync(process.execPath, [script, "runtime"], {
 			encoding: "utf8",
 			env: { ...process.env, PATH: `${root}:${process.env.PATH}`, FAIL_STEP: fail },
 		});
@@ -84,4 +84,35 @@ else {
 		dependencies: { runtime: "2.0.0" },
 		devDependencies: { dev: "1.0.0" },
 	});
+});
+
+test("dev update targets all dev dependencies without needing Docker or runtime assets", (t) => {
+	const root = fs.mkdtempSync(join(tmpdir(), "pi-stick-dev-deps-"));
+	t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+	const scripts = join(root, "scripts");
+	fs.mkdirSync(scripts);
+	const script = join(scripts, "update-deps.mjs");
+	fs.copyFileSync(join(import.meta.dirname, "../scripts/update-deps.mjs"), script);
+	const pkg = JSON.stringify({ dependencies: { runtime: "1" }, devDependencies: { lint: "1", ts: "1" } });
+	fs.writeFileSync(join(root, "package.json"), pkg);
+	fs.writeFileSync(join(root, "package-lock.json"), "old");
+	fs.writeFileSync(
+		join(root, "npm"),
+		`#!/bin/sh
+set -eu
+[ "$*" = 'install --save-dev --package-lock-only --save-exact --ignore-scripts --no-audit --no-fund lint@latest ts@latest' ]
+[ "$(cat package-lock.json)" = old ]
+echo updated > package-lock.json
+exit "$FAIL"`,
+		{ mode: 0o700 },
+	);
+	for (const fail of ["1", "0"]) {
+		const result = spawnSync(process.execPath, [script, "dev"], {
+			encoding: "utf8",
+			env: { ...process.env, PATH: `${root}:${process.env.PATH}`, FAIL: fail },
+		});
+		assert.equal(result.status, Number(fail), result.stderr);
+		assert.equal(fs.readFileSync(join(root, "package.json"), "utf8"), pkg);
+		assert.equal(fs.readFileSync(join(root, "package-lock.json"), "utf8").trim(), fail === "1" ? "old" : "updated");
+	}
 });

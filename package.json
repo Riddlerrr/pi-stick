@@ -23,7 +23,8 @@
   "scripts": {
     "build:binary": "./scripts/build-linux.sh",
     "build:image:dev": "./pistick-dev containers build",
-    "update:runtime-deps": "node scripts/update-runtime-deps.mjs",
+    "update:runtime-deps": "node scripts/update-deps.mjs runtime",
+    "update:dev-deps": "node scripts/update-deps.mjs dev",
     "dev": "PI_STICK_DEV=1 node src/cli.ts",
     "pack:npm": "./scripts/pack-npm.sh",
     "check": "npm run lint && tsc --noEmit",
