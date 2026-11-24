@@ -517,7 +517,18 @@ test("agent-runtime offline self-check exercises canonical paths, scratch, concu
 		{ mode: 0o700 },
 	);
 	const runtime = join(import.meta.dirname, "..", "agent-runtime.ts");
-	const child = spawn(process.execPath, [runtime], {
+	// Simulate a dependency that logs during module initialization.
+	const preload = join(tmp, "noisy-dependency.mjs");
+	fs.writeFileSync(
+		preload,
+		`import { registerHooks } from "node:module";
+		registerHooks({ load(url, context, next) {
+			const loaded = next(url, context);
+			if (!url.endsWith("/runtime-auth.ts")) return loaded;
+			return { ...loaded, source: String(loaded.source) + '\\nconsole.log("import console marker"); process.stdout.write("import stdout marker\\\\n");' };
+		} });`,
+	);
+	const child = spawn(process.execPath, ["--import", preload, runtime], {
 		env: {
 			...process.env,
 			PATH: `${bin}:${process.env.PATH}`,
@@ -556,6 +567,7 @@ test("agent-runtime offline self-check exercises canonical paths, scratch, concu
 	child.stdin.end();
 	const [code] = await exit;
 	assert.equal(code, 0, stderrChunks.join(""));
+	assert.match(stderrChunks.join(""), /import console marker\nimport stdout marker\n/);
 	assert.equal(ready, true);
 	assert.ok(seenMethods.includes("ps"));
 	assert.ok(seenMethods.includes("logs"));

@@ -1,3 +1,6 @@
+// biome-ignore assist/source/organizeImports: Reserve stdout before dependencies run their initialization code.
+import { writeProtocol } from "./runtime-tools/protocol-stdout.ts";
+
 import * as fs from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -88,7 +91,7 @@ interface AgentContext {
 }
 
 const send = (data: unknown) => {
-	process.stdout.write(`${JSON.stringify(data)}\n`);
+	writeProtocol(`${JSON.stringify(data)}\n`);
 };
 
 const rl = createInterface({ input: process.stdin });
@@ -822,5 +825,5 @@ async function runAction(): Promise<string> {
 	return report;
 }
 
-await new Promise<void>((resolve, reject) => process.stdout.write("", (err) => (err ? reject(err) : resolve())));
+await new Promise<void>((resolve, reject) => writeProtocol("", (err) => (err ? reject(err) : resolve())));
 process.exit(0);
