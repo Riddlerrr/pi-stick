@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { setTimeout as sleep } from "node:timers/promises";
+import { type ActionJob, RUN } from "../runtime-tools/protocol.ts";
 import { readActionSnapshot, saveActionSnapshot } from "./action-snapshot.ts";
 import { type LoadedAction, loadAction, type ResolvedAgentSpec, resolveInputs, runHook } from "./actions.ts";
 import { executeAgentContainer } from "./agent-rpc.ts";
@@ -384,7 +385,8 @@ export async function worker(id: string): Promise<number> {
 				};
 			};
 
-			const jobPayload: Record<string, unknown> = {
+			const jobPayload = {
+				type: RUN,
 				id,
 				models: auth.models,
 				credentials: auth.credentials,
@@ -395,7 +397,7 @@ export async function worker(id: string): Promise<number> {
 				prompt: cfg.prompt,
 				requestId: cfg.requestId,
 				continueRun: cfg.mode === "continue",
-			};
+			} satisfies ActionJob;
 
 			if (needsSession(cfg)) requireSession(id);
 			else fs.mkdirSync(join(dir, "session"), { recursive: true, mode: 0o700 });

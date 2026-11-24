@@ -12,7 +12,7 @@ export function createPsTool(call: AgentRpc) {
 		},
 		replay: "safe",
 		execute: async (_args, api) => {
-			const res = await call("ps", {}, api.conversationId);
+			const res = await call({ type: "ps" }, api.conversationId);
 			return { output: [{ type: "text" as const, text: res.text }], isError: !!res.error };
 		},
 	});

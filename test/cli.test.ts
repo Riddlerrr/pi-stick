@@ -655,7 +655,7 @@ test("agent-runtime offline self-check exercises canonical paths, scratch, concu
 	const seenMethods: string[] = [];
 	let ready = false;
 	const id = runId();
-	child.stdin.write(`${JSON.stringify({ type: "run", id, check: true, models: {}, credentials: {} })}\n`);
+	child.stdin.write(`${JSON.stringify({ type: "run.v1", id, check: true, models: {}, credentials: {} })}\n`);
 	for await (const line of lines) {
 		const msg = JSON.parse(line);
 		if (typeof msg.id === "string" && ["ps", "logs", "exec", "check_clean", "restart"].includes(msg.type)) {
@@ -1061,7 +1061,7 @@ if (has('git') && a[0] === 'run') {
   rl.on('line', line => {
     const m = JSON.parse(line);
     if (!job) {
-      if (m.type !== 'run') process.exit(12);
+      if (m.type !== 'run.v1') process.exit(12);
       job = m;
       if (job.credentials['openai-codex'].token !== (job.continueRun ? 'fresh-token' : 'secret-fixture-token')) process.exit(3);
       if (job.orchestrator.thinkingLevel !== 'high' || job.orchestrator.model.modelId !== 'gpt-6.2-sol' || !job.orchestrator.instructions.includes('PINNED PROJECT NOTES') || !job.orchestrator.instructions.includes('PINNED INSTRUCTIONS') || job.orchestrator.tools.includes('restart')) process.exit(10);
@@ -1350,7 +1350,7 @@ if (has('config')) {
   rl.on('line', line => {
     const m = JSON.parse(line);
     if (!job) {
-      if (m.type !== 'run') process.exit(12);
+      if (m.type !== 'run.v1') process.exit(12);
       job = m;
       if (job.credentials['openai-codex'].token !== 'codex-token-fixture') process.exit(3);
       if (job.credentials['openai-codex'].authType !== 'oauth') process.exit(4);

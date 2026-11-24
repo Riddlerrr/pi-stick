@@ -47,11 +47,15 @@ function stageFixture(
 		mode: "read-write",
 		tools: [] as string[],
 	};
+	const id = runId();
 	const job = {
-		type: "run",
-		id: runId(),
+		type: "run.v1",
+		id,
+		models: {},
+		requestId: id,
+		continueRun: false,
 		prompt: "task",
-		credentials: { groq: { token: "test-only" } },
+		credentials: { groq: { token: "test-only", validUntil: 1 } },
 		orchestrator: { ...agent, name: "orchestrator" },
 		agents: {
 			worker: { ...agent, name: "worker" },
@@ -90,11 +94,11 @@ function stageFixture(
 	return { run, dir, job, stub };
 }
 
-test("runtime rejects an untyped job from an incompatible launcher", async (t) => {
+test("runtime rejects an old launcher before starting a session", async (t) => {
 	const { job, run } = stageFixture(t);
-	const result = await run({ ...job, type: undefined });
+	const result = await run({ ...job, type: "run" });
 	assert.equal(result.status, 1);
-	assert.match(result.stderr, /Expected run command/);
+	assert.match(result.stderr, /run revision/);
 });
 
 test("runtime requires a real checkout directory", async (t) => {

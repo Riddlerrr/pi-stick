@@ -18,7 +18,7 @@ export function createLogsTool(call: AgentRpc) {
 		},
 		replay: "safe",
 		execute: async (args, api) => {
-			const res = await call("logs", args as Record<string, unknown>, api.conversationId);
+			const res = await call({ ...(args as { service?: string; tail?: number }), type: "logs" }, api.conversationId);
 			return { output: [{ type: "text" as const, text: res.text }], isError: !!res.error };
 		},
 	});

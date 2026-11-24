@@ -15,7 +15,7 @@ export function createRestartTool(call: AgentRpc) {
 		},
 		callers: ["model"],
 		execute: async (args, api) => {
-			const res = await call("restart", args as Record<string, unknown>, api.conversationId);
+			const res = await call({ ...(args as { service: string }), type: "restart" }, api.conversationId);
 			return { output: [{ type: "text" as const, text: res.text }], isError: !!res.error };
 		},
 	});

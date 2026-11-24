@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+
 import { createModels, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
@@ -27,7 +27,17 @@ import {
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
-import { type CredentialPayload, runtimeCredentials } from "./runtime-auth.ts";
+import {
+	type Job,
+	type AgentRuntimeSpec,
+	type Method,
+	type RpcCall,
+	type RpcData,
+	type RuntimeMessage,
+	readJob,
+	readReply,
+} from "./runtime-tools/protocol.ts";
+import { runtimeCredentials } from "./runtime-auth.ts";
 import { createBashTool } from "./runtime-tools/bash.ts";
 import { type BatchResult, createDelegateTool, type DelegateTasks } from "./runtime-tools/delegate.ts";
 import { createEditTool } from "./runtime-tools/edit.ts";
@@ -46,48 +56,6 @@ const WORKSPACE_DIR = process.env.PI_STICK_WORKSPACE_DIR ?? CONTAINER_REPO_DIR;
 const SCRATCH_DIR = process.env.PI_STICK_SCRATCH_DIR ?? "/scratch";
 const CONTEXT_DIR = process.env.PI_STICK_CONTEXT_DIR ?? "/context";
 
-interface AgentRuntimeSpec {
-	name: string;
-	description?: string;
-	model: { provider: string; modelId: string };
-	instructions: string;
-	mode: "read-only" | "read-write";
-	tools: string[];
-	thinkingLevel?: ModelThinkingLevel;
-	maxTurns?: number;
-}
-
-interface StageRuntimeSpec {
-	name: string;
-	parallel: string[];
-	prompt?: string;
-}
-
-interface Job {
-	type: "run";
-	id: string;
-	check?: boolean;
-	models?: Record<string, Model<Api>[]>;
-	credentials?: Record<string, CredentialPayload>;
-	orchestrator?: AgentRuntimeSpec;
-	agents?: Record<string, AgentRuntimeSpec>;
-	stageContext?: "previous" | "all";
-	stages?: StageRuntimeSpec[];
-	prompt?: string;
-	requestId?: string;
-	continueRun?: boolean;
-}
-
-interface RpcResponseMessage {
-	type: "exec_chunk" | "response";
-	id: string;
-	command?: string;
-	success?: boolean;
-	error?: string;
-	chunk?: string;
-	data?: { text: string; error?: boolean; exitCode?: number };
-}
-
 interface AgentContext {
 	name: string;
 	label: string;
@@ -95,7 +63,7 @@ interface AgentContext {
 	scratchDir: string;
 }
 
-const send = (data: unknown) => {
+const send = (data: RuntimeMessage) => {
 	writeProtocol(`${JSON.stringify(data)}\n`);
 };
 
@@ -103,8 +71,8 @@ const rl = createInterface({ input: process.stdin });
 const pendingRpc = new Map<
 	string,
 	{
-		command: string;
-		resolve: (res: { text: string; error?: boolean; exitCode?: number }) => void;
+		command: Method;
+		resolve: (res: RpcData) => void;
 		reject: (err: Error) => void;
 		onChunk?: (chunk: Buffer) => void;
 	}
@@ -115,43 +83,29 @@ function readInitialJob(): Promise<Job> {
 	return new Promise((resolve, reject) => {
 		let gotFirst = false;
 		rl.on("line", (line) => {
-			let msg: unknown;
-			try {
-				msg = JSON.parse(line);
-			} catch (err) {
-				if (!gotFirst) reject(err instanceof Error ? err : Error(String(err)));
-				return;
-			}
 			if (!gotFirst) {
 				gotFirst = true;
-				if (!msg || typeof msg !== "object" || !("type" in msg) || msg.type !== "run")
-					reject(Error("Expected run command; check CLI and container versions"));
-				else resolve(msg as Job);
+				try {
+					resolve(readJob(line));
+				} catch (err) {
+					reject(err);
+				}
 				return;
 			}
-			const reply = msg as RpcResponseMessage;
-			if (typeof reply?.id === "string") {
-				const pending = pendingRpc.get(reply.id);
-				if (pending) {
-					if (reply.type === "exec_chunk" && pending.command === "exec" && typeof reply.chunk === "string") {
-						try {
-							pending.onChunk?.(Buffer.from(reply.chunk, "base64"));
-						} catch (err) {
-							send({ type: "cancel_exec", id: reply.id });
-							pending.reject(err as Error);
-							pendingRpc.delete(reply.id);
-						}
-						return;
-					}
-					pendingRpc.delete(reply.id);
-					if (reply.type !== "response" || reply.command !== pending.command)
-						pending.reject(Error("Unexpected host response"));
-					else if (reply.success === false && typeof reply.error === "string")
-						pending.resolve({ text: reply.error, error: true });
-					else if (reply.success === true && typeof reply.data?.text === "string") pending.resolve(reply.data);
-					else pending.reject(Error("Invalid RPC reply from host"));
+			const reply = readReply(line, pendingRpc);
+			const pending = pendingRpc.get(reply.id)!;
+			if (reply.type === "exec_chunk") {
+				try {
+					pending.onChunk?.(Buffer.from(reply.chunk, "base64"));
+				} catch (err) {
+					send({ type: "cancel_exec", id: reply.id });
+					pending.reject(err as Error);
+					pending.onChunk = undefined;
 				}
+				return;
 			}
+			pendingRpc.delete(reply.id);
+			pending.resolve(reply.success ? reply.data : { text: reply.error, error: true });
 		});
 		rl.on("close", () => {
 			if (!gotFirst) reject(Error("Host launcher disconnected before job initialization"));
@@ -164,8 +118,7 @@ function readInitialJob(): Promise<Job> {
 }
 
 async function callHostRpc(
-	method: string,
-	params: Record<string, unknown>,
+	request: RpcCall,
 	agent?: string,
 	onChunk?: (chunk: Buffer) => void,
 	signal?: AbortSignal,
@@ -175,8 +128,8 @@ async function callHostRpc(
 	const cancel = () => send({ type: "cancel_exec", id: id });
 	try {
 		return await new Promise((resolve, reject) => {
-			pendingRpc.set(id, { command: method, resolve, reject, onChunk });
-			send({ ...params, agent, type: method, id });
+			pendingRpc.set(id, { command: request.type, resolve, reject, onChunk });
+			send({ ...request, agent, id });
 			signal?.addEventListener("abort", cancel, { once: true });
 		});
 	} finally {
@@ -244,7 +197,7 @@ function resolveAgentPath(rawPath: string, agentCtx: AgentContext, forWrite: boo
 const hostDisconnected = () => process.exit(1);
 process.stdin.once("end", hostDisconnected);
 const job = await readInitialJob();
-if (!/^[0-9a-f]{32}$/.test(job.id)) throw Error("Invalid run ID");
+
 // Resolve only the mount parent so a replacement symlink cannot redefine the workspace boundary.
 const workspaceRoot = join(canonicalBase(dirname(WORKSPACE_DIR)), basename(WORKSPACE_DIR));
 if (!fs.lstatSync(workspaceRoot, { throwIfNoEntry: false })?.isDirectory())
@@ -252,13 +205,13 @@ if (!fs.lstatSync(workspaceRoot, { throwIfNoEntry: false })?.isDirectory())
 
 const allProviders = builtinProviders();
 const models = createModels({
-	credentials: runtimeCredentials(job.credentials ?? {}, allProviders, async (provider) => {
-		const result = await callHostRpc("refresh_token", { provider });
+	credentials: runtimeCredentials(job.credentials, allProviders, async (provider) => {
+		const result = await callHostRpc({ type: "refresh_token", provider });
 		if (result.error) throw Error("Host could not renew OAuth token");
 		return JSON.parse(result.text);
 	}),
 });
-delete job.credentials;
+job.credentials = {};
 
 for (const provider of allProviders) {
 	const extra = job.models?.[provider.id];
@@ -449,7 +402,7 @@ async function runParallelBatch(
 	const allReadOnly = batch.every((b) => b.spec.mode === "read-only");
 	let cleanlinessWarning: string | undefined;
 	const trackedStatus = async () => {
-		const res = await callHostRpc("check_clean", {});
+		const res = await callHostRpc({ type: "check_clean" });
 		if (!res.error) return res.text;
 		cleanlinessWarning = `WARNING: Could not verify tracked files in read-only round '${batchLabel}': ${res.text}`;
 		emitProgress(cleanlinessWarning, stageProgressLabel);
@@ -506,7 +459,7 @@ const delegateBatch = defineTask<DelegateTasks, { phase: "run" }, BatchResult>({
 	},
 });
 
-const agentRpc: AgentRpc = (method, params, id) => callHostRpc(method, params, getAgentCtx(id).name);
+const agentRpc: AgentRpc = (request, id) => callHostRpc(request, getAgentCtx(id).name);
 
 const toolMap = new Map<string, ToolRegistration>([
 	["read", createReadTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
@@ -517,7 +470,7 @@ const toolMap = new Map<string, ToolRegistration>([
 	[
 		"bash",
 		createBashTool(
-			(args, id, onChunk, signal) => callHostRpc("exec", args, getAgentCtx(id).name, onChunk, signal),
+			(args, id, onChunk, signal) => callHostRpc({ ...args, type: "exec" }, getAgentCtx(id).name, onChunk, signal),
 			(id) => resolveAgentPath(`/scratch/${getAgentCtx(id).name}`, getAgentCtx(id), true),
 		),
 	],
@@ -760,19 +713,24 @@ try {
 				emitProgress("Warning: session usage snapshot unavailable");
 				return undefined;
 			});
-			const data = {
-				report,
-				usage,
-				...(report && Object.keys(agentOutputs).length ? { outputs: agentOutputs } : {}),
-			};
-			send({
-				type: "response",
-				command: "run",
-				id: job.id,
-				success: report !== undefined,
-				error: report === undefined ? "Action failed" : undefined,
-				data,
-			});
+			send(
+				report === undefined
+					? {
+							type: "response",
+							command: "run",
+							id: job.id,
+							success: false,
+							error: "Action failed",
+							data: { usage },
+						}
+					: {
+							type: "response",
+							command: "run",
+							id: job.id,
+							success: true,
+							data: { report, usage, ...(Object.keys(agentOutputs).length ? { outputs: agentOutputs } : {}) },
+						},
+			);
 		}
 	}
 } finally {
@@ -805,7 +763,7 @@ async function runAction(): Promise<string> {
 				return { spec: agentSpec, prompt: stagePrompt, requireReport };
 			});
 			const { results, cleanlinessWarning } = await runParallelBatch(batch, `stage:${stage.name}`, {
-				stageKey: `${job.requestId ?? job.id}:${index}:${stage.name}`,
+				stageKey: `${job.requestId}:${index}:${stage.name}`,
 			});
 			const failures = results.filter((r) => !r.ok);
 			if (failures.length) {

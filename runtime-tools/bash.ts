@@ -8,8 +8,11 @@ const MAX_LINES = 2000;
 const PROGRAM_BYTES = 1024 * 1024;
 const SPILL_BYTES = 32 * 1024 * 1024;
 
+import type { RpcCall } from "./protocol.ts";
+
+type BashArgs = Omit<Extract<RpcCall, { type: "exec" }>, "type">;
 type RunCommand = (
-	args: Record<string, unknown>,
+	args: BashArgs,
 	id: ConversationId,
 	onChunk: (chunk: Buffer) => void,
 	signal?: AbortSignal,
@@ -65,7 +68,7 @@ export function createBashTool(run: RunCommand, scratch: (id: ConversationId) =>
 			};
 			try {
 				const result = await run(
-					args as Record<string, unknown>,
+					args as BashArgs,
 					api.conversationId,
 					(chunk) => {
 						size += chunk.length;

@@ -36,6 +36,8 @@ On upgrade, accept all listed release changes or cancel. Local edits inside rele
 
 ### Source install (Node.js 24.12+)
 
+The host and agent image use a private, versioned protocol. After a protocol change, run `pistick containers build` before starting or resuming an agent; there is no compatibility mode for older images.
+
 The host CLI runs directly from TypeScript using Node built-ins only (no host npm runtime dependencies). Dependencies for `agent-runtime.ts` (`@earendil-works/*`) live inside the Docker image:
 
 ```sh

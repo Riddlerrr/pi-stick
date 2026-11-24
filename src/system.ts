@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import type { CredentialPayload } from "../runtime-auth.ts";
+import { type HostMessage, isRequest, type Job, RUN, readRuntime } from "../runtime-tools/protocol.ts";
 import { agentName, IMAGE, isolatedRun } from "./container.ts";
 import { ASSETS, closed, devMode, json, output, ROOT, run, runId, settingsPath, userSettings } from "./platform.ts";
 import { CONTAINER_REPO_DIR, CONTAINER_WORKSPACE_DIR, validateCompose } from "./tasks.ts";
@@ -18,7 +19,7 @@ export interface ModelSpec {
 }
 
 export interface ResolvedAuth {
-	models: Record<string, unknown[]>;
+	models: Job["models"];
 	credentials: Record<string, CredentialPayload>;
 }
 
@@ -32,7 +33,7 @@ export function parseModelSpec(spec: string): ModelSpec {
 	return { provider, modelId, raw: `${provider}/${modelId}` };
 }
 
-function readLocalCatalog(): Record<string, { models?: Array<{ id?: string; [k: string]: unknown }> }> {
+function readLocalCatalog(): Record<string, { models?: Job["models"][string] }> {
 	const file = join(homedir(), ".pi/agent/models-store.json");
 	if (!fs.existsSync(file)) return {};
 	try {
@@ -82,14 +83,14 @@ export async function resolveModels(specs: string[]): Promise<ResolvedAuth> {
 	const parsed = specs.map(parseModelSpec);
 	const catalog = readLocalCatalog();
 	const authTypes = readAuthTypes();
-	const models: Record<string, unknown[]> = {};
+	const models: Job["models"] = {};
 	const credentials: ResolvedAuth["credentials"] = Object.create(null);
 
 	for (const { provider, modelId, raw } of parsed) {
 		const catalogEntry = catalog[provider]?.models?.find((m) => m.id === modelId);
 		if (catalogEntry) {
 			models[provider] ??= [];
-			if (!models[provider].some((m) => (m as { id?: string }).id === modelId)) {
+			if (!models[provider].some((m) => m.id === modelId)) {
 				models[provider].push(catalogEntry);
 			}
 		}
@@ -153,7 +154,7 @@ export async function probe(image = IMAGE): Promise<void> {
 	const exit = closed(child);
 	exit.catch(() => {});
 	child.stdin.on("error", () => {});
-	const send = (data: unknown) =>
+	const send = (data: HostMessage) =>
 		new Promise<void>((resolve, reject) =>
 			child.stdin.write(`${JSON.stringify(data)}\n`, (err) => (err ? reject(err) : resolve())),
 		);
@@ -162,15 +163,15 @@ export async function probe(image = IMAGE): Promise<void> {
 	try {
 		const id = runId();
 		await send({
-			type: "run",
+			type: RUN,
 			id,
 			check: true,
 			models: {},
 			credentials: {},
 		});
 		for await (const line of lines) {
-			const msg = JSON.parse(line);
-			if (typeof msg.id === "string" && ["ps", "logs", "exec", "check_clean", "restart"].includes(msg.type)) {
+			const msg = readRuntime(line);
+			if (isRequest(msg) && msg.type !== "refresh_token") {
 				if (msg.type === "exec") {
 					await send({ type: "exec_chunk", id: msg.id, chunk: Buffer.from("probe-bash").toString("base64") });
 					await send({
@@ -195,7 +196,7 @@ export async function probe(image = IMAGE): Promise<void> {
 				msg.command === "run" &&
 				msg.id === id &&
 				msg.success === true &&
-				msg.data?.ready === true
+				"ready" in msg.data
 			) {
 				ready = true;
 				break;
@@ -204,7 +205,8 @@ export async function probe(image = IMAGE): Promise<void> {
 		}
 		child.stdin.end();
 		const [code] = await exit;
-		if (code !== 0 || !ready) throw Error("Ephemeral agent runtime self-check failed");
+		if (code !== 0 || !ready)
+			throw Error("Ephemeral agent runtime self-check failed; if incompatible, run pistick containers build");
 	} finally {
 		lines.close();
 		child.stdin.destroy();
