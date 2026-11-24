@@ -36,7 +36,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-docker build -q -t "$PI_STICK_IMAGE" .
+"$cli" containers build
+"$cli" containers status
 printf '#!/bin/sh\nprintf "fixture-token\\n"\n' > "$tmp/bin/pi"
 chmod +x "$tmp/bin/pi"
 cat > "$HOME/.pi/agent/models-store.json" <<'JSON'

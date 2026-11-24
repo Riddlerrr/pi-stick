@@ -41,18 +41,26 @@ if ! $reuse && [[ $app != "$previous" && ( -e $launcher || -L $launcher ) ]]; th
     die "Move the existing $launcher aside first."
 fi
 
-repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 asset="pi-stick-linux-$arch.tar.gz"
 curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
   "https://github.com/Riddlerrr/pi-stick/releases/latest/download/$asset" -o "$tmp/$asset"
-tar -xzf "$tmp/$asset" -C "$tmp" --no-same-owner pi-stick/pistick
+tar -xzf "$tmp/$asset" -C "$tmp" --no-same-owner pi-stick/pistick pi-stick/share
+files="$tmp/pi-stick/share"
 binary="$tmp/pi-stick/pistick"
-[[ -f $binary && -x $binary ]] || die "Missing release binary."
-(cd "$repo" && ./scripts/stage-release.sh "$tmp/checkout")
-files="$tmp/checkout/share"
-printf 'CLI: latest Linux release. Runtime files: %s\n' "$repo"
+[[ -f $binary && -x $binary && ! -L $binary ]] || die "Missing release binary."
+# Only install release-owned paths; never copy the archive over operator data.
+managed=(Dockerfile .dockerignore package.json package-lock.json agent-runtime.ts runtime-auth.ts action.schema.json)
+for name in "${managed[@]}"; do
+  [[ -f $files/$name && ! -L $files/$name ]] || die "Missing release file: $name"
+done
+for name in project-template runtime-tools; do
+  [[ -d $files/$name && ! -L $files/$name ]] || die "Missing release directory: $name"
+done
+managed+=(project-template runtime-tools pistick)
+mv -T -- "$binary" "$files/pistick"
+printf 'CLI and runtime: %s\n' "$asset"
 
 if $reuse; then
   [[ -d $app/state && ! -L $app/state ]] || die "Unexpected state directory."
@@ -63,39 +71,32 @@ if $reuse; then
     fi
   done
   shopt -u nullglob
-  mv -- "$binary" "$files/pistick"
   changed=()
-  shopt -s globstar dotglob
-  for src in "$files"/**/*; do
-    [[ -f $src ]] || continue
-    rel=${src#"$files/"}
-    case $rel in state|state/*|projects|projects/*|actions|actions/*) die "Unexpected release path: $rel" ;; esac
-    dest="$app/$rel"
-    [[ $(realpath -m -- "$dest") == "$dest" && ( ! -e $dest || -f $dest ) ]] || die "Unsafe update path: $dest"
-    if [[ ! -f $dest ]]; then echo "Missing: $rel"
-    elif cmp -s -- "$src" "$dest"; then continue
-    else echo "Changed: $rel"; fi
-    changed+=("$rel")
+  for name in "${managed[@]}"; do
+    dest="$app/$name"
+    [[ ! -L $dest ]] || die "Unsafe update path: $dest"
+    if [[ ! -e $dest ]]; then echo "Missing: $name"
+    elif [[ -d $dest && -d $files/$name ]]; then
+      if diff -qr --no-dereference -- "$files/$name" "$dest" >/dev/null; then continue; fi
+      echo "Changed: $name"
+    elif [[ -f $dest && -f $files/$name ]]; then
+      if cmp -s -- "$files/$name" "$dest" && [[ $name != pistick || -x $dest ]]; then continue; fi
+      echo "Changed: $name"
+    else die "Unexpected update path: $dest"
+    fi
+    changed+=("$name")
   done
   if ((${#changed[@]})); then
-    printf 'Replace all listed files (A), skip all (s), or choose per file (p)? [A] ' >&2
-    IFS= read -r choice || die 'No choice received.'
-    case ${choice,,} in
-      ''|a|all) ;;
-      s|skip) changed=() ;;
-      p|per-file)
-        selected=()
-        for rel in "${changed[@]}"; do
-          printf 'Install new copy of %s? [y/N] ' "$rel" >&2
-          IFS= read -r answer || die 'No choice received.'
-          case ${answer,,} in y|yes) selected+=("$rel") ;; ''|n|no) ;; *) die 'Expected yes or no.' ;; esac
-        done
-        changed=("${selected[@]}") ;;
-      *) die 'Expected all, skip, or per-file.' ;;
+    printf 'Replace all listed release files and directories together? [Y/n] ' >&2
+    IFS= read -r answer || die "No choice received."
+    case ${answer,,} in
+      ''|y|yes) ;;
+      n|no) echo 'Installation unchanged.'; exit 0 ;;
+      *) die "Expected yes or no." ;;
     esac
-    for rel in "${changed[@]}"; do
-      mkdir -p -- "$(dirname "$app/$rel")"
-      mv -fT -- "$files/$rel" "$app/$rel"
+    for name in "${changed[@]}"; do
+      if [[ -d $app/$name ]]; then rm -r -- "$app/$name"; fi
+      mv -fT -- "$files/$name" "$app/$name"
     done
   else
     echo 'Installed files are unchanged.'
@@ -103,24 +104,24 @@ if $reuse; then
 else
   mkdir -p -- "$(dirname "$app")" "$bin"
   mkdir -- "$app"
-  cp -R -- "$files/." "$app/"
-  install -m 755 -- "$binary" "$app/pistick"
+  for name in "${managed[@]}"; do mv -T -- "$files/$name" "$app/$name"; done
   mkdir -p -- "$app/projects" "$app/actions" "$app/state/runs"
   write_launcher "$app" > "$tmp/launcher"
   chmod 755 "$tmp/launcher"
   mv -T -- "$tmp/launcher" "$launcher"
   printf 'Installed %s. Add %s to PATH if needed.\n' "$launcher" "$bin"
 fi
+if "$launcher" containers status; then exit 0; fi
 while true; do
   printf 'Build the pi-stick agent Docker image and run pistick doctor? [Y/n] ' >&2
   IFS= read -r answer || die "No input received. Image not built."
   case ${answer,,} in
     ''|y|yes)
-      (cd "$app" && docker build -t pi-stick:current .)
+      "$launcher" containers build
       "$launcher" doctor
       break ;;
     n|no)
-      printf 'To build and check later: cd %q && docker build -t pi-stick:current . && %q doctor\n' "$app" "$launcher"
+      printf 'To build and check later: %q containers build && %q doctor\n' "$launcher" "$launcher"
       break ;;
     *) echo "Please enter Y or N." >&2 ;;
   esac

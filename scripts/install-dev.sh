@@ -306,7 +306,7 @@ if [[ $dev_dir != "$default_dev_real" ]]; then
   printf 'Note: custom dev directory selected; run with PI_STICK_DEV_HOME=%q ./pistick-dev ...\n' "$dev_dir"
 fi
 
-if ! $no_build; then
+if ! $no_build && ! PI_STICK_DEV_HOME="$dev_dir" "$repo/pistick-dev" containers status; then
   do_build=false
   if $yes; then
     do_build=true
@@ -323,11 +323,11 @@ if ! $no_build; then
   fi
 
   if $do_build; then
-    (cd "$repo" && docker build -t pi-stick:dev .)
+    PI_STICK_DEV_HOME="$dev_dir" "$repo/pistick-dev" containers build
     PI_STICK_DEV_HOME="$dev_dir" "$repo/pistick-dev" doctor
   else
     if [[ $dev_dir != "$default_dev_real" ]]; then
-      printf 'To build and check later: npm run build:image:dev && PI_STICK_DEV_HOME=%q ./pistick-dev doctor\n' "$dev_dir"
+      printf 'To build and check later: PI_STICK_DEV_HOME=%q ./pistick-dev containers build && PI_STICK_DEV_HOME=%q ./pistick-dev doctor\n' "$dev_dir" "$dev_dir"
     else
       printf 'To build and check later: npm run build:image:dev && ./pistick-dev doctor\n'
     fi

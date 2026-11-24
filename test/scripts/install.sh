@@ -1,59 +1,53 @@
 #!/usr/bin/env bash
-# Smoke-test the installer against the latest published release.
+# Exercise the release installer without a checkout, network, or Docker daemon.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
-export HOME="$tmp" LC_ALL=C
+export HOME="$tmp/home" PATH="$tmp/bin:$PATH" LC_ALL=C
 unset PI_STICK_HOME
+mkdir -p "$HOME" "$tmp/bin"
+cp scripts/install.sh "$tmp/install.sh"
+./scripts/stage-release.sh "$tmp/pi-stick"
+printf '#!/bin/sh\nif [ "$*" = "containers status" ]; then test -f "$HOME/current"; exit $?; fi\necho "v1 $*" >> "$HOME/cli.log"\n' > "$tmp/pi-stick/pistick"
+chmod +x "$tmp/pi-stick/pistick"
+export ARCHIVE="$tmp/release.tar.gz"
+printf '#!/usr/bin/env bash\ncp "$ARCHIVE" "${!#}"\n' > "$tmp/bin/curl"
+chmod +x "$tmp/bin/curl"
+pack() { tar czf "$ARCHIVE" -C "$tmp" pi-stick; }
+install_with() { printf '%b' "$1" | "$tmp/install.sh" > "$tmp/log" 2>&1; }
 app="$HOME/custom install"
-mkdir -p "$HOME/.local/bin"
-ln -s "$app/pistick" "$HOME/.local/bin/pistick"
-export PATH="$HOME/.local/bin:$PATH"
-printf '%s\n' '#!/usr/bin/env bash' 'echo "$PWD: $*" >> "$HOME/docker.log"' '[[ $1 == compose ]]' > "$HOME/.local/bin/docker"
-chmod +x "$HOME/.local/bin/docker"
-# Use a checkout-only change that cannot be present in the published archive.
-./scripts/stage-release.sh "$tmp/fixture"
-repo="$tmp/fixture/share"
-mkdir "$repo/scripts"
-cp scripts/{install,stage-release}.sh "$repo/scripts/"
-cp README.md CHANGELOG.md "$repo/"
-echo '# local checkout' >> "$repo/Dockerfile"
-printf '%s\nn\n' "$app" | "$repo/scripts/install.sh"
-cmp "$repo/Dockerfile" "$app/Dockerfile"
-test ! -e "$HOME/docker.log"
-"$HOME/.local/bin/pistick" cleanup --dry-run
-test -f "$app/state/lock"
-test -f "$app/project-template/.dockerignore"
-test -f "$app/.dockerignore"
-# Blank input rediscovers a custom directory. Identical files are not listed or rewritten.
-unchanged=$(stat -c '%i:%y' "$app/pistick")
-rerun() { printf '%b' "$1" | "$repo/scripts/install.sh" > "$tmp/log" 2>&1; }
-rerun '\nn\n'
+pack
+install_with "$app\nn\n"
+cmp "$tmp/pi-stick/share/package-lock.json" "$app/package-lock.json"
+test ! -e "$HOME/cli.log"
+for dir in state actions projects; do touch "$app/$dir/keep"; done
+install_with '\nn\n'
 grep -F 'Installed files are unchanged.' "$tmp/log"
-if grep -F 'Replace all listed' "$tmp/log"; then exit 1; fi
-printf 'local edit\n' > "$app/compose.yaml"
-rm "$app/.dockerignore"
-touch "$app/projects/keep" "$app/state/keep" "$app/keep"
-rerun '\ns\nn\n'
-grep -Fx 'local edit' "$app/compose.yaml"
-test ! -e "$app/.dockerignore"
-rerun '\np\ny\nn\nn\n'
-test -f "$app/.dockerignore"
-grep -Fx 'local edit' "$app/compose.yaml"
-echo '# newer checkout' >> "$repo/Dockerfile"
-rerun '\n\nn\n'
-cmp "$repo/Dockerfile" "$app/Dockerfile"
-if grep -Fx 'local edit' "$app/compose.yaml"; then exit 1; fi
-test -f "$app/projects/keep"
-test -f "$app/state/keep"
-test -f "$app/keep"
-test "$(stat -c '%i:%y' "$app/pistick")" = "$unchanged"
-if grep -E '(Changed|Missing): pistick$|Install new copy of pistick\?' "$tmp/log"; then exit 1; fi
-if rerun "$tmp\n"; then exit 1; fi
-
-# Default yes starts Compose; doctor must report the missing reviewer and fail the install.
-export HOME="$tmp/second"
-if printf '\n\n' | ./scripts/install.sh > "$tmp/output"; then exit 1; fi
-grep -Fx "$HOME/pi-stick: compose up -d --build --wait" "$HOME/docker.log"
-grep -F 'FAIL Reviewer identity' "$tmp/output"
+printf 'release v2\n' >> "$tmp/pi-stick/share/Dockerfile"
+printf '{"version":"v2"}\n' > "$tmp/pi-stick/share/package-lock.json"
+sed -i s/v1/v2/ "$tmp/pi-stick/pistick"
+touch "$app/runtime-tools/obsolete.ts"
+pack
+install_with '\nn\n'
+grep -F 'Installation unchanged.' "$tmp/log"
+grep -F 'v1' "$app/pistick"
+test -e "$app/runtime-tools/obsolete.ts"
+if cmp -s "$app/package-lock.json" "$tmp/pi-stick/share/package-lock.json"; then exit 1; fi
+mkdir "$app/state/runs/active"
+flock "$app/state/runs/active/lock" bash -c 'if printf "\n\ny\n" | "$1"; then exit 1; fi' _ "$tmp/install.sh"
+install_with '\n\ny\n'
+cmp "$app/pistick" "$tmp/pi-stick/pistick"
+cmp "$app/Dockerfile" "$tmp/pi-stick/share/Dockerfile"
+cmp "$app/package-lock.json" "$tmp/pi-stick/share/package-lock.json"
+test ! -e "$app/runtime-tools/obsolete.ts"
+for dir in state actions projects; do test -f "$app/$dir/keep"; done
+diff -u <(printf 'v2 containers build\nv2 doctor\n') "$HOME/cli.log"
+touch "$HOME/current"
+install_with '\n'
+test "$(wc -l < "$HOME/cli.log")" = 2
+rm "$tmp/pi-stick/share/package-lock.json"
+pack
+if install_with '\n\nn\n'; then exit 1; fi
+grep -F 'Missing release file: package-lock.json' "$tmp/log"
+grep -F v2 "$app/package-lock.json"

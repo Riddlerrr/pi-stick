@@ -18,7 +18,7 @@ import {
 	stopRun,
 	worker,
 } from "./runs.ts";
-import { doctor, update } from "./system.ts";
+import { buildImage, checkImageInputs, doctor } from "./system.ts";
 import { createProject, getProject, listProjects } from "./workspace.ts";
 
 const usage = {
@@ -30,7 +30,7 @@ const usage = {
 	kill: "kill RUN_ID",
 	resume: "resume RUN_ID [--retry-hook]",
 	continue: "continue RUN_ID PROMPT [--keep-up]",
-	containers: "containers (stop RUN_ID | update [--yes])",
+	containers: "containers (stop RUN_ID | build | status)",
 	diff: "diff RUN_ID",
 	cleanup: "cleanup [--dry-run] [--days DAYS]",
 	doctor: "doctor",
@@ -64,7 +64,7 @@ type Command =
 	| { cmd: "diff"; id: string }
 	| { cmd: "cleanup"; days: number; dry: boolean }
 	| { cmd: "doctor" }
-	| { cmd: "update"; yes: boolean };
+	| { cmd: "build" | "image-status" };
 
 function parse(cmd: string, args: string[]): Command {
 	const flags = <const T extends Record<string, { type: "string" | "boolean"; multiple?: boolean }>>(options: T) =>
@@ -138,9 +138,9 @@ function parse(cmd: string, args: string[]): Command {
 			if (subcommand === "stop") {
 				const { positionals: p } = flags({});
 				if (p.length === 1) return { cmd: "stop", id: p[0] };
-			} else if (subcommand === "update") {
-				const { positionals: p, values: v } = flags({ yes: { type: "boolean" } });
-				if (!p.length) return { cmd: "update", yes: v.yes === true };
+			} else if (subcommand === "build" || subcommand === "status") {
+				const { positionals: p } = flags({});
+				if (!p.length) return { cmd: subcommand === "build" ? "build" : "image-status" };
 			}
 			break;
 		}
@@ -251,8 +251,12 @@ export async function main(rawArgs: string[]) {
 			return 0;
 		case "doctor":
 			return (await doctor([["Action manifests", () => validateAllActions(listProjects())]])) ? 0 : 1;
-		case "update":
-			await update(action.yes, activeRunIds().length);
+		case "image-status":
+			checkImageInputs();
+			console.log("Agent image matches installed build inputs; no rebuild needed.");
+			return 0;
+		case "build":
+			buildImage(activeRunIds().length);
 			return 0;
 	}
 }

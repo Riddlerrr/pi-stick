@@ -27,6 +27,8 @@ function fixture(t: TestContext) {
 			"pistick",
 			"pistick-dev",
 			"package.json",
+			"package-lock.json",
+			".dockerignore",
 			"project-template",
 			"agent-runtime.ts",
 			"runtime-auth.ts",
@@ -104,11 +106,45 @@ test("version reports the CLI package version without creating state", (t) => {
 
 test("container-only commands require the containers namespace", (t) => {
 	const { ok, fail } = fixture(t);
-	assert.match(ok(["containers", "--help"]), /containers .*stop RUN_ID .*update/);
+	assert.match(ok(["containers", "--help"]), /containers .*stop RUN_ID .*build/);
 	fail(["containers", "stop", "bad-id"], /Invalid run ID/);
 	fail(["containers", "stop", "--yes"], /Unknown option/);
-	fail(["containers", "update", "extra"], /Usage: pistick containers/);
-	for (const cmd of ["stop", "update"]) fail([cmd], /Usage:/);
+	fail(["containers", "update"], /Usage: pistick containers/);
+	fail(["containers", "build", "extra"], /Usage: pistick containers/);
+	for (const cmd of ["stop", "update", "build"]) fail([cmd], /Usage:/);
+});
+
+test("containers build passes the installed lockfile to Docker without sending run state", (t) => {
+	const { app, ok, fail, stub, tmp } = fixture(t);
+	const labelFile = join(tmp, "image-label");
+	const lock = read(join(app, "package-lock.json"));
+	stub(
+		"docker",
+		`const assert = require('node:assert/strict'), fs = require('node:fs');
+		const [cmd, labelFlag, label, flag, image, context] = process.argv.slice(2);
+		if (cmd === 'image') { console.log(fs.readFileSync(${JSON.stringify(labelFile)}, 'utf8')); process.exit(0); }
+		assert.equal(labelFlag, '--label');
+		assert.match(label, /^io\\.pi-stick\\.build-inputs\\.sha256=[0-9a-f]{64}$/);
+		fs.writeFileSync(${JSON.stringify(labelFile)}, label.split('=')[1]);
+		assert.deepEqual([cmd, flag, image], ['build', '-t', ${JSON.stringify(process.env.PI_STICK_IMAGE || "pi-stick:current")}]);
+		assert.equal(fs.readFileSync(context + '/package-lock.json', 'utf8'), fs.readFileSync(${JSON.stringify(join(app, "package-lock.json"))}, 'utf8'));
+		assert.ok(!fs.existsSync(context + '/state'));
+		console.log('built');`,
+	);
+	assert.match(ok(["containers", "build"]), /built/);
+	assert.equal(read(join(app, "package-lock.json")), lock);
+	fs.writeFileSync(join(app, "state/irrelevant"), "changed");
+	ok(["containers", "status"]);
+	fs.appendFileSync(join(app, "package-lock.json"), "\n");
+	fail(["containers", "status"], /does not match.*containers build/);
+	ok(["containers", "build"]);
+	ok(["containers", "status"]);
+	fs.writeFileSync(labelFile, "");
+	fail(["containers", "status"], /no build fingerprint/);
+	fs.unlinkSync(labelFile);
+	fail(["containers", "status"], /Cannot inspect/);
+	fs.symlinkSync(join(app, "state/irrelevant"), join(app, "runtime-tools/linked.ts"));
+	fail(["containers", "build"], /Expected a regular build input/);
 });
 
 test("create project clones independent workspaces without GitHub coupling", (t) => {
@@ -440,8 +476,8 @@ test("per-run locks allow concurrent runs, follow, diff, and selective cleanup",
 		assert.match(allOut, new RegExp(idA));
 		assert.match(allOut, new RegExp(idB));
 
-		// Update refuses while run A is active
-		fail(["containers", "update", "--yes"], /active/);
+		// Build refuses while run A is active
+		fail(["containers", "build"], /active/);
 
 		// Cleanup cleans finished run B while leaving locked active run A untouched
 		assert.match(ok(["cleanup", "--dry-run"]), new RegExp(idB));
@@ -666,6 +702,8 @@ test("doctor checks Git in the selected image independently of its bundled runti
 	stub(
 		"docker",
 		`const a = process.argv.slice(2);
+		if (a[0] === 'build') require('fs').writeFileSync(${JSON.stringify(join(tmp, "label"))}, a[a.indexOf('--label')+1].split('=')[1]);
+		if (a[0] === 'image') console.log(require('fs').readFileSync(${JSON.stringify(join(tmp, "label"))},'utf8'));
 		if (a[0] !== 'run') process.exit(0);
 		if (a.includes('/app/agent-runtime.ts')) require('node:readline').createInterface({input:process.stdin}).once('line', line => console.log(JSON.stringify({type:'response', command:'run', id:JSON.parse(line).id, success:true, data:{ready:true}})));
 		else if (a.slice(-3).join(' ') === 'pi-stick:current git --version' && a[a.indexOf('--network')+1] === 'none' && !a.includes('-v')) {
@@ -673,6 +711,7 @@ test("doctor checks Git in the selected image independently of its bundled runti
 			console.log('git version 2.39.5');
 		} else process.exit(1);`,
 	);
+	assert.equal(invoke(["containers", "build"]).status, 0);
 	const missing = invoke(["doctor"]);
 	assert.equal(missing.status, 1);
 	assert.match(missing.stdout, /FAIL.*Cannot run git --version in agent image 'pi-stick:current'/);
@@ -1607,7 +1646,7 @@ test("install-dev.sh prepares dev folder, suggests Pi default model, supports fr
 	assert.ok(fs.existsSync(join(devDir, ".pi-stick-dev")));
 	assert.deepEqual(JSON.parse(read(join(devDir, "settings.json"))), { default_model: "openai-codex/smart" });
 	assert.ok(!fs.existsSync(join(tmp, ".local/bin")), "should not install launcher into ~/.local/bin");
-	assert.ok(!fs.existsSync(dockerLog), "should skip docker build when answered n");
+	assert.match(read(dockerLog), /^image inspect [^\n]+\n$/);
 
 	// 2. Keep mode preserves existing state and allows overriding default_model
 	fs.writeFileSync(join(devDir, "projects/keep-marker"), "present");

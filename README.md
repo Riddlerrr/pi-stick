@@ -24,19 +24,21 @@ A Linux CLI platform for running independent, isolated AI tasks against local Do
 
 ## Install
 
-Requires Linux, Git, util-linux `flock`, Docker with Compose/Buildx, and Pi (`pi auth`) for model credentials. `npm` is needed for `pistick containers update`.
+Requires Linux, Git, util-linux `flock`, Docker with Compose/Buildx, and Pi (`pi auth`) for model credentials. The agent image builds from the supplied `Dockerfile` and `package-lock.json` (from the checkout in dev mode). Building does not require host npm, update dependencies, or start a container. Use `pistick doctor` to check the result.
 
 ### Interactive Linux installer
 
-From this checkout, run `./scripts/install.sh` as your normal user (no sudo). It installs the CLI and runtime files into `~/pi-stick` (or `$PI_STICK_HOME`), creates `projects/`, `actions/`, and `state/`, installs a launcher in `~/.local/bin/pistick`, and offers to build `pi-stick:current` and run `pistick doctor`. Projects, actions, and run state are never overwritten on upgrade.
+Run `./scripts/install.sh` as your normal user (no sudo). It downloads the Linux archive for your architecture and installs both its CLI and its runtime files (including `package-lock.json`) into `~/pi-stick` or `$PI_STICK_HOME`; it does not take runtime files from a local checkout. The launcher is `~/.local/bin/pistick`.
+
+On upgrade, accept all listed release changes or cancel. Local edits inside release-owned directories (`runtime-tools/`, `project-template/`) are replaced; `projects/`, `actions/`, and `state/` are preserved. If the image already matches the installed build inputs, no rebuild is offered. Otherwise image rebuild is a separate prompt: accept to run `pistick containers build` and `pistick doctor`, or skip to keep the previous image.
 
 ### Source install (Node.js 24.12+)
 
 The host CLI runs directly from TypeScript using Node built-ins only (no host npm runtime dependencies). Dependencies for `agent-runtime.ts` (`@earendil-works/*`) live inside the Docker image:
 
 ```sh
-docker build -t pi-stick:current .
 ln -s "$PWD/pistick" ~/.local/bin/pistick
+pistick containers build
 pistick doctor
 ```
 
@@ -163,7 +165,8 @@ pistick kill RUN_ID                     # forcibly interrupt an active attempt
 pistick containers stop RUN_ID          # stop an inactive run's project containers; keep its workspace and history
 pistick cleanup [--dry-run] [--days 7]  # delete old finished or interrupted runs, including volumes & sessions
 pistick doctor                          # check Docker, image self-check, auth, recipes & actions
-pistick containers update [--yes]       # rebuild pi-stick:current with latest dependencies
+pistick containers status               # compare installed build inputs with the image fingerprint
+pistick containers build                # (re)build the configured agent image from the shipped lockfile
 ```
 
 A new task clones the local project checkout and points its `origin` at `project.json`’s `source` before running the `prepare` hook. Use a credential helper or SSH key; source URLs with embedded credentials, a query string, or a fragment are rejected. `--ref` uses a locally available commit or branch first; only a missing ref triggers a fetch from `origin`. It does not refresh existing branches or update the shared project checkout. For manually configured projects without `project.json`, `origin` remains the local project checkout.

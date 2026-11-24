@@ -2,13 +2,15 @@
 
 ## Unreleased
 
+- The Linux installer now takes the CLI and runtime from the same release archive. Upgrades no longer mix release files with the local checkout or allow per-file selection.
+
 - Run recovery now uses one versioned `run.json` checkpoint. A follow-up is accepted atomically, and a failed final Compose stop can be retried without restarting the stack. Start a new run for tasks created with the previous format; their files are not migrated or deleted.
 
 - The agent mounts the task workspace rather than the nested checkout path and rejects a missing or symlinked checkout at startup. Rebuild the agent image to enable the startup check. The checkout path remains `/workspace/repo`.
 
 - Added `pistick kill RUN_ID` to interrupt an active task while preserving its workspace and session for inspection or resume.
 
-- Moved `pistick stop` and `pistick update` to `pistick containers stop` and `pistick containers update`. The old top-level commands are no longer accepted.
+- Moved `pistick stop` and `pistick update` to `pistick containers stop` and `pistick containers build`. The build uses the shipped lockfile without updating dependencies or changing installed files. `containers status`, `doctor`, and the installers check the image’s build-input fingerprint to detect when a rebuild is needed. The old commands are no longer accepted.
 
 - Agent file tools and runner `exec` now share the checkout path `/workspace/repo`. Rebuild locally built agent images and update any custom agent instructions that use absolute `/workspace/<file>` paths. Repo-relative paths are unchanged.
 

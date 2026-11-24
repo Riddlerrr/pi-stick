@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,21 +7,7 @@ import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import type { CredentialPayload } from "../runtime-auth.ts";
 import { agentName, IMAGE, isolatedRun } from "./container.ts";
-import {
-	ASSETS,
-	closed,
-	devMode,
-	json,
-	output,
-	prompt,
-	ROOT,
-	read,
-	run,
-	runId,
-	STATE,
-	settingsPath,
-	userSettings,
-} from "./platform.ts";
+import { ASSETS, closed, devMode, json, output, ROOT, run, runId, settingsPath, userSettings } from "./platform.ts";
 import { CONTAINER_REPO_DIR, CONTAINER_WORKSPACE_DIR, validateCompose } from "./tasks.ts";
 import { listProjects } from "./workspace.ts";
 
@@ -235,7 +222,7 @@ export async function doctor(extraChecks: Array<[string, () => unknown | Promise
 	const settings = userSettings();
 	const checks: Array<[string, () => unknown | Promise<unknown>]> = [
 		["Docker daemon", () => output(["docker", "info", "--format", "{{.ServerVersion}}"])],
-		[`Agent image (${IMAGE})`, () => output(["docker", "image", "inspect", IMAGE, "--format", "{{.Id}}"])],
+		[`Agent image matches installed build inputs (${IMAGE})`, checkImageInputs],
 		["Ephemeral runtime self-check (Git, durable SQLite, Codemode, JSONL RPC; no model call)", () => probe(IMAGE)],
 		[
 			settings.default_model
@@ -267,76 +254,62 @@ export async function doctor(extraChecks: Array<[string, () => unknown | Promise
 	return ok;
 }
 
-export async function update(yes: boolean, activeRunCount: number) {
-	if (activeRunCount > 0) throw Error(`Cannot update while ${activeRunCount} task run(s) are active`);
-	if (
-		!yes &&
-		(await prompt("Build latest pi-stick agent image and promote after self-checks? [y/N] ")).toLowerCase() !== "y"
-	)
-		return;
-	const id = runId().slice(0, 12);
-	const candidate = `pi-stick:candidate-${id}`;
-	const rollback = `pi-stick:before-${id}`;
-	const files = ["package.json", "package-lock.json", "Dockerfile"];
-	const stage = fs.mkdtempSync(join(tmpdir(), "pi-stick-update-"));
-	const copy = (name: string, from: string, to: string) => fs.copyFileSync(join(from, name), join(to, name));
+const inputLabel = "io.pi-stick.build-inputs.sha256";
+
+function imageFingerprint(stage?: string) {
+	const hash = createHash("sha256");
+	if (!fs.lstatSync(join(ASSETS, "runtime-tools")).isDirectory())
+		throw Error("Expected a real runtime-tools directory");
+	const tools = fs
+		.readdirSync(join(ASSETS, "runtime-tools"))
+		.filter((name) => name.endsWith(".ts"))
+		.sort();
+	if (stage) fs.mkdirSync(join(stage, "runtime-tools"));
+	for (const name of [
+		"Dockerfile",
+		".dockerignore",
+		"package.json",
+		"package-lock.json",
+		"agent-runtime.ts",
+		"runtime-auth.ts",
+		...tools.map((name) => `runtime-tools/${name}`),
+	]) {
+		const file = join(ASSETS, name);
+		if (!fs.lstatSync(file).isFile()) throw Error(`Expected a regular build input: ${file}`);
+		const bytes = fs.readFileSync(file);
+		hash.update(`${name}\0${bytes.length}\0`).update(bytes);
+		if (stage) fs.writeFileSync(join(stage, name), bytes);
+	}
+	return hash.digest("hex");
+}
+
+export function checkImageInputs() {
+	let label: string;
 	try {
-		for (const f of [...files, "agent-runtime.ts", "runtime-auth.ts", ".dockerignore"]) copy(f, ASSETS, stage);
-		fs.cpSync(join(ASSETS, "runtime-tools"), join(stage, "runtime-tools"), { recursive: true });
-		const base = "node:current-bookworm-slim";
-		const digest = /^Digest:\s+(sha256:[0-9a-f]{64})$/m.exec(
-			output(["docker", "buildx", "imagetools", "inspect", base]),
-		)?.[1];
-		const npm = output(["npm", "view", "npm@latest", "version"]);
-		if (!digest || !/^\d+\.\d+\.\d+$/.test(npm)) throw Error("Cannot resolve latest Node base digest or npm release");
-		const dockerfile = join(stage, "Dockerfile");
-		fs.writeFileSync(
-			dockerfile,
-			read(dockerfile)
-				.replace(/^FROM .*/, `FROM ${base}@${digest}`)
-				.replace(/^ARG NPM_VERSION=.*$/m, `ARG NPM_VERSION=${npm}`),
+		label = output([
+			"docker",
+			"image",
+			"inspect",
+			IMAGE,
+			"--format",
+			`{{with .Config.Labels}}{{index . "${inputLabel}"}}{{end}}`,
+		]);
+	} catch {
+		throw Error(
+			`Cannot inspect ${IMAGE}. Check Docker access; if the image is missing, run pistick containers build.`,
 		);
-		fs.unlinkSync(join(stage, "package-lock.json"));
-		const deps = Object.keys(json(join(stage, "package.json")).dependencies).map((d) => `${d}@latest`);
-		run(
-			[
-				"npm",
-				"install",
-				"--save-exact",
-				"--package-lock-only",
-				"--ignore-scripts",
-				"--no-audit",
-				"--no-fund",
-				...deps,
-			],
-			{ cwd: stage },
-		);
-		run(["docker", "build", "--pull", "--no-cache", "-t", candidate, stage]);
-		await probe(candidate);
-		const backup = join(STATE, "backups", id);
-		fs.mkdirSync(backup, { recursive: true });
-		for (const f of files) copy(f, ASSETS, backup);
-		let hadCurrent = false;
-		try {
-			const prevId = output(["docker", "image", "inspect", IMAGE, "--format", "{{.Id}}"]);
-			if (prevId) {
-				run(["docker", "tag", prevId, rollback]);
-				hadCurrent = true;
-			}
-		} catch {
-			// First build: no existing image to tag as rollback.
-		}
-		console.log(`Backup: ${backup}${hadCurrent ? `; previous image: ${rollback}` : ""}`);
-		try {
-			run(["docker", "tag", candidate, IMAGE]);
-			await probe(IMAGE);
-			for (const f of files) copy(f, stage, ASSETS);
-		} catch (err) {
-			for (const f of files) copy(f, backup, ASSETS);
-			if (hadCurrent) run(["docker", "tag", rollback, IMAGE]);
-			throw err;
-		}
-		console.log("Updated pi-stick agent image. Project images unchanged.");
+	}
+	if (!label || label === "<no value>")
+		throw Error(`Image ${IMAGE} has no build fingerprint. Run pistick containers build to record one.`);
+	if (label !== imageFingerprint())
+		throw Error(`Image ${IMAGE} does not match installed runtime files. Run pistick containers build.`);
+}
+
+export function buildImage(activeRunCount: number) {
+	if (activeRunCount > 0) throw Error(`Cannot build while ${activeRunCount} task run(s) are active`);
+	const stage = fs.mkdtempSync(join(tmpdir(), "pi-stick-build-"));
+	try {
+		run(["docker", "build", "--label", `${inputLabel}=${imageFingerprint(stage)}`, "-t", IMAGE, stage]);
 	} finally {
 		fs.rmSync(stage, { recursive: true, force: true });
 	}

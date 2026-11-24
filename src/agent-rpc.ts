@@ -148,7 +148,7 @@ export async function executeAgentContainer(
 				);
 				continue;
 			}
-			throw Error("Unexpected agent protocol message; rebuild with pistick containers update");
+			throw Error("Unexpected agent protocol message; rebuild with pistick containers build");
 		}
 		for (const controller of commands.values()) controller.abort();
 		await Promise.allSettled(inflight);
