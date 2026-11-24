@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
 import { join } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { UsageState } from "@earendil-works/pi-durable";
 import { readActionSnapshot, saveActionSnapshot } from "./action-snapshot.ts";
@@ -519,10 +520,10 @@ export async function worker(id: string): Promise<number> {
 				}
 			}
 
-			const { patch, untracked } = task.captureDiff(meta.baseHead);
+			const { patchFile, untracked } = task.captureDiff(meta.baseHead);
 			status(dir, result.report, action.orchestrator ? "orchestrator" : `agent:${reporter.name}`);
 			status(dir, `Wrote: ${reportFile}`);
-			if (patch.trim()) status(dir, `Patch: ${join(dir, "changes.patch")}`);
+			if (patchFile) status(dir, `Patch: ${patchFile}`);
 			if (untracked.length) status(dir, `Untracked files: ${untracked.length}`);
 
 			cfg.agentDone = true;
@@ -729,24 +730,18 @@ export function stopRun(id: string) {
 	console.log(`Stopped containers for run ${id}.`);
 }
 
-export function diffRun(id: string) {
+export async function diffRun(id: string) {
 	const meta = readMeta(id);
 	const task = new TaskEnv(id, getProject(meta.project));
-	if (!fs.existsSync(task.repo)) {
-		const patchFile = join(task.dir, "changes.patch");
-		if (fs.existsSync(patchFile)) {
-			process.stdout.write(read(patchFile));
-			return;
-		}
-		console.log("No changes.");
-		return;
-	}
-	const { patch, untracked } = task.captureDiff(meta.baseHead);
-	if (patch) process.stdout.write(patch);
+	const saved = join(task.dir, "changes.patch");
+	const { patchFile, untracked } = fs.existsSync(task.repo)
+		? task.captureDiff(meta.baseHead)
+		: { patchFile: fs.existsSync(saved) ? saved : undefined, untracked: [] };
+	if (patchFile) await pipeline(fs.createReadStream(patchFile), process.stdout, { end: false });
 	if (untracked.length) {
 		console.log(`\nUntracked files:\n${untracked.map((f) => `  ${f}`).join("\n")}`);
 	}
-	if (!patch && !untracked.length) console.log("No changes.");
+	if (!patchFile && !untracked.length) console.log("No changes.");
 }
 
 export async function cleanup(days: number, dry: boolean) {

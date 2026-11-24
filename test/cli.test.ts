@@ -354,6 +354,38 @@ test("ephemeral container args enforce hardening and model spec validation", () 
 	}
 });
 
+test("diff preserves patch bytes and publishes only successful captures", (t) => {
+	const { app, bin, env, source, ok, fail, stub } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	const id = runId();
+	const dir = join(app, "state/runs", id);
+	const repo = join(dir, "workspace/repo");
+	fs.cpSync(source, repo, { recursive: true });
+	writeJson(join(dir, "meta.json"), { id, project: "demo" });
+	stub(
+		"docker",
+		`const args = process.argv.slice(process.argv.indexOf('--no-optional-locks')); require('node:child_process').execFileSync('git', args, {cwd:${JSON.stringify(repo)}, stdio:'inherit'});`,
+	);
+	const bytes = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]);
+	fs.writeFileSync(join(repo, "example.txt"), bytes);
+	const diff = () => execFileSync(join(bin, "pistick"), ["diff", id], { env });
+	const patchFile = join(dir, "changes.patch");
+	const live = diff();
+	const patch = fs.readFileSync(patchFile);
+	assert.deepEqual(live, patch);
+	execFileSync("git", ["-C", source, "apply", "-"], { input: patch });
+	assert.deepEqual(fs.readFileSync(join(source, "example.txt")), bytes);
+	fs.renameSync(repo, `${repo}.saved`);
+	assert.deepEqual(diff(), patch);
+	fs.renameSync(`${repo}.saved`, repo);
+	stub("docker", "if (!process.argv.includes('ls-files')) { process.stdout.write('partial'); process.exitCode = 1; }");
+	fail(["diff", id], /docker failed/);
+	assert.deepEqual(fs.readFileSync(patchFile), patch);
+	stub("docker", "process.exit(0)");
+	assert.equal(diff().toString(), "No changes.\n");
+	assert.ok(!fs.existsSync(patchFile));
+});
+
 test("per-run locks allow concurrent runs, follow, diff, and selective cleanup", (t) => {
 	const { app, ok, fail, stub } = fixture(t);
 	stub("docker", "process.exit(process.argv[2] === 'ps' ? 0 : 1)");

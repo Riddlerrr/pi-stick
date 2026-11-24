@@ -244,7 +244,7 @@ export async function main(rawArgs: string[]) {
 			stopRun(action.id);
 			return 0;
 		case "diff":
-			diffRun(action.id);
+			await diffRun(action.id);
 			return 0;
 		case "cleanup":
 			await cleanup(action.days, action.dry);

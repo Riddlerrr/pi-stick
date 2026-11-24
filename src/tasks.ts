@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { IMAGE, isolatedRun } from "./container.ts";
-import { closed, command, gitCommand, output, run, STATE, touch } from "./platform.ts";
+import { closed, command, gitCommand, output, run, runId, STATE, touch } from "./platform.ts";
 import { RUNNER_SHELL } from "./runner-shell.ts";
 import { type ProjectInfo, projectSource } from "./workspace.ts";
 
@@ -317,12 +317,10 @@ export class TaskEnv {
 		return [...isolatedRun("none"), "-v", `${this.workspace}:${CONTAINER_WORKSPACE_DIR}:ro`, IMAGE, ...args];
 	}
 
-	private inspectWorkspace(...args: string[]): string {
-		return command(this.inspectionArgs(...args)).toString("utf8");
-	}
-
 	inspectGit(...args: string[]): string {
-		return this.inspectWorkspace(...gitCommand(CONTAINER_REPO_DIR), "--no-optional-locks", ...args);
+		return command(this.inspectionArgs(...gitCommand(CONTAINER_REPO_DIR), "--no-optional-locks", ...args)).toString(
+			"utf8",
+		);
 	}
 
 	private async trackedStatus(): Promise<RpcResponse> {
@@ -350,13 +348,13 @@ export class TaskEnv {
 		}
 	}
 
-	captureDiff(baseHead?: string): { patch: string; untracked: string[] } {
+	captureDiff(baseHead?: string) {
 		const untrackedRaw = this.inspectGit("ls-files", "--others", "--exclude-standard").replace(/\n$/, "");
 		const untracked = untrackedRaw ? untrackedRaw.split("\n") : [];
-		const diff = ["diff", "--binary", "--no-ext-diff", "--no-textconv", baseHead || "HEAD", "--"];
+		const git = [...gitCommand(CONTAINER_REPO_DIR), "--no-optional-locks"];
 		// Intent-to-add needs a writable index and may write the empty blob; keep both in the container tmpfs.
-		const patch = untracked.length
-			? this.inspectWorkspace(
+		const args = untracked.length
+			? this.inspectionArgs(
 					"sh",
 					"-ec",
 					`base=$1; shift
@@ -371,14 +369,27 @@ export class TaskEnv {
 					exec "$@" diff --binary --no-ext-diff --no-textconv "$base" --`,
 					"sh",
 					baseHead || "HEAD",
-					...gitCommand(CONTAINER_REPO_DIR),
-					"--no-optional-locks",
+					...git,
 				)
-			: this.inspectGit(...diff);
+			: this.inspectionArgs(...git, "diff", "--binary", "--no-ext-diff", "--no-textconv", baseHead || "HEAD", "--");
 		const patchFile = join(this.dir, "changes.patch");
-		if (patch.trim()) fs.writeFileSync(patchFile, patch);
-		else fs.rmSync(patchFile, { force: true });
-		return { patch, untracked };
+		const tmp = `${patchFile}.${runId()}.tmp`;
+		const fd = fs.openSync(tmp, "wx", 0o600);
+		try {
+			try {
+				run(args, { stdio: ["ignore", fd, "inherit"] });
+			} finally {
+				fs.closeSync(fd);
+			}
+			if (fs.statSync(tmp).size) {
+				fs.renameSync(tmp, patchFile);
+				return { patchFile, untracked };
+			}
+			fs.rmSync(patchFile, { force: true });
+			return { patchFile: undefined, untracked };
+		} finally {
+			fs.rmSync(tmp, { force: true });
+		}
 	}
 
 	private validateService(service: unknown, allowed: string[]): string {
