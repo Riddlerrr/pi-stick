@@ -4,7 +4,6 @@ import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-
 async function verifyRuntime(stage, probe) {
 	const file = join(stage, "Dockerfile");
 	const dockerfile = readFileSync(file, "utf8");
@@ -15,7 +14,10 @@ async function verifyRuntime(stage, probe) {
 	const digest = /^Digest:\s+(sha256:[a-f0-9]{64})$/m.exec(manifest)?.[1];
 	const npm = execFileSync("npm", ["view", "npm@latest", "version"], { encoding: "utf8" }).trim();
 	if (!digest || !/^\d+\.\d+\.\d+$/.test(npm)) throw Error("Cannot resolve Node digest or npm version");
-	writeFileSync(file, dockerfile.replace(from[0], `FROM ${from[1]}@${digest}`).replace(npmPin, `ARG NPM_VERSION=${npm}`));
+	writeFileSync(
+		file,
+		dockerfile.replace(from[0], `FROM ${from[1]}@${digest}`).replace(npmPin, `ARG NPM_VERSION=${npm}`),
+	);
 	const image = `pi-stick:deps-${randomUUID()}`;
 	execFileSync("docker", ["build", "-t", image, stage], { stdio: "inherit" });
 	try {
@@ -37,10 +39,20 @@ try {
 	else for (const file of files) copyFileSync(file, join(stage, file));
 	const pkg = JSON.parse(readFileSync(join(stage, "package.json"), "utf8"));
 	const deps = runtime ? pkg.dependencies : pkg.devDependencies;
-	execFileSync("npm", [
-		"install", runtime ? "--save-prod" : "--save-dev", "--package-lock-only", "--save-exact", "--ignore-scripts", "--no-audit", "--no-fund",
-		...Object.keys(deps).map((name) => `${name}@latest`),
-	], { cwd: stage, stdio: "inherit" });
+	execFileSync(
+		"npm",
+		[
+			"install",
+			runtime ? "--save-prod" : "--save-dev",
+			"--package-lock-only",
+			"--save-exact",
+			"--ignore-scripts",
+			"--no-audit",
+			"--no-fund",
+			...Object.keys(deps).map((name) => `${name}@latest`),
+		],
+		{ cwd: stage, stdio: "inherit" },
+	);
 	if (system) {
 		await verifyRuntime(stage, system.probe);
 		files.push("Dockerfile");

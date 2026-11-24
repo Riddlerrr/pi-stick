@@ -27,6 +27,8 @@
 		"includes": [
 			"src/**/*.ts",
 			"test/**/*.ts",
+			"scripts/**/*.mjs",
+			"test/**/*.mjs",
 			"agent-runtime.ts",
 			"runtime-auth.ts",
 			"runtime-tools/**/*.ts",
