@@ -44,30 +44,42 @@ function readLocalCatalog(): Record<string, { models?: Job["models"][string] }> 
 	}
 }
 
-function readAuthTypes(): Record<string, "oauth" | "api_key"> {
-	// Inspect credential type metadata only; never read secrets from auth.json.
+function readAuthTypes() {
+	const types = new Map<string, "oauth" | "api_key">();
 	const file = join(homedir(), ".pi/agent/auth.json");
-	if (!fs.existsSync(file)) return {};
 	try {
 		const data = json(file);
-		if (!data || typeof data !== "object") return {};
-		const types: Record<string, "oauth" | "api_key"> = {};
 		for (const [provider, entry] of Object.entries(data as Record<string, { type?: unknown }>)) {
-			if (entry?.type === "oauth" || entry?.type === "api_key") types[provider] = entry.type;
+			if (entry?.type === "oauth" || entry?.type === "api_key") types.set(provider, entry.type);
 		}
-		return types;
 	} catch {
-		return {};
+		// Missing or unreadable metadata: ask Pi for the selected provider's type.
 	}
+	return types;
 }
 
-export async function exportAccessLease(model: string, authType?: "oauth" | "api_key") {
+async function checkAuthType(provider: string): Promise<"oauth" | "api_key"> {
+	try {
+		const args = ["auth", "check", "--provider", provider, "--json", "--no-refresh"];
+		const { stdout } = await promisify(execFile)("pi", args, { timeout: 30_000 });
+		const { status, provider: checked, authType } = JSON.parse(stdout);
+		if (status === "ready" && checked === provider && (authType === "api_key" || authType === "oauth"))
+			return authType;
+	} catch {
+		// Neither subprocess diagnostics nor malformed output are safe to log.
+	}
+	throw Error(`Could not determine Pi credential type for ${provider}`);
+}
+
+export async function exportAccessLease(model: string, authType: "oauth" | "api_key") {
+	const { provider, modelId } = parseModelSpec(model);
+	const target = ["--provider", provider, "--model", modelId];
 	const minutes = 5;
 	const validUntil = Date.now() + minutes * 60_000;
 	const args =
 		authType === "api_key"
-			? ["print-api-key", "--model", model]
-			: ["print-bearer-token", "--model", model, "--min-expiry", `${minutes}m`];
+			? ["print-api-key", ...target]
+			: ["print-bearer-token", ...target, "--min-expiry", `${minutes}m`];
 	try {
 		const { stdout } = await promisify(execFile)("pi", ["auth", ...args], { timeout: 30_000 });
 		const token = stdout.trim();
@@ -96,7 +108,7 @@ export async function resolveModels(specs: string[]): Promise<ResolvedAuth> {
 		}
 		if (!credentials[provider]) {
 			// Tokens travel only over stdin to the ephemeral container; never log or put in argv/env.
-			const authType = authTypes[provider] ?? "oauth";
+			const authType = authTypes.get(provider) ?? (await checkAuthType(provider));
 			credentials[provider] = { ...(await exportAccessLease(raw, authType)), authType };
 		}
 	}

@@ -410,7 +410,7 @@ export async function worker(id: string): Promise<number> {
 				(provider) => {
 					const spec = modelSpecs.find((s) => parseModelSpec(s).provider === provider);
 					if (!spec || auth.credentials[provider].authType !== "oauth") throw Error("OAuth refresh not permitted");
-					return exportAccessLease(spec);
+					return exportAccessLease(spec, "oauth");
 				},
 				(usage) => {
 					cfg.usage = usage;

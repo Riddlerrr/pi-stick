@@ -921,7 +921,10 @@ test("resume may initialize a session only before the first agent launch attempt
 	const first = join(app, "state/runs", unstarted);
 	assert.equal(JSON.parse(read(join(first, "run.json"))).phase, "agent");
 	assert.ok(!fs.existsSync(join(first, "session")));
-	stub("pi", "console.log('test-token')");
+	stub(
+		"pi",
+		`console.log(process.argv[3] === 'check' ? '{"status":"ready","provider":"test","authType":"api_key"}' : 'test-token');`,
+	);
 	ok(["resume", unstarted]);
 	assert.equal(read(join(first, "session", `${unstarted}.sqlite`)), "initial history");
 
@@ -1311,14 +1314,17 @@ test("multi-agent action validates stages, resolves multi-provider auth, enforce
 	const piDir = join(tmp, ".pi/agent");
 	fs.mkdirSync(piDir, { recursive: true });
 	writeJson(join(piDir, "models-store.json"), { "openai-codex": { models: [{ id: "gpt-6.2-sol" }] } });
-	// Codex has no local metadata; its successful bearer export must still allow refresh.
-	writeJson(join(piDir, "auth.json"), { anthropic: { type: "api_key" } });
+	// Neither provider has local metadata; only the resolved OAuth credential may renew.
 	stub(
 		"pi",
-		`const idx = process.argv.indexOf('--model');
-const m = idx >= 0 ? process.argv[idx + 1] : '';
-if (m.startsWith('anthropic/')) console.log('anthropic-key-fixture');
-else console.log('codex-token-fixture');`,
+		`const args = process.argv.slice(2);
+const provider = args[args.indexOf('--provider') + 1];
+const oauth = provider === 'openai-codex';
+if (args.includes('--credentials')) process.exit(1);
+if (args[1] === 'check') console.log(JSON.stringify({status:'ready', provider, authType:oauth ? 'oauth' : 'api_key'}));
+else if (oauth && args[1] === 'print-bearer-token' && args.at(-1) === '5m') console.log('codex-token-fixture');
+else if (provider === 'anthropic' && args[1] === 'print-api-key') console.log('anthropic-key-fixture');
+else process.exit(1);`,
 	);
 
 	stub(

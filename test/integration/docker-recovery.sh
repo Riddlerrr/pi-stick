@@ -38,7 +38,14 @@ trap cleanup EXIT
 
 "$cli" containers build
 "$cli" containers status
-printf '#!/bin/sh\nprintf "fixture-token\\n"\n' > "$tmp/bin/pi"
+cat > "$tmp/bin/pi" <<'SH'
+#!/bin/sh
+case "$*" in
+  'auth check --provider groq --json --no-refresh') echo '{"status":"ready","provider":"groq","authType":"api_key"}' ;;
+  'auth print-api-key --provider groq --model recovery-test') echo fixture-token ;;
+  *) exit 1 ;;
+esac
+SH
 chmod +x "$tmp/bin/pi"
 cat > "$HOME/.pi/agent/models-store.json" <<'JSON'
 {"groq":{"models":[{"provider":"groq","id":"recovery-test","name":"Recovery fixture","api":"openai-completions","baseUrl":"http://runner:8123/v1","input":["text"],"reasoning":false,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":32768,"maxTokens":1024}]}}
