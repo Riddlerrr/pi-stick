@@ -72,7 +72,7 @@ export async function exportAccessLease(model: string, authType?: "oauth" | "api
 		const { stdout } = await promisify(execFile)("pi", ["auth", ...args], { timeout: 30_000 });
 		const token = stdout.trim();
 		if (!token) throw Error();
-		return { token, validUntil, authType };
+		return { token, validUntil };
 	} catch {
 		// Subprocess diagnostics may contain secrets.
 		throw Error(`Could not obtain Pi credential for ${model}`);
@@ -96,7 +96,8 @@ export async function resolveModels(specs: string[]): Promise<ResolvedAuth> {
 		}
 		if (!credentials[provider]) {
 			// Tokens travel only over stdin to the ephemeral container; never log or put in argv/env.
-			credentials[provider] = await exportAccessLease(raw, authTypes[provider]);
+			const authType = authTypes[provider];
+			credentials[provider] = { ...(await exportAccessLease(raw, authType)), authType };
 		}
 	}
 	return { models, credentials };

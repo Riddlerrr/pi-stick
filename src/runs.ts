@@ -407,11 +407,10 @@ export async function worker(id: string): Promise<number> {
 				jobPayload,
 				(agentName) => policyForAgent(action, agentName),
 				(line, agentName) => status(dir, line, agentName),
-				async (provider) => {
+				(provider) => {
 					const spec = modelSpecs.find((s) => parseModelSpec(s).provider === provider);
-					if (typeof provider !== "string" || !spec || auth.credentials[provider].authType === "api_key")
-						throw Error("OAuth refresh not permitted");
-					return JSON.stringify(await exportAccessLease(spec));
+					if (!spec || auth.credentials[provider].authType !== "oauth") throw Error("OAuth refresh not permitted");
+					return exportAccessLease(spec);
 				},
 				(usage) => {
 					cfg.usage = usage;

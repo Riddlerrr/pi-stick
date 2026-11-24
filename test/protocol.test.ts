@@ -21,7 +21,7 @@ test("initial revision, probe and action fields are checked without echoing the 
 	const probe = { ...envelope, check: true };
 	assert.deepEqual(readJob(JSON.stringify(probe)), probe);
 	for (const [bad, field] of [
-		[{ ...job, type: "run" }, "revision"],
+		[{ ...job, type: "run.v1" }, "revision"],
 		[{ ...job, requestId: undefined }, "requestId"],
 		[{ ...probe, prompt: "unexpected" }, "probe fields"],
 		[{ ...job, credentials: { pi: { token: 1 } } }, "credentials"],
@@ -38,6 +38,26 @@ test("initial revision, probe and action fields are checked without echoing the 
 		() => readJob("private-fixture: not json"),
 		(e: Error) => !e.message.includes("private-fixture"),
 	);
+});
+test("refresh replies carry only the lease and match a runtime-owned request", () => {
+	const token = "private-fixture";
+	const pending = new Map([["r", { command: "refresh_token" as const }]]);
+	const request = { type: "refresh_token", provider: "test", id: "r" };
+	assert.deepEqual(readRuntime(JSON.stringify(request)), request);
+	assert.throws(() => readRuntime(JSON.stringify({ ...request, agent: "worker" })), /refresh_token request/);
+	const reply = { type: "response", id: "r", command: "refresh_token", success: true, data: { token, validUntil: 1 } };
+	assert.deepEqual(readReply(JSON.stringify(reply), pending), reply);
+	for (const invalid of [
+		{ ...reply, data: { text: JSON.stringify(reply.data) } },
+		{ ...reply, data: { ...reply.data, token: "" } },
+		{ ...reply, data: { token, validUntil: "never" } },
+		{ ...reply, id: "wrong" },
+		{ ...reply, command: "ps", data: { text: token } },
+	])
+		assert.throws(
+			() => readReply(JSON.stringify(invalid), pending),
+			(e: Error) => /Invalid agent protocol/.test(e.message) && !e.message.includes(token),
+		);
 });
 test("run outputs must be strings and RPC replies match the pending id and command", () => {
 	const result = {

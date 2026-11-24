@@ -31,14 +31,16 @@ import {
 	type Job,
 	type AgentRuntimeSpec,
 	type Method,
+	type RefreshCall,
 	type RpcCall,
 	type RpcData,
+	type ToolCall,
 	type RuntimeMessage,
 	RunFailure,
 	readJob,
 	readReply,
 } from "./runtime-tools/protocol.ts";
-import { runtimeCredentials } from "./runtime-auth.ts";
+import { type AccessLease, runtimeCredentials } from "./runtime-auth.ts";
 import { createBashTool } from "./runtime-tools/bash.ts";
 import { type BatchResult, createDelegateTool, type DelegateTasks } from "./runtime-tools/delegate.ts";
 import { createEditTool } from "./runtime-tools/edit.ts";
@@ -76,7 +78,7 @@ const pendingRpc = new Map<
 	string,
 	{
 		command: Method;
-		resolve: (res: RpcData) => void;
+		resolve: (res: RpcData | AccessLease) => void;
 		reject: (err: Error) => void;
 		onChunk?: (chunk: Buffer) => void;
 	}
@@ -117,7 +119,9 @@ function readInitialJob(): Promise<Job> {
 				return;
 			}
 			pendingRpc.delete(reply.id);
-			pending.resolve(reply.success ? reply.data : { text: reply.error, error: true });
+			if (reply.success) pending.resolve(reply.data);
+			else if (reply.command === "refresh_token") pending.reject(Error("Host could not renew OAuth token"));
+			else pending.resolve({ text: reply.error, error: true });
 		});
 		rl.on("close", () => {
 			if (!gotFirst) reject(Error("Host launcher disconnected before job initialization"));
@@ -129,12 +133,17 @@ function readInitialJob(): Promise<Job> {
 	});
 }
 
-async function callHostRpc(
-	request: RpcCall,
-	agent?: string,
+function callHostRpc(request: RefreshCall): Promise<AccessLease>;
+function callHostRpc(
+	request: ToolCall & { agent?: string },
 	onChunk?: (chunk: Buffer) => void,
 	signal?: AbortSignal,
-): Promise<{ text: string; error?: boolean; exitCode?: number }> {
+): Promise<RpcData>;
+async function callHostRpc(
+	request: RpcCall,
+	onChunk?: (chunk: Buffer) => void,
+	signal?: AbortSignal,
+): Promise<RpcData | AccessLease> {
 	protocol.signal.throwIfAborted();
 	if (signal?.aborted) throw Error("Command aborted");
 	const id = String(++rpcSeq);
@@ -142,7 +151,7 @@ async function callHostRpc(
 	try {
 		return await new Promise((resolve, reject) => {
 			pendingRpc.set(id, { command: request.type, resolve, reject, onChunk });
-			send({ ...request, agent, id });
+			send({ ...request, id });
 			signal?.addEventListener("abort", cancel, { once: true });
 		});
 	} finally {
@@ -221,11 +230,9 @@ if (!fs.lstatSync(workspaceRoot, { throwIfNoEntry: false })?.isDirectory())
 
 const allProviders = builtinProviders();
 const models = createModels({
-	credentials: runtimeCredentials(job.credentials, allProviders, async (provider) => {
-		const result = await callHostRpc({ type: "refresh_token", provider });
-		if (result.error) throw Error("Host could not renew OAuth token");
-		return JSON.parse(result.text);
-	}),
+	credentials: runtimeCredentials(job.credentials, allProviders, (provider) =>
+		callHostRpc({ type: "refresh_token", provider }),
+	),
 });
 job.credentials = {};
 
@@ -475,7 +482,7 @@ const delegateBatch = defineTask<DelegateTasks, { phase: "run" }, BatchResult>({
 	},
 });
 
-const agentRpc: AgentRpc = (request, id) => callHostRpc(request, getAgentCtx(id).name);
+const agentRpc: AgentRpc = (request, id) => callHostRpc({ ...request, agent: getAgentCtx(id).name });
 
 const toolMap = new Map<string, ToolRegistration>([
 	["read", createReadTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
@@ -486,7 +493,8 @@ const toolMap = new Map<string, ToolRegistration>([
 	[
 		"bash",
 		createBashTool(
-			(args, id, onChunk, signal) => callHostRpc({ ...args, type: "exec" }, getAgentCtx(id).name, onChunk, signal),
+			(args, id, onChunk, signal) =>
+				callHostRpc({ ...args, type: "exec", agent: getAgentCtx(id).name }, onChunk, signal),
 			(id) => resolveAgentPath(`/scratch/${getAgentCtx(id).name}`, getAgentCtx(id), true),
 		),
 	],

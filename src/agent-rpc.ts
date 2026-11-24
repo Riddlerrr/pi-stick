@@ -2,7 +2,14 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { UsageState } from "@earendil-works/pi-durable";
-import { type ActionJob, type HostMessage, RunFailure, readRuntime } from "../runtime-tools/protocol.ts";
+import type { AccessLease } from "../runtime-auth.ts";
+import {
+	type ActionJob,
+	type HostMessage,
+	type RpcResponse,
+	RunFailure,
+	readRuntime,
+} from "../runtime-tools/protocol.ts";
 import { closed } from "./platform.ts";
 import { ephemeralArgs } from "./system.ts";
 import type { RpcPolicy, TaskEnv } from "./tasks.ts";
@@ -17,7 +24,7 @@ export async function executeAgentContainer(
 	jobPayload: ActionJob,
 	resolvePolicy: (agent?: string) => RpcPolicy,
 	onProgress: (line: string, agent?: string) => void,
-	refreshToken: (provider: unknown) => Promise<string>,
+	refreshToken: (provider: string) => Promise<AccessLease>,
 	onUsage: (usage: UsageState) => void,
 ): Promise<AgentRunResult> {
 	const argv = ephemeralArgs({
@@ -82,33 +89,39 @@ export async function executeAgentContainer(
 			if (commands.has(rpcId)) throw Error("Duplicate RPC id");
 			const controller = method === "exec" ? new AbortController() : undefined;
 			if (controller) commands.set(rpcId, controller);
-			const agentName = msg.agent;
 			const work = (async () => {
-				let result: { text: string; error?: boolean };
+				const base = { type: "response", id: rpcId } as const;
+				let reply: RpcResponse;
 				try {
-					result =
-						method === "refresh_token" && !agentName
-							? { text: await refreshToken(msg.provider) }
-							: await task.handleRpc(
-									method,
-									msg,
-									resolvePolicy(agentName),
-									(chunk) => send({ type: "exec_chunk", id: rpcId, chunk: chunk.toString("base64") }),
-									controller?.signal,
-								);
+					if (method === "refresh_token") {
+						reply = { ...base, command: method, success: true, data: await refreshToken(msg.provider) };
+					} else {
+						const result = await task.handleRpc(
+							method,
+							msg,
+							resolvePolicy(msg.agent),
+							(chunk) => send({ type: "exec_chunk", id: rpcId, chunk: chunk.toString("base64") }),
+							controller?.signal,
+						);
+						reply = result.error
+							? { ...base, command: method, success: false, error: result.text }
+							: { ...base, command: method, success: true, data: result };
+					}
 				} catch (err) {
-					result = {
-						text: err instanceof Error ? err.message : "RPC operation failed",
-						error: true,
+					reply = {
+						...base,
+						command: method,
+						success: false,
+						error:
+							method === "refresh_token"
+								? "OAuth refresh failed"
+								: err instanceof Error
+									? err.message
+									: "RPC operation failed",
 					};
 				}
 				commands.delete(rpcId);
-				await send({
-					type: "response",
-					id: rpcId,
-					command: method,
-					...(result.error ? { success: false, error: result.text } : { success: true, data: result }),
-				});
+				await send(reply);
 			})();
 			inflight.add(work);
 			work.then(

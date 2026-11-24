@@ -1,8 +1,8 @@
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { UsageState } from "@earendil-works/pi-durable";
-import type { CredentialPayload } from "../runtime-auth.ts";
+import type { AccessLease, CredentialPayload } from "../runtime-auth.ts";
 
-export const RUN = "run.v1";
+export const RUN = "run.v2";
 // Only operator-safe summaries belong in a run failure, never raw provider or tool errors.
 export class RunFailure extends Error {}
 export interface AgentRuntimeSpec {
@@ -32,12 +32,13 @@ interface Envelope {
 }
 export type ActionJob = Envelope & ActionFields & { check?: false };
 export type Job = ActionJob | (Envelope & { check: true } & { [K in keyof ActionFields]?: never });
-export type RpcCall =
+export type ToolCall =
 	| { type: "exec"; command: string; timeout?: number; service?: string }
 	| { type: "logs"; service?: string; tail?: number }
 	| { type: "restart"; service: string }
-	| { type: "refresh_token"; provider: string }
 	| { type: "ps" | "check_clean" };
+export type RefreshCall = { type: "refresh_token"; provider: string; agent?: never };
+export type RpcCall = RefreshCall | (ToolCall & { agent?: string });
 const methods = {
 	ps: true,
 	logs: true,
@@ -48,14 +49,14 @@ const methods = {
 } satisfies Record<Method, true>;
 export type Method = RpcCall["type"];
 export type RpcData = { text: string; error?: boolean; exitCode?: number };
-type Reply =
-	| { type: "exec_chunk"; id: string; chunk: string }
-	| ({ type: "response"; id: string; command: Method } & (
-			| { success: true; data: RpcData }
-			| { success: false; error: string }
-	  ));
+export type RpcResponse = { type: "response"; id: string } & (
+	| { command: "refresh_token"; success: true; data: AccessLease }
+	| { command: ToolCall["type"]; success: true; data: RpcData }
+	| { command: Method; success: false; error: string }
+);
+type Reply = { type: "exec_chunk"; id: string; chunk: string } | RpcResponse;
 export type HostMessage = Job | Reply;
-export type Request = RpcCall & { id: string; agent?: string };
+export type Request = RpcCall & { id: string };
 type Outcome = { ready: true } | { report: string; outputs?: Record<string, string>; usage?: UsageState };
 export type RuntimeMessage =
 	| Request
@@ -205,7 +206,16 @@ export function readReply(line: string, pending: ReadonlyMap<string, { command: 
 		if (typeof m.chunk !== "string") invalid("exec_chunk.chunk");
 	} else if (m.type !== "response" || !method(m.command)) invalid("RPC response.command");
 	else if (m.success === true) {
-		if (
+		if (m.command === "refresh_token") {
+			if (
+				!record(m.data) ||
+				typeof m.data.token !== "string" ||
+				!m.data.token ||
+				!Number.isFinite(m.data.validUntil) ||
+				Object.keys(m.data).length !== 2
+			)
+				invalid("refresh_token lease");
+		} else if (
 			!record(m.data) ||
 			typeof m.data.text !== "string" ||
 			!optional(m.data.error, "boolean") ||
@@ -239,7 +249,8 @@ export function readRuntime(line: string): RuntimeMessage {
 			invalid("exec.command/timeout");
 		if (!optional(m.service, "string") || (m.type === "restart" && typeof m.service !== "string"))
 			invalid("RPC service");
-		if (m.type === "refresh_token" && typeof m.provider !== "string") invalid("refresh_token.provider");
+		if (m.type === "refresh_token" && ("agent" in m || typeof m.provider !== "string"))
+			invalid("refresh_token request");
 		if (m.type === "logs" && !optional(m.tail, "number")) invalid("logs.tail");
 	} else if (m.type !== "cancel_exec") invalid("runtime message type");
 	return m as RuntimeMessage;

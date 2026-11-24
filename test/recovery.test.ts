@@ -49,7 +49,7 @@ function stageFixture(
 	};
 	const id = runId();
 	const job = {
-		type: "run.v1",
+		type: "run.v2",
 		id,
 		models: {},
 		requestId: id,
@@ -104,7 +104,7 @@ function stageFixture(
 
 test("runtime rejects an old launcher before starting a session", async (t) => {
 	const { job, run } = stageFixture(t);
-	const result = await run({ ...job, type: "run" });
+	const result = await run({ ...job, type: "run.v1" });
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /run revision/);
 });

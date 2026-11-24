@@ -655,7 +655,7 @@ test("agent-runtime offline self-check exercises canonical paths, scratch, concu
 	const seenMethods: string[] = [];
 	let ready = false;
 	const id = runId();
-	child.stdin.write(`${JSON.stringify({ type: "run.v1", id, check: true, models: {}, credentials: {} })}\n`);
+	child.stdin.write(`${JSON.stringify({ type: "run.v2", id, check: true, models: {}, credentials: {} })}\n`);
 	for await (const line of lines) {
 		const msg = JSON.parse(line);
 		if (typeof msg.id === "string" && ["ps", "logs", "exec", "check_clean", "restart"].includes(msg.type)) {
@@ -1061,7 +1061,7 @@ if (has('git') && a[0] === 'run') {
   rl.on('line', line => {
     const m = JSON.parse(line);
     if (!job) {
-      if (m.type !== 'run.v1') process.exit(12);
+      if (m.type !== 'run.v2') process.exit(12);
       job = m;
       if (job.credentials['openai-codex'].token !== (job.continueRun ? 'fresh-token' : 'secret-fixture-token')) process.exit(3);
       if (job.orchestrator.thinkingLevel !== 'high' || job.orchestrator.model.modelId !== 'gpt-6.2-sol' || !job.orchestrator.instructions.includes('PINNED PROJECT NOTES') || !job.orchestrator.instructions.includes('PINNED INSTRUCTIONS') || job.orchestrator.tools.includes('restart')) process.exit(10);
@@ -1359,7 +1359,7 @@ if (has('config')) {
   rl.on('line', line => {
     const m = JSON.parse(line);
     if (!job) {
-      if (m.type !== 'run.v1') process.exit(12);
+      if (m.type !== 'run.v2') process.exit(12);
       job = m;
       if (job.credentials['openai-codex'].token !== 'codex-token-fixture') process.exit(3);
       if (job.credentials['openai-codex'].authType !== 'oauth') process.exit(4);
@@ -1385,8 +1385,8 @@ if (has('config')) {
     if (m.id === '1' && !m.success && m.error.includes('not permitted')) got |= 1;
     else if (m.id === '2' && m.data.exitCode === 0) got |= 2;
     else if (m.id === '3' && !m.success && m.error.includes('not permitted')) got |= 4;
-    else if (m.id === '4' && JSON.parse(m.data.text).token === 'codex-token-fixture' && JSON.parse(m.data.text).validUntil > Date.now()) got |= 8;
-    else if ((m.id === '5' || m.id === '6') && !m.success) got |= 1 << (Number(m.id) - 1);
+    else if (m.id === '4' && m.command === 'refresh_token' && m.success && Object.keys(m.data).length === 2 && m.data.token === 'codex-token-fixture' && m.data.validUntil > Date.now()) got |= 8;
+    else if ((m.id === '5' || m.id === '6') && !m.success && !m.data && m.error === 'OAuth refresh failed') got |= 1 << (Number(m.id) - 1);
     else if (m.id === '7' && m.data.exitCode === 0) got |= 64;
     else if (m.id === '8' && !m.success && m.error.includes('Unknown Compose service')) got |= 128;
     else if (Number(m.id) >= 10) {
@@ -1413,6 +1413,9 @@ if (has('config')) {
 	assert.match(out, /\[agent:perf\] checked queries/);
 	assert.match(out, /Combined synthesis report/);
 	const runPath = join(app, "state/runs", id);
+	for (const file of ["progress", "worker.log", "run.json", "report.md"])
+		assert.doesNotMatch(read(join(runPath, file)), /codex-token-fixture/);
+	assert.doesNotMatch(out, /codex-token-fixture/);
 	assert.equal(read(join(runPath, "outputs/sec.md")), "Security findings\n");
 	assert.equal(read(join(runPath, "outputs/perf.md")), "Perf findings\n");
 
