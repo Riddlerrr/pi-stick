@@ -2,7 +2,7 @@ import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { UsageState } from "@earendil-works/pi-durable";
 import type { AccessLease, CredentialPayload } from "../runtime-auth.ts";
 
-export const RUN = "run.v2";
+export const RUN = "run.v1";
 // Only operator-safe summaries belong in a run failure, never raw provider or tool errors.
 export class RunFailure extends Error {}
 export interface AgentRuntimeSpec {

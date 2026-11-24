@@ -21,7 +21,7 @@ test("initial revision, probe and action fields are checked without echoing the 
 	const probe = { ...envelope, check: true };
 	assert.deepEqual(readJob(JSON.stringify(probe)), probe);
 	for (const [bad, field] of [
-		[{ ...job, type: "run.v1" }, "revision"],
+		[{ ...job, type: "run.v2" }, "revision"],
 		[{ ...job, requestId: undefined }, "requestId"],
 		[{ ...probe, prompt: "unexpected" }, "probe fields"],
 		[{ ...job, credentials: { pi: { token: 1 } } }, "credentials"],
