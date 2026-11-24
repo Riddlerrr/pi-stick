@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Run recovery now uses one versioned `run.json` checkpoint. A follow-up is accepted atomically, and a failed final Compose stop can be retried without restarting the stack. Start a new run for tasks created with the previous format; their files are not migrated or deleted.
+
 - The agent mounts the task workspace rather than the nested checkout path and rejects a missing or symlinked checkout at startup. Rebuild the agent image to enable the startup check. The checkout path remains `/workspace/repo`.
 
 - Added `pistick kill RUN_ID` to interrupt an active task while preserving its workspace and session for inspection or resume.

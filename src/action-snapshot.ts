@@ -15,7 +15,7 @@ type Snapshot = Pick<
 	hookHashes: Partial<Record<(typeof hookNames)[number], string>>;
 };
 
-// The launcher publishes the digest in run-config only after every file exists.
+// The launcher publishes the digest in run.json only after every file exists.
 export function saveActionSnapshot(runDir: string, action: LoadedAction, projectDir: string): string {
 	const dir = join(runDir, "action-snapshot");
 	fs.mkdirSync(dir, { mode: 0o700 });

@@ -128,9 +128,11 @@ teardown_dev_dir() {
     [[ $id =~ ^[0-9a-f]{32}$ ]] || continue
     compose="$rundir/compose.yaml"
     [[ -f $compose ]] || continue
-    key=$(node --input-type=module - "$rundir/meta.json" "$id" <<'JS'
+    key=$(node --input-type=module - "$rundir" "$id" <<'JS'
 import { existsSync, readFileSync } from "node:fs";
-const [metaFile, id] = process.argv.slice(2);
+const [dir, id] = process.argv.slice(2);
+// Explicit wipe also tears down stacks from before versioned run checkpoints.
+const metaFile = existsSync(`${dir}/run.json`) ? `${dir}/run.json` : `${dir}/meta.json`;
 let project = "";
 if (existsSync(metaFile)) {
   try {

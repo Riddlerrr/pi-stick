@@ -361,7 +361,7 @@ test("diff preserves patch bytes and publishes only successful captures", (t) =>
 	const dir = join(app, "state/runs", id);
 	const repo = join(dir, "workspace/repo");
 	fs.cpSync(source, repo, { recursive: true });
-	writeJson(join(dir, "meta.json"), { id, project: "demo" });
+	writeJson(join(dir, "run.json"), { version: 1, mode: "run", phase: "checkout", id, project: "demo" });
 	stub(
 		"docker",
 		`const args = process.argv.slice(process.argv.indexOf('--no-optional-locks')); require('node:child_process').execFileSync('git', args, {cwd:${JSON.stringify(repo)}, stdio:'inherit'});`,
@@ -397,24 +397,29 @@ test("per-run locks allow concurrent runs, follow, diff, and selective cleanup",
 	const dirB = join(runs, idB);
 	fs.mkdirSync(join(dirA, "session"), { recursive: true });
 	fs.mkdirSync(join(dirB, "session"), { recursive: true });
-	writeJson(join(dirA, "meta.json"), {
+	writeJson(join(dirA, "run.json"), {
 		id: idA,
 		project: "demo",
 		action: "check",
 		createdAt: "2026-01-01T00:00:00.000Z",
 		updatedAt: "2026-01-01T00:00:00.000Z",
-		status: "running",
+		version: 1,
+		mode: "run",
+		phase: "agent-started",
 	});
-	writeJson(join(dirB, "meta.json"), {
+	writeJson(join(dirB, "run.json"), {
 		id: idB,
 		project: "demo",
 		action: "check",
 		createdAt: "2026-01-01T00:00:00.000Z",
 		updatedAt: "2026-01-01T00:00:00.000Z",
-		status: "done",
+		version: 1,
+		mode: "run",
+		phase: "stop",
+		exitCode: 0,
 	});
 	status(dirB, "hello\x1b[2J\r\u202e", "orchestrator");
-	fs.writeFileSync(join(dirB, "exit"), "0");
+
 	fs.writeFileSync(join(dirB, "last-used"), "");
 	fs.utimesSync(join(dirB, "last-used"), 1, 1);
 	for (const [dir, id] of [
@@ -461,9 +466,9 @@ test("cleanup includes old interrupted runs but preserves recent ones", (t) => {
 	for (const id of [old, early, recent]) {
 		const dir = join(runs, id);
 		fs.mkdirSync(dir, { recursive: true });
-		writeJson(join(dir, "meta.json"), { project: "demo" });
+		writeJson(join(dir, "run.json"), { version: 1, mode: "run", phase: "checkout", project: "demo" });
 		if (id !== early) fs.writeFileSync(join(dir, "last-used"), "");
-		if (id !== recent) fs.utimesSync(join(dir, id === early ? "meta.json" : "last-used"), 1, 1);
+		if (id !== recent) fs.utimesSync(join(dir, id === early ? "run.json" : "last-used"), 1, 1);
 	}
 	const preview = ok(["cleanup", "--dry-run"]);
 	for (const id of [old, early]) assert.ok(preview.includes(`${id} (demo, interrupted)`));
@@ -481,7 +486,7 @@ test("cleanup rechecks listed runs after confirmation", async (t) => {
 	);
 	for (const dir of [busy, reused, interrupted, gone, eligible]) {
 		fs.mkdirSync(dir, { recursive: true });
-		fs.writeFileSync(join(dir, "exit"), "0");
+		writeJson(join(dir, "run.json"), { version: 1, mode: "run", phase: "stop", exitCode: 0, project: "demo" });
 		fs.writeFileSync(join(dir, "last-used"), "");
 		fs.utimesSync(join(dir, "last-used"), 1, 1);
 	}
@@ -496,7 +501,7 @@ test("cleanup rechecks listed runs after confirmation", async (t) => {
 			fd = fs.openSync(join(busy, "lock"), "a");
 			assert.ok(tryLock(fd));
 			fs.utimesSync(join(reused, "last-used"), 2, 2);
-			fs.unlinkSync(join(interrupted, "exit"));
+			writeJson(join(interrupted, "run.json"), { version: 1, mode: "run", phase: "agent", project: "demo" });
 			fs.rmSync(gone, { recursive: true });
 			child.stdin.end("y\n");
 		}
@@ -517,7 +522,7 @@ test("cleanup verifies and removes the orphan under lock before Compose teardown
 	const db = join(dir, "session", `${id}.sqlite`);
 	fs.writeFileSync(db, "history");
 	fs.writeFileSync(join(dir, "compose.yaml"), "services: {}");
-	fs.writeFileSync(join(dir, "exit"), "0");
+	writeJson(join(dir, "run.json"), { version: 1, mode: "run", phase: "stop", exitCode: 0, project: "demo" });
 	fs.writeFileSync(join(dir, "last-used"), "");
 	fs.utimesSync(join(dir, "last-used"), 1, 1);
 	stub(
@@ -782,7 +787,7 @@ test("failed Compose startup or setup stops the task stack unless --keep-up was 
 		]);
 		const id = /Run: ([0-9a-f]{32})/.exec(result.stdout)?.[1];
 		assert.ok(id, result.stdout);
-		assert.equal(JSON.parse(read(join(app, "state/runs", id, "meta.json"))).status, "failed");
+		assert.equal(JSON.parse(read(join(app, "state/runs", id, "run.json"))).exitCode, 1);
 		if (failAt === "up") {
 			fs.writeFileSync(calls, "");
 			assert.equal(invoke(["resume", id]).status, 1);
@@ -796,19 +801,14 @@ test("failed Compose startup or setup stops the task stack unless --keep-up was 
 			fs.writeFileSync(join(tmp, "interrupt-setup"), "");
 			assert.equal(invoke(["resume", id, "--retry-hook"]).status, 1);
 			assert.equal(read(calls), "up\nexec\n", "explicit retry reaches setup without host Git");
-			assert.ok(!fs.existsSync(join(app, "state/runs", id, "exit")), "worker died before recording completion");
+			assert.equal(JSON.parse(read(join(app, "state/runs", id, "run.json"))).exitCode, undefined);
 			fail(["resume", id], /setup-project unknown.*--retry-hook/);
 			assert.equal(read(calls), "up\nexec\n", "no duplicate setup side effect after interruption");
-			const config = join(app, "state/runs", id, "run-config.json");
-			const legacy = JSON.parse(read(config));
-			delete legacy.setupPending;
-			writeJson(config, legacy);
-			fail(["resume", id], /setup-project unknown.*--retry-hook/);
-			delete legacy.prepareDone;
-			writeJson(config, legacy);
+			const config = join(app, "state/runs", id, "run.json");
+			writeJson(config, { ...JSON.parse(read(config)), version: 99 });
 			fs.writeFileSync(calls, "");
-			assert.equal(invoke(["resume", id, "--retry-hook"]).status, 1);
-			assert.match(read(join(app, "state/runs", id, "worker.log")), /legacy run/);
+			fail(["resume", id, "--retry-hook"], /Unsupported run checkpoint/);
+			fail(["continue", id, "ignore legacy run"], /Unsupported run checkpoint/);
 			assert.equal(read(calls), "");
 		}
 	}
@@ -860,8 +860,8 @@ test("resume may initialize a session only before the first agent launch attempt
 		if (args.includes('config')) console.log(JSON.stringify({services:{runner: {networks: {default: null}, volumes:[{type:'volume',source:'source',target:'/workspace'}]}}}));
 		if (args[0] === 'run' && args.includes('/app/agent-runtime.ts')) {
 			const session = args.find(a => a.endsWith(':/sessions')).slice(0, -':/sessions'.length);
-			const config = JSON.parse(fs.readFileSync(session + '/../run-config.json'));
-			if (config.agentLaunchAttempted !== true) process.exit(2);
+			const config = JSON.parse(fs.readFileSync(session + '/../run.json'));
+			if (config.phase !== "agent-started") process.exit(2);
 			fs.appendFileSync(${JSON.stringify(attempts)}, 'attempt\\n');
 			if (fs.existsSync(${JSON.stringify(join(tmp, "fail-launch"))})) process.exit(1);
 			require('node:readline').createInterface({input:process.stdin}).once('line', line => {
@@ -880,7 +880,7 @@ test("resume may initialize a session only before the first agent launch attempt
 	};
 	const unstarted = interruptedRun();
 	const first = join(app, "state/runs", unstarted);
-	assert.equal(JSON.parse(read(join(first, "run-config.json"))).agentLaunchAttempted, false);
+	assert.equal(JSON.parse(read(join(first, "run.json"))).phase, "agent");
 	assert.ok(!fs.existsSync(join(first, "session")));
 	stub("pi", "console.log('test-token')");
 	ok(["resume", unstarted]);
@@ -889,10 +889,10 @@ test("resume may initialize a session only before the first agent launch attempt
 	fs.writeFileSync(join(tmp, "fail-launch"), "");
 	const attempted = interruptedRun();
 	const second = join(app, "state/runs", attempted);
-	assert.equal(JSON.parse(read(join(second, "run-config.json"))).agentLaunchAttempted, true);
+	assert.equal(JSON.parse(read(join(second, "run.json"))).phase, "agent-started");
 	fail(["resume", attempted], /Session database missing/);
 	assert.deepEqual(fs.readdirSync(join(second, "session")), []);
-	assert.equal(read(join(second, "exit")), "1");
+	assert.equal(JSON.parse(read(join(second, "run.json"))).exitCode, 1);
 	assert.equal(read(attempts), "attempt\nattempt\n");
 });
 
@@ -1091,7 +1091,7 @@ if (has('git') && a[0] === 'run') {
 
 	const runPath = join(app, "state/runs", id);
 	assert.equal(read(join(runPath, "report.md")), "Initial report\n");
-	const usedTokens = () => JSON.parse(read(join(runPath, "meta.json"))).usage.models["test/model"].totalTokens;
+	const usedTokens = () => JSON.parse(read(join(runPath, "run.json"))).usage.models["test/model"].totalTokens;
 	assert.equal(usedTokens(), 12);
 	const patch = read(join(runPath, "changes.patch"));
 	assert.match(ok(["diff", id]), /\+created/);
@@ -1119,8 +1119,7 @@ if (has('git') && a[0] === 'run') {
 	const db = join(runPath, "session", `${id}.sqlite`);
 	assert.equal(read(db), id);
 	fs.unlinkSync(db);
-	const snapshot = () =>
-		["run-config.json", "meta.json", "progress", "exit"].map((f) => read(join(runPath, f))).concat(read(dockerLog));
+	const snapshot = () => ["run.json", "progress"].map((f) => read(join(runPath, f))).concat(read(dockerLog));
 	const before = snapshot();
 	fail(["continue", id, "must not be saved"], /Session database missing/);
 	assert.deepEqual(snapshot(), before);
@@ -1136,24 +1135,33 @@ if (has('git') && a[0] === 'run') {
 	stub("pi", "console.log('fresh-token')");
 
 	// Continue run with follow-up prompt
-	assert.equal(invoke(["continue", id, "Also add followup line"]).status, 1);
+	const cfgPath = join(runPath, "run.json");
+	stub("mkfifo", "process.exit(1)");
+	fail(["continue", id, "Also add followup line"], /mkfifo failed/);
+	const accepted = JSON.parse(read(cfgPath));
+	assert.equal(accepted.prompt, "Also add followup line");
+	assert.equal(accepted.phase, "agent");
+	assert.notEqual(accepted.requestId, id);
+	assert.equal(accepted.exitCode, undefined);
+	fs.unlinkSync(join(tmp, "bin/mkfifo"));
+	assert.equal(invoke(["resume", id]).status, 1);
+	assert.equal(JSON.parse(read(cfgPath)).requestId, accepted.requestId);
 	assert.equal(usedTokens(), 17);
 	const failedState = snapshot();
 	const resumeFirst = new RegExp(`pistick resume ${id}`);
 	fail(["continue", id, "do not replace failed follow-up"], resumeFirst);
 	assert.deepEqual(snapshot(), failedState);
-	const exit = join(runPath, "exit");
-	fs.unlinkSync(exit);
+	const failed = JSON.parse(read(cfgPath));
+	writeJson(cfgPath, { ...failed, exitCode: undefined });
 	fail(["continue", id, "do not replace interrupted follow-up"], resumeFirst);
-	assert.ok(!fs.existsSync(exit));
-	fs.writeFileSync(exit, "1");
+	writeJson(cfgPath, failed);
 	assert.deepEqual(snapshot(), failedState);
 	assert.equal(read(db), id);
 	fs.renameSync(pinned, `${pinned}.missing`);
 	fail(["resume", id], /Invalid action snapshot/);
 	assert.deepEqual(snapshot(), failedState);
 	fs.renameSync(`${pinned}.missing`, pinned);
-	const cfgPath = join(runPath, "run-config.json");
+
 	const cfg = JSON.parse(read(cfgPath));
 	const { actionDigest: _digest, ...legacy } = cfg;
 	writeJson(cfgPath, legacy);
@@ -1183,9 +1191,11 @@ if (has('git') && a[0] === 'run') {
 	const stopResult = invoke(["resume", id, "--retry-hook"]);
 	assert.equal(stopResult.status, 1);
 	assert.match(stopResult.stdout, /Failed to stop project stack/);
-	assert.equal(JSON.parse(read(join(runPath, "meta.json"))).status, "failed");
+	assert.equal(JSON.parse(read(join(runPath, "run.json"))).exitCode, 1);
 	fs.unlinkSync(stopFailure);
+	const beforeStop = read(dockerLog);
 	ok(["resume", id]);
+	assert.match(read(dockerLog).slice(beforeStop.length), /^compose [^\n]+ stop\n$/);
 	assert.equal(read(join(runPath, "report.md")), "Follow-up complete\n");
 	assert.equal(usedTokens(), 22);
 	assert.equal(read(join(runPath, "workspace/repo/example.txt")), "committed\nfollowup\n");
@@ -1368,10 +1378,10 @@ if (has('config')) {
 	const dir = join(app, "state/runs", directId);
 	assert.match(direct, /\[agent:sec\] Final audit/);
 	assert.equal(read(join(dir, "report.md")), "Final audit\n");
-	const config = read(join(dir, "run-config.json"));
+	const config = read(join(dir, "run.json"));
 	fail(["continue", directId, "follow-up"], /Cannot continue a run without an orchestrator/);
-	assert.equal(read(join(dir, "run-config.json")), config);
-	assert.equal(read(join(dir, "exit")), "0");
+	assert.equal(read(join(dir, "run.json")), config);
+	assert.equal(JSON.parse(config).exitCode, 0);
 });
 
 test("kill interrupts only the selected concurrent run and preserves its workspace", async (t) => {
@@ -1462,7 +1472,7 @@ if (has('config')) {
 		)!;
 		assert.match(ok(["kill", target]), /Killed run/);
 		assert.match(ok(["runs", "--all"]), new RegExp(`${target}  interrupted`));
-		assert.ok(!Object.hasOwn(JSON.parse(read(join(app, "state/runs", target, "meta.json"))), "usage"));
+		assert.ok(!Object.hasOwn(JSON.parse(read(join(app, "state/runs", target, "run.json"))), "usage"));
 		assert.equal(read(join(app, "state/runs", target, "workspace/repo/marker.txt")), "task-one\n");
 		assert.equal(spawnSync(join(bin, "pistick"), ["kill", target], { env }).status, 1);
 	} finally {
@@ -1610,7 +1620,7 @@ test("install-dev.sh prepares dev folder, suggests Pi default model, supports fr
 	const activeId = "a".repeat(32);
 	const activeRunDir = join(devDir, "state/runs", activeId);
 	fs.mkdirSync(activeRunDir, { recursive: true });
-	writeJson(join(activeRunDir, "meta.json"), { id: activeId, project: "demo" });
+	writeJson(join(activeRunDir, "run.json"), { id: activeId, project: "demo" });
 	fs.writeFileSync(join(activeRunDir, "compose.yaml"), "services: {}\n");
 	const fd = fs.openSync(join(activeRunDir, "lock"), "a");
 	try {

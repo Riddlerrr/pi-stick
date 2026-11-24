@@ -4,7 +4,6 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { UsageState } from "@earendil-works/pi-durable";
 import { readActionSnapshot, saveActionSnapshot } from "./action-snapshot.ts";
 import { type LoadedAction, loadAction, type ResolvedAgentSpec, resolveInputs, runHook } from "./actions.ts";
 import { executeAgentContainer } from "./agent-rpc.ts";
@@ -14,7 +13,6 @@ import {
 	compiled,
 	devMode,
 	isLocked,
-	json,
 	output,
 	prompt,
 	read,
@@ -23,45 +21,13 @@ import {
 	STATE,
 	touch,
 	tryLock,
-	writeJson,
 } from "./platform.ts";
+import { needsSession, type Phase, pendingEffect, readState, saveState, tryReadState } from "./run-state.ts";
 import { exportAccessLease, parseModelSpec, resolveModels } from "./system.ts";
 import { CONTAINER_REPO_DIR, type RpcPolicy, TaskEnv } from "./tasks.ts";
 import { getProject, type ProjectInfo } from "./workspace.ts";
 
 export const VALID_ID = /^[0-9a-f]{32}$/;
-
-export interface RunMeta {
-	id: string;
-	project: string;
-	action: string;
-	ref?: string;
-	baseHead?: string;
-	keepUp?: boolean;
-	createdAt: string;
-	updatedAt: string;
-	status: "preparing" | "running" | "done" | "failed";
-	usage?: UsageState;
-}
-
-export interface RunConfig {
-	project: string;
-	action: string;
-	ref?: string;
-	inputs: Record<string, string>;
-	prompt: string;
-	keepUp: boolean;
-	requestId: string;
-	mode: "run" | "continue";
-	prepared?: boolean;
-	agentLaunchAttempted: boolean;
-	actionDigest: string;
-	hookPending?: "prepare" | "after";
-	prepareDone?: boolean;
-	setupPending?: boolean;
-	afterDone?: boolean;
-	agentDone?: boolean;
-}
 
 export function runDir(id: string) {
 	if (!VALID_ID.test(id)) throw Error("Invalid run ID");
@@ -81,16 +47,6 @@ export function activeRunIds(): string[] {
 		if (isLocked(join(runsDir, entry.name, "lock"))) active.push(entry.name);
 	}
 	return active;
-}
-
-export function readMeta(id: string): RunMeta {
-	const file = join(runDir(id), "meta.json");
-	if (!fs.existsSync(file)) throw Error(`Unknown run: ${id}`);
-	return json(file) as RunMeta;
-}
-
-export function writeMeta(id: string, meta: RunMeta) {
-	writeJson(join(runDir(id), "meta.json"), { ...meta, updatedAt: new Date().toISOString() });
 }
 
 export function status(dir: string, msg: string, agent?: string) {
@@ -230,31 +186,22 @@ export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 		if (!tryLock(fd)) throw Error("Could not acquire run lock");
 		const actionDigest = saveActionSnapshot(task.dir, action, project.folder);
 		const now = new Date().toISOString();
-		writeMeta(id, {
+		saveState(task.dir, {
+			version: 1,
 			id,
 			project: project.name,
 			action: action.name,
 			ref: opts.ref,
-			keepUp: opts.keepUp,
 			createdAt: now,
 			updatedAt: now,
-			status: "preparing",
-		});
-		writeJson(join(task.dir, "run-config.json"), {
-			project: project.name,
-			action: action.name,
-			ref: opts.ref,
 			inputs,
 			prompt: buildInitialPrompt(action, opts.promptText, inputs),
 			keepUp: opts.keepUp,
 			requestId: id,
 			mode: "run",
-			prepared: false,
-			prepareDone: false,
-			setupPending: false,
-			agentLaunchAttempted: false,
+			phase: "checkout",
 			actionDigest,
-		} satisfies RunConfig);
+		});
 		await spawnWorker(id, fd);
 	} finally {
 		fs.closeSync(fd);
@@ -271,27 +218,20 @@ function requireSession(id: string) {
 
 export async function launchResume(id: string, retryHook = false): Promise<string> {
 	const dir = runDir(id);
-	const exitFile = join(dir, "exit");
-	const cfgFile = join(dir, "run-config.json");
-	if (!fs.existsSync(cfgFile)) throw Error(`Unknown run: ${id}`);
+	if (!fs.existsSync(dir)) throw Error(`Unknown run: ${id}`);
 	const fd = fs.openSync(runLock(id), "a");
 	try {
 		if (!tryLock(fd)) throw Error(`Run ${id} is currently active; use 'pistick follow ${id}'`);
-		const cfg = json(cfgFile) as RunConfig;
-		if (fs.existsSync(exitFile) && read(exitFile).trim() === "0")
-			throw Error("Run already completed; use 'pistick continue' for follow-up instructions");
+		const cfg = readState(dir);
+		if (cfg.exitCode === 0) throw Error("Run already completed; use 'pistick continue' for follow-up instructions");
 		readActionSnapshot(dir, cfg.actionDigest);
-		// A legacy config without the marker cannot prove the agent never started.
-		if (cfg.agentLaunchAttempted !== false) requireSession(id);
-		// Older workers did not checkpoint setup; once Compose was materialized it may have run.
-		if (!retryHook && !cfg.prepared && (cfg.setupPending ?? fs.existsSync(join(dir, "compose.yaml"))))
-			throw Error("Outcome of setup-project unknown; inspect its side effects before using resume --retry-hook");
-		if (cfg.hookPending && !retryHook)
-			throw Error(
-				`Outcome of ${cfg.hookPending} hook unknown; verify its side effects before using resume --retry-hook`,
-			);
-		if (cfg.agentLaunchAttempted !== false) removeOrphanAgent(id);
-		fs.rmSync(exitFile, { force: true });
+		if (needsSession(cfg)) requireSession(id);
+		const effect = pendingEffect(cfg.phase);
+		if (effect && !retryHook)
+			throw Error(`Outcome of ${effect} unknown; verify its side effects before using resume --retry-hook`);
+		if (cfg.phase === "agent-started") removeOrphanAgent(id);
+		delete cfg.exitCode;
+		saveState(dir, cfg);
 		await spawnWorker(id, fd);
 	} finally {
 		fs.closeSync(fd);
@@ -303,32 +243,25 @@ export async function launchResume(id: string, retryHook = false): Promise<strin
 export async function launchContinue(id: string, promptText: string, keepUp?: boolean): Promise<string> {
 	if (!promptText.trim()) throw Error("Follow-up prompt cannot be empty");
 	const dir = runDir(id);
-	const cfgFile = join(dir, "run-config.json");
-	const exitFile = join(dir, "exit");
-	if (!fs.existsSync(cfgFile)) throw Error(`Unknown run: ${id}`);
+	if (!fs.existsSync(dir)) throw Error(`Unknown run: ${id}`);
 	const fd = fs.openSync(runLock(id), "a");
 	try {
 		if (!tryLock(fd)) throw Error(`Run ${id} is currently active; wait for it to finish first`);
-		const cfg = json(cfgFile) as RunConfig;
+		const cfg = readState(dir);
 		if (!readActionSnapshot(dir, cfg.actionDigest).orchestrator)
 			throw Error("Cannot continue a run without an orchestrator");
 		const project = getProject(cfg.project);
 		const task = new TaskEnv(id, project);
 		if (!fs.existsSync(task.repo)) throw Error(`Workspace for run ${id} is no longer present`);
-		if (cfg.hookPending) throw Error(`Resolve pending ${cfg.hookPending} hook with resume first`);
-		if (!cfg.prepared) throw Error("Run preparation is incomplete; resume it first");
 		requireSession(id);
-		if (!fs.existsSync(exitFile) || read(exitFile).trim() !== "0")
-			throw Error(`Current turn did not finish successfully; use 'pistick resume ${id}'`);
-		delete cfg.afterDone;
-		delete cfg.agentDone;
+		if (cfg.exitCode !== 0) throw Error(`Current turn did not finish successfully; use 'pistick resume ${id}'`);
+		cfg.phase = "agent";
+		delete cfg.exitCode;
 		cfg.mode = "continue";
 		cfg.prompt = promptText.trim();
 		cfg.requestId = runId();
 		if (keepUp !== undefined) cfg.keepUp = keepUp;
-		// A new request must never inherit the previous turn's success marker.
-		fs.unlinkSync(exitFile);
-		writeJson(cfgFile, cfg);
+		saveState(dir, cfg);
 		await spawnWorker(id, fd);
 	} finally {
 		fs.closeSync(fd);
@@ -361,9 +294,11 @@ export async function worker(id: string): Promise<number> {
 	} finally {
 		fs.closeSync(reader);
 	}
-	const cfgFile = join(dir, "run-config.json");
-	const cfg = json(cfgFile) as RunConfig;
-	const meta = readMeta(id);
+	const cfg = readState(dir);
+	const advance = (phase: Phase) => {
+		cfg.phase = phase;
+		saveState(dir, cfg);
+	};
 	const project = getProject(cfg.project);
 	const action = readActionSnapshot(dir, cfg.actionDigest);
 	const task = new TaskEnv(id, project);
@@ -371,36 +306,14 @@ export async function worker(id: string): Promise<number> {
 	let stackStartAttempted = false;
 
 	try {
-		if (cfg.hookPending && !action.hooks[cfg.hookPending]) throw Error(`Pending ${cfg.hookPending} hook is missing`);
-		let services: string[];
-		if (cfg.mode === "continue") {
-			status(dir, `Starting project stack for follow-up on ${project.name}…`);
-			if (!fs.existsSync(task.composeFile)) task.materializeCompose();
-			services = task.services();
-			stackStartAttempted = true;
-			try {
-				task.start();
-			} catch {
-				task.up();
-			}
-		} else if (cfg.prepared) {
-			status(dir, `Resuming run on ${project.name}…`);
-			if (!fs.existsSync(task.composeFile)) task.materializeCompose();
-			services = task.services();
-			stackStartAttempted = true;
-			task.up();
-		} else {
+		if (cfg.phase === "checkout") {
 			status(dir, `Preparing isolated workspace for ${project.name}…`);
-			if (!cfg.prepareDone && !cfg.hookPending) {
-				if (cfg.prepareDone === undefined && fs.existsSync(task.workspace))
-					throw Error("Cannot safely repeat checkout preparation for this legacy run; start a new run");
-				meta.baseHead = task.prepareWorkspace(cfg.ref).baseHead;
-				writeMeta(id, meta);
-			}
-
-			if (action.hooks.prepare && !cfg.prepareDone) {
-				cfg.hookPending = "prepare";
-				writeJson(cfgFile, cfg);
+			cfg.baseHead = task.prepareWorkspace(cfg.ref).baseHead;
+			advance("prepare");
+		}
+		if (cfg.phase === "prepare" || cfg.phase === "preparing-hook") {
+			if (action.hooks.prepare) {
+				advance("preparing-hook");
 				status(dir, "Running prepare hook…");
 				runHook("prepare", action.hooks.prepare, {
 					runId: id,
@@ -411,44 +324,42 @@ export async function worker(id: string): Promise<number> {
 					scratchDir: task.scratch,
 					contextDir: task.context,
 					ref: cfg.ref,
-					baseHead: meta.baseHead,
+					baseHead: cfg.baseHead,
 					prompt: cfg.prompt,
 					inputs: cfg.inputs,
 				});
-				meta.baseHead = task.inspectGit("rev-parse", "HEAD").trim();
-				writeMeta(id, meta);
-				delete cfg.hookPending;
+				cfg.baseHead = task.inspectGit("rev-parse", "HEAD").trim();
 			}
-			if (!cfg.prepareDone) {
-				cfg.prepareDone = true;
-				writeJson(cfgFile, cfg);
-			}
-
-			status(dir, "Starting project Compose stack…");
-			const mat = task.materializeCompose();
-			services = mat.services;
+			advance("setup");
+		}
+		let services: string[] = [];
+		if (cfg.phase !== "stop") {
+			if (cfg.phase === "setup" || !fs.existsSync(task.composeFile)) task.materializeCompose();
+			services = task.services();
 			stackStartAttempted = true;
-			task.up();
-			cfg.setupPending = true;
-			writeJson(cfgFile, cfg);
+			if (cfg.mode === "continue") {
+				try {
+					task.start();
+				} catch {
+					task.up();
+				}
+			} else task.up();
+		}
+		if (cfg.phase === "setup" || cfg.phase === "setting-up") {
+			advance("setting-up");
 			task.setup();
-			cfg.setupPending = false;
-			cfg.prepared = true;
-			writeJson(cfgFile, cfg);
+			advance("agent");
 		}
 
 		const reportFile = join(dir, "report.md");
 		const outputsDir = join(dir, "outputs");
 		const patchFile = join(dir, "changes.patch");
-		if (!cfg.agentDone) {
+		if (cfg.phase === "agent" || cfg.phase === "agent-started") {
 			const contextFiles = fs.existsSync(task.context) ? fs.readdirSync(task.context).sort() : [];
 			const modelSpecs = Object.values(action.agents).map((a) => a.model);
 			if (action.orchestrator) modelSpecs.unshift(action.orchestrator.model);
 			const auth = await resolveModels(modelSpecs);
 
-			meta.status = "running";
-			meta.keepUp = cfg.keepUp;
-			writeMeta(id, meta);
 			const reporter = action.orchestrator ?? action.agents[action.stages.at(-1)!.parallel[0]];
 			status(dir, `Starting action '${action.name}' (${reporter.model})…`);
 
@@ -486,13 +397,9 @@ export async function worker(id: string): Promise<number> {
 				continueRun: cfg.mode === "continue",
 			};
 
-			if (cfg.agentLaunchAttempted === false) {
-				fs.mkdirSync(join(dir, "session"), { recursive: true, mode: 0o700 });
-				cfg.agentLaunchAttempted = true;
-				writeJson(cfgFile, cfg);
-			} else {
-				requireSession(id);
-			}
+			if (needsSession(cfg)) requireSession(id);
+			else fs.mkdirSync(join(dir, "session"), { recursive: true, mode: 0o700 });
+			advance("agent-started");
 			const result = await executeAgentContainer(
 				task,
 				jobPayload,
@@ -505,8 +412,8 @@ export async function worker(id: string): Promise<number> {
 					return JSON.stringify(await exportAccessLease(spec));
 				},
 				(usage) => {
-					meta.usage = usage;
-					writeMeta(id, meta);
+					cfg.usage = usage;
+					saveState(dir, cfg);
 				},
 			);
 
@@ -520,19 +427,18 @@ export async function worker(id: string): Promise<number> {
 				}
 			}
 
-			const { patchFile, untracked } = task.captureDiff(meta.baseHead);
+			const { patchFile, untracked } = task.captureDiff(cfg.baseHead);
 			status(dir, result.report, action.orchestrator ? "orchestrator" : `agent:${reporter.name}`);
 			status(dir, `Wrote: ${reportFile}`);
 			if (patchFile) status(dir, `Patch: ${patchFile}`);
 			if (untracked.length) status(dir, `Untracked files: ${untracked.length}`);
 
-			cfg.agentDone = true;
-			writeJson(cfgFile, cfg);
+			advance(action.hooks.after ? "after" : "stop");
 		}
 
-		if (action.hooks.after && !cfg.afterDone) {
-			cfg.hookPending = "after";
-			writeJson(cfgFile, cfg);
+		if (cfg.phase === "after" || cfg.phase === "after-hook") {
+			if (!action.hooks.after) throw Error("Missing after hook");
+			advance("after-hook");
 			status(dir, "Running after hook…");
 			runHook("after", action.hooks.after, {
 				runId: id,
@@ -543,7 +449,7 @@ export async function worker(id: string): Promise<number> {
 				scratchDir: task.scratch,
 				contextDir: task.context,
 				ref: cfg.ref,
-				baseHead: meta.baseHead,
+				baseHead: cfg.baseHead,
 				prompt: cfg.prompt,
 				inputs: cfg.inputs,
 				exitCode: 0,
@@ -551,16 +457,14 @@ export async function worker(id: string): Promise<number> {
 				patchFile: fs.existsSync(patchFile) ? patchFile : undefined,
 				outputsDir: fs.existsSync(outputsDir) ? outputsDir : undefined,
 			});
-			delete cfg.hookPending;
-			cfg.afterDone = true;
-			writeJson(cfgFile, cfg);
+			advance("stop");
 		}
 		code = 0;
 	} catch (err) {
 		status(dir, `Failed; see private log: ${join(dir, "worker.log")}`);
 		console.error(err);
 	} finally {
-		if (stackStartAttempted && !cfg.keepUp) {
+		if ((stackStartAttempted || cfg.phase === "stop") && !cfg.keepUp) {
 			try {
 				task.stop();
 			} catch (err) {
@@ -569,18 +473,16 @@ export async function worker(id: string): Promise<number> {
 				console.error("Failed to stop project stack:", err);
 			}
 		}
-		meta.status = code === 0 ? "done" : "failed";
-		writeMeta(id, meta);
 		touch(join(dir, "last-used"));
-		fs.writeFileSync(join(dir, "exit.tmp"), String(code));
-		fs.renameSync(join(dir, "exit.tmp"), join(dir, "exit"));
+		cfg.exitCode = code === 0 ? 0 : 1;
+		saveState(dir, cfg);
 	}
 	return code;
 }
 
 export async function follow(id: string) {
 	const dir = runDir(id);
-	const exit = join(dir, "exit");
+
 	const lockPath = join(dir, "lock");
 	if (!fs.existsSync(dir)) throw Error("Unknown run");
 	const file = fs.openSync(join(dir, "progress"), "r");
@@ -595,13 +497,14 @@ export async function follow(id: string) {
 	try {
 		for (;;) {
 			await drain();
-			if (fs.existsSync(exit)) {
+			const { exitCode } = readState(dir);
+			if (exitCode !== undefined) {
 				await drain();
-				return Number(read(exit));
+				return exitCode;
 			}
 			const fd = fs.openSync(lockPath, "a");
 			try {
-				if (tryLock(fd) && !fs.existsSync(exit))
+				if (tryLock(fd) && readState(dir).exitCode === undefined)
 					throw Error("Worker interrupted; inspect worker.log or resume this run");
 			} finally {
 				fs.closeSync(fd);
@@ -625,23 +528,23 @@ export function listRuns(all: boolean) {
 		const id = entry.name;
 		const dir = join(runsDir, id);
 		const active = isLocked(join(dir, "lock"));
-		const metaFile = join(dir, "meta.json");
-		const meta: Partial<RunMeta> = fs.existsSync(metaFile) ? json(metaFile) : {};
-		const exitFile = join(dir, "exit");
+		const meta = tryReadState(dir);
 		const state = active
 			? "running"
-			: fs.existsSync(exitFile)
-				? read(exitFile).trim() === "0"
+			: !meta
+				? "unsupported"
+				: meta.exitCode === 0
 					? "done"
-					: "failed"
-				: "interrupted";
+					: meta.exitCode === 1
+						? "failed"
+						: "interrupted";
 		if (!all && state !== "running") continue;
 		rows.push({
 			id,
 			state,
-			project: meta.project ?? "-",
-			action: meta.action ?? "-",
-			updatedAt: meta.updatedAt ?? meta.createdAt ?? "-",
+			project: meta?.project ?? "-",
+			action: meta?.action ?? "-",
+			updatedAt: meta?.updatedAt ?? "-",
 		});
 	}
 	rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -683,7 +586,7 @@ function removeOrphanAgent(id: string) {
 }
 
 export async function killRun(id: string) {
-	const meta = readMeta(id);
+	const meta = readState(runDir(id));
 	const dir = runDir(id);
 	const fifo = join(dir, "kill.fifo");
 	const lock = fs.openSync(runLock(id), "r+");
@@ -701,7 +604,7 @@ export async function killRun(id: string) {
 				await sleep(50);
 			}
 			const current = fs.statSync(fifo);
-			if (attempt.dev !== current.dev || attempt.ino !== current.ino || fs.existsSync(join(dir, "exit")))
+			if (attempt.dev !== current.dev || attempt.ino !== current.ino || readState(dir).exitCode !== undefined)
 				throw Error("Run attempt already ended; not stopping its containers");
 			removeOrphanAgent(id);
 			new TaskEnv(id, getProject(meta.project)).stop();
@@ -716,7 +619,7 @@ export async function killRun(id: string) {
 }
 
 export function stopRun(id: string) {
-	const meta = readMeta(id);
+	const meta = readState(runDir(id));
 	const fd = fs.openSync(runLock(id), "a");
 	try {
 		if (!tryLock(fd)) throw Error(`Run ${id} is currently active; wait for it to finish before stopping`);
@@ -731,7 +634,7 @@ export function stopRun(id: string) {
 }
 
 export async function diffRun(id: string) {
-	const meta = readMeta(id);
+	const meta = readState(runDir(id));
 	const task = new TaskEnv(id, getProject(meta.project));
 	const saved = join(task.dir, "changes.patch");
 	const { patchFile, untracked } = fs.existsSync(task.repo)
@@ -751,11 +654,11 @@ export async function cleanup(days: number, dry: boolean) {
 		console.log("No eligible pi-stick runs.");
 		return;
 	}
-	const isInterrupted = (dir: string) => !fs.existsSync(join(dir, "exit"));
+	const isInterrupted = (dir: string) => readState(dir).exitCode === undefined;
 	function eligibleLastUsed(dir: string, interrupted: boolean) {
 		const last =
 			fs.statSync(join(dir, "last-used"), { throwIfNoEntry: false }) ??
-			(interrupted ? fs.statSync(join(dir, "meta.json"), { throwIfNoEntry: false }) : undefined);
+			(interrupted ? fs.statSync(join(dir, "run.json"), { throwIfNoEntry: false }) : undefined);
 		return last?.isFile() && last.mtimeMs <= cutoff ? last.mtimeMs : undefined;
 	}
 	const items: Array<{ id: string; key: string; lastUsed: number; interrupted: boolean }> = [];
@@ -764,12 +667,16 @@ export async function cleanup(days: number, dry: boolean) {
 		if (!entry.isDirectory() || !VALID_ID.test(id)) continue;
 		const dir = join(runsDir, id);
 		if (isLocked(join(dir, "lock"))) continue;
-		const interrupted = isInterrupted(dir);
+		const state = tryReadState(dir);
+		if (!state) {
+			console.log(`Skipping ${id}: unsupported or unreadable checkpoint.`);
+			continue;
+		}
+		const interrupted = state.exitCode === undefined;
 		const lastUsed = eligibleLastUsed(dir, interrupted);
 		if (lastUsed === undefined) continue;
-		const metaFile = join(dir, "meta.json");
-		const project = fs.existsSync(metaFile) ? (json(metaFile) as Partial<RunMeta>).project : undefined;
-		const key = project ? `pi-stick-${project}-${id.slice(0, 12)}` : `pi-stick-run-${id.slice(0, 12)}`;
+		const project = state.project;
+		const key = `pi-stick-${project}-${id.slice(0, 12)}`;
 		items.push({ id, key, lastUsed, interrupted });
 		console.log(
 			`${id} (${project ?? "unknown"}${interrupted ? ", interrupted" : ""}): workspace, scratch stack/volumes, reports and session`,
