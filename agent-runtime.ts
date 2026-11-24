@@ -64,6 +64,7 @@ interface StageRuntimeSpec {
 }
 
 interface Job {
+	type: "run";
 	id: string;
 	check?: boolean;
 	models?: Record<string, Model<Api>[]>;
@@ -78,9 +79,13 @@ interface Job {
 }
 
 interface RpcResponseMessage {
-	rpc: number;
+	type: "exec_chunk" | "response";
+	id: string;
+	command?: string;
+	success?: boolean;
+	error?: string;
 	chunk?: string;
-	result?: { text: string; error?: boolean; exitCode?: number };
+	data?: { text: string; error?: boolean; exitCode?: number };
 }
 
 interface AgentContext {
@@ -96,8 +101,9 @@ const send = (data: unknown) => {
 
 const rl = createInterface({ input: process.stdin });
 const pendingRpc = new Map<
-	number,
+	string,
 	{
+		command: string;
 		resolve: (res: { text: string; error?: boolean; exitCode?: number }) => void;
 		reject: (err: Error) => void;
 		onChunk?: (chunk: Buffer) => void;
@@ -118,25 +124,31 @@ function readInitialJob(): Promise<Job> {
 			}
 			if (!gotFirst) {
 				gotFirst = true;
-				resolve(msg as Job);
+				if (!msg || typeof msg !== "object" || !("type" in msg) || msg.type !== "run")
+					reject(Error("Expected run command; check CLI and container versions"));
+				else resolve(msg as Job);
 				return;
 			}
 			const reply = msg as RpcResponseMessage;
-			if (typeof reply?.rpc === "number") {
-				const pending = pendingRpc.get(reply.rpc);
+			if (typeof reply?.id === "string") {
+				const pending = pendingRpc.get(reply.id);
 				if (pending) {
-					if (typeof reply.chunk === "string") {
+					if (reply.type === "exec_chunk" && pending.command === "exec" && typeof reply.chunk === "string") {
 						try {
 							pending.onChunk?.(Buffer.from(reply.chunk, "base64"));
 						} catch (err) {
-							send({ cancelRpc: reply.rpc });
+							send({ type: "cancel_exec", id: reply.id });
 							pending.reject(err as Error);
-							pendingRpc.delete(reply.rpc);
+							pendingRpc.delete(reply.id);
 						}
 						return;
 					}
-					pendingRpc.delete(reply.rpc);
-					if (reply.result && typeof reply.result.text === "string") pending.resolve(reply.result);
+					pendingRpc.delete(reply.id);
+					if (reply.type !== "response" || reply.command !== pending.command)
+						pending.reject(Error("Unexpected host response"));
+					else if (reply.success === false && typeof reply.error === "string")
+						pending.resolve({ text: reply.error, error: true });
+					else if (reply.success === true && typeof reply.data?.text === "string") pending.resolve(reply.data);
 					else pending.reject(Error("Invalid RPC reply from host"));
 				}
 			}
@@ -159,12 +171,12 @@ async function callHostRpc(
 	signal?: AbortSignal,
 ): Promise<{ text: string; error?: boolean; exitCode?: number }> {
 	if (signal?.aborted) throw Error("Command aborted");
-	const id = ++rpcSeq;
-	const cancel = () => send({ cancelRpc: id });
+	const id = String(++rpcSeq);
+	const cancel = () => send({ type: "cancel_exec", id: id });
 	try {
 		return await new Promise((resolve, reject) => {
-			pendingRpc.set(id, { resolve, reject, onChunk });
-			send({ rpc: id, method, params, ...(agent ? { agent } : {}) });
+			pendingRpc.set(id, { command: method, resolve, reject, onChunk });
+			send({ ...params, agent, type: method, id });
 			signal?.addEventListener("abort", cancel, { once: true });
 		});
 	} finally {
@@ -269,7 +281,7 @@ for (const spec of [job.orchestrator, ...Object.values(job.agents ?? {})]) {
 		const supported = getSupportedThinkingLevels(model);
 		if (!supported.includes(spec.thinkingLevel)) {
 			const message = `${spec.name}: ${model.provider}/${model.id} does not support thinkingLevel "${spec.thinkingLevel}" (supported: ${supported.join(", ")})`;
-			send({ progress: message });
+			send({ type: "progress", message: message });
 			throw Error(message);
 		}
 	}
@@ -291,7 +303,7 @@ function getAgentCtx(conversationId: ConversationId): AgentContext {
 const probeEvents: string[] = [];
 const emitProgress = (line: string, label?: string) => {
 	if (job.check) probeEvents.push(label ? `[${label}] ${line}` : line);
-	else send({ progress: line, ...(label ? { agent: label } : {}) });
+	else send({ type: "progress", message: line, ...(label ? { agent: label } : {}) });
 };
 
 const stageProgressLabel = job.check || job.orchestrator ? "orchestrator" : undefined;
@@ -731,7 +743,7 @@ try {
 			throw Error(`Offline self-check did not return ready: ${JSON.stringify(message?.content)}`);
 		if (!probeEvents.includes("[orchestrator] Probing runtime.") || !probeEvents.includes("[orchestrator] codemode"))
 			throw Error(`Unexpected probe progress events: ${JSON.stringify(probeEvents)}`);
-		send({ ready: true });
+		send({ type: "response", command: "run", id: job.id, success: true, data: { ready: true } });
 	} else {
 		let report: string | undefined;
 		try {
@@ -741,9 +753,19 @@ try {
 				emitProgress("Warning: session usage snapshot unavailable");
 				return undefined;
 			});
-			if (report !== undefined || usage) {
-				send({ report, usage, ...(report && Object.keys(agentOutputs).length ? { outputs: agentOutputs } : {}) });
-			}
+			const data = {
+				report,
+				usage,
+				...(report && Object.keys(agentOutputs).length ? { outputs: agentOutputs } : {}),
+			};
+			send({
+				type: "response",
+				command: "run",
+				id: job.id,
+				success: report !== undefined,
+				error: report === undefined ? "Action failed" : undefined,
+				data,
+			});
 		}
 	}
 } finally {

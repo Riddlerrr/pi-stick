@@ -48,6 +48,7 @@ function stageFixture(
 		tools: [] as string[],
 	};
 	const job = {
+		type: "run",
 		id: runId(),
 		prompt: "task",
 		credentials: { groq: { token: "test-only" } },
@@ -84,6 +85,13 @@ function stageFixture(
 	return { run, dir, job, stub };
 }
 
+test("runtime rejects an untyped job from an incompatible launcher", async (t) => {
+	const { job, run } = stageFixture(t);
+	const result = await run({ ...job, type: undefined });
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /Expected run command/);
+});
+
 test("delegate rejects a repeated agent before dispatch, even with different prompts", async (t) => {
 	const { job, run, stub } = stageFixture(t);
 	job.stages = [];
@@ -103,7 +111,7 @@ test("delegate rejects a repeated agent before dispatch, even with different pro
 	const result = await run();
 	assert.equal(result.status, 0, result.stdout + result.stderr);
 	assert.match(
-		JSON.parse(result.stdout.trim().split("\n").at(-1)!).report,
+		JSON.parse(result.stdout.trim().split("\n").at(-1)!).data.report,
 		/Batch 'delegate' repeats agent 'sibling'/,
 	);
 });
@@ -139,7 +147,7 @@ test("resume aborts an interrupted delegate; only a fresh delegation runs", asyn
 	assert.equal((await run()).signal, "SIGKILL");
 	const resumed = await run();
 	assert.equal(resumed.status, 0, resumed.stderr + resumed.stdout);
-	assert.match(JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).report, /worker \(ok\)\s+fresh/);
+	assert.match(JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).data.report, /worker \(ok\)\s+fresh/);
 	assert.equal(fs.readFileSync(join(dir, "workers"), "utf8"), "original\nfresh\n");
 	// A fast orchestrator can exit before a ghost's retry timer fires. Check its durable outcome too.
 	const storage = await openNodeSqliteStorage(join(dir, `${job.id}.sqlite`));
@@ -191,7 +199,7 @@ test("after process death, resume restores the first stage's output and complete
 	assert.equal(first.signal, "SIGKILL", first.stderr + first.stdout);
 	const resumed = await run();
 	assert.equal(resumed.status, 0, resumed.stderr + resumed.stdout);
-	const result = JSON.parse(resumed.stdout.trim().split("\n").at(-1)!);
+	const result = JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).data;
 	const storage = await openNodeSqliteStorage(join(dir, `${job.id}.sqlite`));
 	try {
 		const conversations = await storage.scanConversations({}, 10, undefined, BACKGROUND_CONTEXT);
@@ -232,13 +240,13 @@ test("a final-stage report retries an empty answer, then restores without synthe
 	assert.equal(failed.status, 1);
 	assert.match(failed.stdout, /returned an empty report/);
 	const model = "groq/llama-3.1-8b-instant";
-	const partial = JSON.parse(failed.stdout.trim().split("\n").at(-1)!);
+	const partial = JSON.parse(failed.stdout.trim().split("\n").at(-1)!).data;
 	assert.equal(partial.report, undefined);
 	assert.equal(partial.usage.models[model].totalTokens, 24);
 	for (let i = 0; i < 2; i++) {
 		const result = await run(payload);
 		assert.equal(result.status, 0, result.stderr);
-		const { report, outputs, usage } = JSON.parse(result.stdout.trim().split("\n").at(-1)!);
+		const { report, outputs, usage } = JSON.parse(result.stdout.trim().split("\n").at(-1)!).data;
 		assert.equal(usage.models[model].totalTokens, 36);
 		assert.ok(usage.models[model].cost.total > 0);
 		assert.deepEqual(usage.tools, {});
@@ -259,7 +267,7 @@ test("resume retries an unanswered root once and reattaches after interruption w
 	for (let i = 0; i < 2; i++) {
 		const resumed = await run();
 		assert.equal(resumed.status, 0, resumed.stderr);
-		assert.equal(JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).report, "answer-root");
+		assert.equal(JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).data.report, "answer-root");
 	}
 	assert.equal(fs.readFileSync(join(dir, "requests"), "utf8"), "A\nB\nroot\nroot\nroot\nroot\n");
 });

@@ -172,25 +172,47 @@ export async function probe(image = IMAGE): Promise<void> {
 	const lines = createInterface({ input: child.stdout });
 	let ready = false;
 	try {
+		const id = runId();
 		await send({
-			id: runId(),
+			type: "run",
+			id,
 			check: true,
 			models: {},
 			credentials: {},
 		});
 		for await (const line of lines) {
 			const msg = JSON.parse(line);
-			if (typeof msg.rpc === "number") {
-				if (msg.method === "exec") {
-					await send({ rpc: msg.rpc, chunk: Buffer.from("probe-bash").toString("base64") });
-					await send({ rpc: msg.rpc, result: { text: "", exitCode: 7 } });
-				} else await send({ rpc: msg.rpc, result: { text: `probe-ok:${msg.method}`, error: false } });
+			if (typeof msg.id === "string" && ["ps", "logs", "exec", "check_clean", "restart"].includes(msg.type)) {
+				if (msg.type === "exec") {
+					await send({ type: "exec_chunk", id: msg.id, chunk: Buffer.from("probe-bash").toString("base64") });
+					await send({
+						type: "response",
+						command: msg.type,
+						id: msg.id,
+						success: true,
+						data: { text: "", exitCode: 7 },
+					});
+				} else
+					await send({
+						type: "response",
+						command: msg.type,
+						id: msg.id,
+						success: true,
+						data: { text: `probe-ok:${msg.type}`, error: false },
+					});
 				continue;
 			}
-			if (msg.ready === true) {
+			if (
+				msg.type === "response" &&
+				msg.command === "run" &&
+				msg.id === id &&
+				msg.success === true &&
+				msg.data?.ready === true
+			) {
 				ready = true;
 				break;
 			}
+			throw Error("Unexpected probe protocol message; rebuild the agent image");
 		}
 		child.stdin.end();
 		const [code] = await exit;
@@ -213,7 +235,7 @@ export async function doctor(extraChecks: Array<[string, () => unknown | Promise
 	const checks: Array<[string, () => unknown | Promise<unknown>]> = [
 		["Docker daemon", () => output(["docker", "info", "--format", "{{.ServerVersion}}"])],
 		[`Agent image (${IMAGE})`, () => output(["docker", "image", "inspect", IMAGE, "--format", "{{.Id}}"])],
-		["Ephemeral runtime self-check (Git, durable SQLite, Codemode, JSON-RPC; no model call)", () => probe(IMAGE)],
+		["Ephemeral runtime self-check (Git, durable SQLite, Codemode, JSONL RPC; no model call)", () => probe(IMAGE)],
 		[
 			settings.default_model
 				? `Pi default model auth (${settings.default_model})`

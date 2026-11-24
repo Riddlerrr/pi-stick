@@ -73,50 +73,58 @@ export async function executeAgentContainer(
 
 	const lines = createInterface({ input: child.stdout });
 	const inflight = new Set<Promise<void>>();
-	const commands = new Map<number, AbortController>();
+	const commands = new Map<string, AbortController>();
 	let report: string | undefined;
 	let outputs: Record<string, string> | undefined;
 
 	try {
-		await send(jobPayload);
+		await send({ ...jobPayload, type: "run" });
 		for await (const line of lines) {
 			const msg = JSON.parse(line);
-			if (typeof msg.cancelRpc === "number") {
-				commands.get(msg.cancelRpc)?.abort();
+			if (msg.type === "cancel_exec" && typeof msg.id === "string") {
+				commands.get(msg.id)?.abort();
 				continue;
 			}
-			if (typeof msg.progress === "string") {
-				onProgress(msg.progress, typeof msg.agent === "string" ? msg.agent : undefined);
+			if (msg.type === "progress" && typeof msg.message === "string") {
+				onProgress(msg.message, typeof msg.agent === "string" ? msg.agent : undefined);
 				continue;
 			}
-			if (typeof msg.report === "string" || Object.hasOwn(msg, "usage")) {
-				if (Object.hasOwn(msg, "usage")) {
-					if (!isUsageSnapshot(msg.usage)) throw Error("Invalid agent usage snapshot");
-					onUsage(msg.usage);
+			if (
+				msg.type === "response" &&
+				msg.command === "run" &&
+				msg.id === task.id &&
+				typeof msg.success === "boolean"
+			) {
+				const data = msg.data;
+				if (data && Object.hasOwn(data, "usage")) {
+					if (!isUsageSnapshot(data.usage)) throw Error("Invalid agent usage snapshot");
+					onUsage(data.usage);
 				}
-				report = typeof msg.report === "string" ? msg.report : undefined;
-				if (msg.outputs && typeof msg.outputs === "object") outputs = msg.outputs as Record<string, string>;
+				report = msg.success && typeof data?.report === "string" ? data.report : undefined;
+				if (data?.outputs && typeof data.outputs === "object") outputs = data.outputs as Record<string, string>;
 				break;
 			}
-			if (typeof msg.rpc === "number" && typeof msg.method === "string") {
-				const rpcId = msg.rpc as number;
-				const method = msg.method as string;
+			if (
+				typeof msg.id === "string" &&
+				["exec", "ps", "logs", "restart", "check_clean", "refresh_token"].includes(msg.type)
+			) {
+				const rpcId = msg.id as string;
+				const method = msg.type as string;
 				if (commands.has(rpcId)) throw Error("Duplicate RPC id");
 				const controller = method === "exec" ? new AbortController() : undefined;
 				if (controller) commands.set(rpcId, controller);
-				const params = (msg.params && typeof msg.params === "object" ? msg.params : {}) as Record<string, unknown>;
 				const agentName = typeof msg.agent === "string" ? msg.agent : undefined;
 				const work = (async () => {
 					let result: { text: string; error?: boolean };
 					try {
 						result =
 							method === "refresh_token" && !agentName
-								? { text: await refreshToken(params.provider) }
+								? { text: await refreshToken(msg.provider) }
 								: await task.handleRpc(
 										method,
-										params,
+										msg,
 										resolvePolicy(agentName),
-										(chunk) => send({ rpc: rpcId, chunk: chunk.toString("base64") }),
+										(chunk) => send({ type: "exec_chunk", id: rpcId, chunk: chunk.toString("base64") }),
 										controller?.signal,
 									);
 					} catch (err) {
@@ -126,7 +134,12 @@ export async function executeAgentContainer(
 						};
 					}
 					commands.delete(rpcId);
-					await send({ rpc: rpcId, result });
+					await send({
+						type: "response",
+						id: rpcId,
+						command: method,
+						...(result.error ? { success: false, error: result.text } : { success: true, data: result }),
+					});
 				})();
 				inflight.add(work);
 				work.then(
@@ -135,7 +148,7 @@ export async function executeAgentContainer(
 				);
 				continue;
 			}
-			throw Error("Unexpected message from agent container");
+			throw Error("Unexpected agent protocol message; rebuild with pistick containers update");
 		}
 		for (const controller of commands.values()) controller.abort();
 		await Promise.allSettled(inflight);

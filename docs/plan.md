@@ -15,7 +15,7 @@
 
 ```mermaid
 flowchart LR
-    Host["Host CLI (pistick)\n- Task & lock manager\n- Git checkout & patch export\n- Trusted hooks (prepare / after)\n- Pi auth token broker\n- Multiplexed JSON-RPC broker"]
+    Host["Host CLI (pistick)\n- Task & lock manager\n- Git checkout & patch export\n- Trusted hooks (prepare / after)\n- Pi auth token broker\n- Multiplexed JSONL RPC broker"]
 
     subgraph TaskEnv["Per-Task Isolated Environment"]
         Agent["Ephemeral Agent Container\n(docker run --rm, read-only rootfs,\ncap_drop: ALL, no Docker socket)\n- Pi Durable SDK + Codemode\n- Orchestrator + Subagents\n- Native file tools (/workspace/repo, /scratch)\n- Direct access to project network"]
@@ -28,7 +28,7 @@ flowchart LR
         SharedFS[("Task Directories\n- /workspace/repo (isolated repo)\n- /scratch/<agent-id>\n- /context (read-only)\n- /sessions (SQLite)")]
     end
 
-    Host -- "stdin/stdout JSON-RPC\n(tokens, exec, logs, ps, restart)" --> Agent
+    Host -- "stdin/stdout JSONL RPC\n(tokens, exec, logs, ps, restart)" --> Agent
     Host -- "docker compose up/exec/logs/restart/stop" --> ProjectStack
     Agent -. "mounts" .- SharedFS
     Runner -. "mounts (/workspace, /scratch)" .- SharedFS
@@ -52,7 +52,7 @@ flowchart LR
   - `/context` (`ro`) — optional context files written by the action's `prepare` hook
   - `/sessions` — durable SQLite session storage for this run
 - **Network access**: The agent container has outbound access to LLM APIs **and** is attached to the task's Docker Compose project network so agents and Codemode scripts can call running project services (`http://service:port`, databases, etc.) directly.
-- **Host-brokered container control**: Docker control stays strictly on the host. Agent requests to execute commands in `runner` (or other allowed Compose services), inspect service status/logs, or restart services travel over multiplexed JSON-RPC to the host broker.
+- **Host-brokered container control**: Docker control stays strictly on the host. Agent requests to execute commands in `runner` (or other allowed Compose services), inspect service status/logs, or restart services travel over multiplexed JSONL RPC to the host broker.
 
 ### 3.3 Task Workspace, Concurrency & Lifecycle
 - **Isolated workspace & stack per task**: Each task creates an isolated copy/worktree of the project repository and starts its own Compose project (`pi-stick-<project>-<run-id>`), leaving the user's development workspace (`projects/<name>/repo`) untouched.
@@ -90,7 +90,8 @@ flowchart LR
 
 ### 3.6 Agent Toolset
 - **In-container native tools**: `read`, `write`, `edit`, `grep`, `find`, Pi Codemode, and `delegate` (for orchestrators), plus direct network access to project services.
-- **Host-brokered project tools** (multiplexed JSON-RPC with `requestId` for concurrent callers):
+- **Private wire protocol**: The host starts the agent with a `run` command. While it is running, the container can send requests such as `{"type":"exec","id":"7","agent":"reviewer","command":"git status"}`. The host streams `exec_chunk` events and replies with `{"type":"response","command":"exec","id":"7","success":true,"data":{"text":"","exitCode":0}}`, or `success:false` and an `error` string. The container can send `cancel_exec` for that ID, emits `progress` events, and returns the final report in its response to `run`. This is not Pi’s public session protocol or JSON-RPC 2.0; update the CLI and agent image together.
+- **Host-brokered project tools** (Pi-style commands over JSONL with a string `id` for concurrent callers):
   - `bash` — run shell commands in `runner` at `/workspace/repo` by default, or in another allowed Compose service at its configured working directory
   - `logs` — inspect recent logs from project Compose services
   - `ps` — inspect running/health status of project Compose services
@@ -137,7 +138,7 @@ pistick version
 2. Implement per-task isolated checkout/worktree creation and per-run locking (`state/runs/<id>/lock`), enabling concurrent tasks.
 3. Update task Compose generation to bind-mount the task's `/workspace` and `/scratch` into the project stack while preserving base recipe safety validation (no host ports, no `privileged`, no external volumes/host mounts).
 4. Replace the persistent `pi-stick` Compose service with an ephemeral `docker run --rm` agent container attached to the task's Docker network and scoped mounts, stopping the project stack on completion (`--keep-up` override).
-5. Implement multiplexed JSON-RPC between host and agent container for `exec`, `logs`, `ps`, and `restart`.
+5. Implement multiplexed JSONL RPC between host and agent container for `exec`, `logs`, `ps`, and `restart`.
 6. Replace the single hardcoded model with dynamic multi-provider model resolution and credential passing via local `pi auth`.
 7. Update `doctor`, `cleanup`, and `containers update` (image build + offline self-check probe) for the new ephemeral container architecture.
 

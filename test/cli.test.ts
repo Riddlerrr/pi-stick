@@ -499,7 +499,7 @@ test("cleanup verifies and removes the orphan under lock before Compose teardown
 	assert.ok(!fs.existsSync(dir));
 });
 
-test("agent-runtime offline self-check exercises canonical paths, scratch, concurrent search, delegate, Codemode, and JSON-RPC", async (t) => {
+test("agent-runtime offline self-check exercises canonical paths, scratch, concurrent search, delegate, Codemode, and JSONL RPC", async (t) => {
 	const tmp = fs.mkdtempSync(join(tmpdir(), "pi-stick-rt-"));
 	const workspace = join(tmp, "workspace");
 	const scratch = join(tmp, "scratch");
@@ -559,22 +559,29 @@ test("agent-runtime offline self-check exercises canonical paths, scratch, concu
 	const lines = createInterface({ input: child.stdout });
 	const seenMethods: string[] = [];
 	let ready = false;
-	child.stdin.write(`${JSON.stringify({ id: runId(), check: true, models: {}, credentials: {} })}\n`);
+	const id = runId();
+	child.stdin.write(`${JSON.stringify({ type: "run", id, check: true, models: {}, credentials: {} })}\n`);
 	for await (const line of lines) {
 		const msg = JSON.parse(line);
-		if (typeof msg.rpc === "number") {
-			seenMethods.push(msg.method);
-			if (msg.method === "exec") {
-				assert.equal(msg.params.command, "exit 7");
+		if (typeof msg.id === "string" && ["ps", "logs", "exec", "check_clean", "restart"].includes(msg.type)) {
+			seenMethods.push(msg.type);
+			if (msg.type === "exec") {
+				assert.equal(msg.command, "exit 7");
 				child.stdin.write(
-					`${JSON.stringify({ rpc: msg.rpc, chunk: Buffer.from("probe-bash").toString("base64") })}\n${JSON.stringify({ rpc: msg.rpc, result: { text: "", exitCode: 7 } })}\n`,
+					`${JSON.stringify({ type: "exec_chunk", id: msg.id, chunk: Buffer.from("probe-bash").toString("base64") })}\n${JSON.stringify({ type: "response", command: msg.type, id: msg.id, success: true, data: { text: "", exitCode: 7 } })}\n`,
 				);
 				continue;
 			}
 			child.stdin.write(
-				`${JSON.stringify({ rpc: msg.rpc, result: { text: msg.method === "check_clean" ? "" : `probe-ok:${msg.method}`, error: false } })}\n`,
+				`${JSON.stringify({ type: "response", command: msg.type, id: msg.id, success: true, data: { text: msg.type === "check_clean" ? "" : `probe-ok:${msg.type}`, error: false } })}\n`,
 			);
-		} else if (msg.ready === true) {
+		} else if (
+			msg.type === "response" &&
+			msg.command === "run" &&
+			msg.id === id &&
+			msg.success === true &&
+			msg.data?.ready === true
+		) {
 			ready = true;
 			break;
 		}
@@ -601,7 +608,7 @@ test("doctor checks Git in the selected image independently of its bundled runti
 		"docker",
 		`const a = process.argv.slice(2);
 		if (a[0] !== 'run') process.exit(0);
-		if (a.includes('/app/agent-runtime.ts')) console.log(JSON.stringify({ ready: true }));
+		if (a.includes('/app/agent-runtime.ts')) require('node:readline').createInterface({input:process.stdin}).once('line', line => console.log(JSON.stringify({type:'response', command:'run', id:JSON.parse(line).id, success:true, data:{ready:true}})));
 		else if (a.slice(-3).join(' ') === 'pi-stick:current git --version' && a[a.indexOf('--network')+1] === 'none' && !a.includes('-v')) {
 			if (!require('node:fs').existsSync(${JSON.stringify(installed)})) process.exit(127);
 			console.log('git version 2.39.5');
@@ -805,7 +812,7 @@ test("resume may initialize a session only before the first agent launch attempt
 			if (fs.existsSync(${JSON.stringify(join(tmp, "fail-launch"))})) process.exit(1);
 			require('node:readline').createInterface({input:process.stdin}).once('line', line => {
 				fs.writeFileSync(session + '/' + JSON.parse(line).id + '.sqlite', 'initial history');
-				console.log(JSON.stringify({ report: 'done' }));
+				console.log(JSON.stringify({type:'response', command:'run', id:JSON.parse(line).id, success:true, data:{ report: 'done' }}));
 			});
 		}`,
 	);
@@ -960,6 +967,7 @@ if (has('git') && a[0] === 'run') {
   rl.on('line', line => {
     const m = JSON.parse(line);
     if (!job) {
+      if (m.type !== 'run') process.exit(12);
       job = m;
       if (job.credentials['openai-codex'].token !== (job.continueRun ? 'fresh-token' : 'secret-fixture-token')) process.exit(3);
       if (job.orchestrator.thinkingLevel !== 'high' || job.orchestrator.model.modelId !== 'gpt-6.2-sol' || !job.orchestrator.instructions.includes('PINNED PROJECT NOTES') || !job.orchestrator.instructions.includes('PINNED INSTRUCTIONS') || job.orchestrator.tools.includes('restart')) process.exit(10);
@@ -970,12 +978,12 @@ if (has('git') && a[0] === 'run') {
       const db = session + '/' + job.id + '.sqlite';
       if (job.continueRun) {
         if (fs.readFileSync(db, 'utf8') !== job.id) process.exit(6);
-        if (!fs.existsSync(repoMount + '/followup-started')) { fs.writeFileSync(repoMount + '/followup-started', job.requestId); send({usage:usage(15)}); rl.close(); process.exitCode=7; return; }
+        if (!fs.existsSync(repoMount + '/followup-started')) { fs.writeFileSync(repoMount + '/followup-started', job.requestId); send({type:'response',command:'run',id:job.id,success:false,error:'failed',data:{usage:usage(15)}}); rl.close(); process.exitCode=7; return; }
         if (fs.readFileSync(repoMount + '/followup-started', 'utf8') !== job.requestId) process.exit(8);
-        if (fs.existsSync(repoMount + '/invalid-usage')) { send({usage:{models:{bad:'not counters'},tools:{}}}); rl.close(); return; }
+        if (fs.existsSync(repoMount + '/invalid-usage')) { send({type:'response',command:'run',id:job.id,success:false,error:'failed',data:{usage:{models:{bad:'not counters'},tools:{}}}}); rl.close(); return; }
         fs.appendFileSync(repoMount + '/example.txt', 'followup\\n');
-        send({ progress: 'Applying follow-up', agent: 'orchestrator' });
-        send({ report: 'Follow-up complete', usage: usage(20) });
+        send({ type: 'progress', message: 'Applying follow-up', agent: 'orchestrator' });
+        send({ type: 'response', command: 'run', id: job.id, success: true, data: { report: 'Follow-up complete', usage: usage(20) } });
         rl.close();
         return;
       }
@@ -985,29 +993,29 @@ if (has('git') && a[0] === 'run') {
       fs.writeFileSync(repoMount + '/ignored.txt', 'not for export\\n');
       fs.rmSync(repoMount + '/../ps-replied', {force:true});
       fs.rmSync(repoMount + '/../overflow', {force:true});
-      send({ rpc: 4, method: 'check_clean', params: {} });
-      send({ rpc: 5, method: 'ps', params: {}, agent:'orchestrator' });
-      send({ rpc: 1, method: 'exec', params: { command: '[[ -n "$BASH_VERSION" ]] && printf "from bash"' }, agent: 'orchestrator' });
-      send({ rpc: 2, method: 'logs', params: { tail: 10 }, agent: 'orchestrator' });
-      send({ rpc: 3, method: 'restart', params: { service: 'runner' }, agent: 'orchestrator' });
+      send({ id: '4', type: 'check_clean' });
+      send({ id: '5', type: 'ps', agent:'orchestrator' });
+      send({ id: '1', type: 'exec', command: '[[ -n "$BASH_VERSION" ]] && printf "from bash"', agent: 'orchestrator' });
+      send({ id: '2', type: 'logs', tail: 10, agent: 'orchestrator' });
+      send({ id: '3', type: 'restart', service: 'runner', agent: 'orchestrator' });
       return;
     }
-    if (m.rpc === 1 && m.chunk && Buffer.from(m.chunk,'base64').toString().includes('shell-ok')) return;
-    if (m.rpc === 1 && m.result.exitCode === 0) got |= 1;
-    else if (m.rpc === 2 && !m.result.error && m.result.text.includes('service-log-line')) got |= 2;
-    else if (m.rpc === 3 && m.result.error && m.result.text.includes('not permitted')) got |= 4;
-    else if (m.rpc === 5 && !m.result.error && m.result.text.includes('runner')) {
+    if (m.id === '1' && m.type === 'exec_chunk' && Buffer.from(m.chunk,'base64').toString().includes('shell-ok')) return;
+    if (m.id === '1' && m.data.exitCode === 0) got |= 1;
+    else if (m.id === '2' && m.success && m.data.text.includes('service-log-line')) got |= 2;
+    else if (m.id === '3' && !m.success && m.error.includes('not permitted')) got |= 4;
+    else if (m.id === '5' && m.success && m.data.text.includes('runner')) {
       fs.writeFileSync(repoMount + '/../ps-replied', '');
       got |= 16;
-    } else if (m.rpc === 4 && !m.result.error && m.result.text === ' M tracked-file\\n'.repeat(3000)) {
+    } else if (m.id === '4' && m.success && m.data.text === ' M tracked-file\\n'.repeat(3000)) {
       got |= 8;
       fs.writeFileSync(repoMount + '/../overflow', '');
-      send({rpc:6, method:'check_clean', params:{}});
-    } else if (m.rpc === 6 && m.result.error && m.result.text.includes('MAXBUFFER')) got |= 32;
+      send({id:'6', type:'check_clean'});
+    } else if (m.id === '6' && !m.success && m.error.includes('MAXBUFFER')) got |= 32;
     else process.exit(5);
     if (got === 63) {
-      send({ progress: 'All checks passed', agent: 'orchestrator' });
-      send({ report: 'Initial report', usage: usage(10) });
+      send({ type: 'progress', message: 'All checks passed', agent: 'orchestrator' });
+      send({ type: 'response', command: 'run', id: job.id, success: true, data: { report: 'Initial report', usage: usage(10) } });
       rl.close();
     }
   });
@@ -1237,47 +1245,48 @@ if (has('config')) {
   rl.on('line', line => {
     const m = JSON.parse(line);
     if (!job) {
+      if (m.type !== 'run') process.exit(12);
       job = m;
       if (job.credentials['openai-codex'].token !== 'codex-token-fixture') process.exit(3);
       if (job.credentials['openai-codex'].authType !== 'oauth') process.exit(4);
       if (job.credentials['anthropic'].token !== 'anthropic-key-fixture') process.exit(5);
       if (job.credentials['anthropic'].authType !== 'api_key') process.exit(6);
       if (!job.orchestrator) {
-        send({ report: 'Final audit', outputs: { sec: 'Final audit' } });
+        send({ type: 'response', command: 'run', id: job.id, success: true, data: { report: 'Final audit', outputs: { sec: 'Final audit' } } });
         rl.close();
         return;
       }
       if (job.agents.sec.thinkingLevel !== 'medium' || !job.orchestrator.instructions.includes('Security specialist')) process.exit(7);
       if (job.stageContext !== 'all' || job.stages.length !== 1 || job.stages[0].parallel.join(',') !== 'sec,perf') process.exit(8);
-      serviceCases.forEach(([agent, method, params], i) => send({ rpc: 10+i, agent, method, params }));
-      send({ rpc: 7, method: 'exec', params: { service: 'web', command: 'echo web' }, agent: 'sec' });
-      send({ rpc: 8, method: 'exec', params: { service: 'missing', command: 'true' }, agent: 'orchestrator' });
-      send({ rpc: 1, method: 'exec', params: { command: 'echo 1' }, agent: 'sec' });
-      send({ rpc: 2, method: 'exec', params: { timeout: 5.25, command: 'echo 2' }, agent: 'orchestrator' });
-      send({ rpc: 3, method: 'exec', params: { service: 'runner', command: 'echo 3' }, agent: 'perf' });
-      for (const [rpc, provider] of [[4, 'openai-codex'], [5, 'other'], [6, 'anthropic']]) send({ rpc, method: 'refresh_token', params: {provider} });
+      serviceCases.forEach(([agent, method, params], i) => send({ id: String(10+i), agent, type: method, ...params }));
+      send({ id: '7', type: 'exec', service: 'web', command: 'echo web', agent: 'sec' });
+      send({ id: '8', type: 'exec', service: 'missing', command: 'true', agent: 'orchestrator' });
+      send({ id: '1', type: 'exec', command: 'echo 1', agent: 'sec' });
+      send({ id: '2', type: 'exec', timeout: 5.25, command: 'echo 2', agent: 'orchestrator' });
+      send({ id: '3', type: 'exec', service: 'runner', command: 'echo 3', agent: 'perf' });
+      for (const [rpc, provider] of [[4, 'openai-codex'], [5, 'other'], [6, 'anthropic']]) send({ id: String(rpc), type: 'refresh_token', provider });
       return;
     }
-    if (m.rpc === 2 && m.chunk && Buffer.from(m.chunk,'base64').toString().includes('ran:echo 2')) return;
-    if (m.rpc === 1 && m.result.error && m.result.text.includes('not permitted')) got |= 1;
-    else if (m.rpc === 2 && m.result.exitCode === 0) got |= 2;
-    else if (m.rpc === 3 && m.result.error && m.result.text.includes('not permitted')) got |= 4;
-    else if (m.rpc === 4 && JSON.parse(m.result.text).token === 'codex-token-fixture' && JSON.parse(m.result.text).validUntil > Date.now()) got |= 8;
-    else if ((m.rpc === 5 || m.rpc === 6) && m.result.error) got |= 1 << (m.rpc - 1);
-    else if (m.rpc === 7 && m.result.exitCode === 0) got |= 64;
-    else if (m.rpc === 8 && m.result.error && m.result.text.includes('Unknown Compose service')) got |= 128;
-    else if (m.rpc >= 10) {
-      const expected = serviceCases[m.rpc - 10][3];
-      if (expected instanceof RegExp ? !m.result.error || !expected.test(m.result.text) : m.result.error || m.result.text.trim() !== expected) process.exit(9);
+    if (m.id === '2' && m.type === 'exec_chunk' && Buffer.from(m.chunk,'base64').toString().includes('ran:echo 2')) return;
+    if (m.id === '1' && !m.success && m.error.includes('not permitted')) got |= 1;
+    else if (m.id === '2' && m.data.exitCode === 0) got |= 2;
+    else if (m.id === '3' && !m.success && m.error.includes('not permitted')) got |= 4;
+    else if (m.id === '4' && JSON.parse(m.data.text).token === 'codex-token-fixture' && JSON.parse(m.data.text).validUntil > Date.now()) got |= 8;
+    else if ((m.id === '5' || m.id === '6') && !m.success) got |= 1 << (Number(m.id) - 1);
+    else if (m.id === '7' && m.data.exitCode === 0) got |= 64;
+    else if (m.id === '8' && !m.success && m.error.includes('Unknown Compose service')) got |= 128;
+    else if (Number(m.id) >= 10) {
+      const expected = serviceCases[Number(m.id) - 10][3];
+      if (expected instanceof RegExp ? m.success || !expected.test(m.error) : !m.success || m.data.text.trim() !== expected) process.exit(9);
       pending--;
     } else process.exit(9);
     if (got === 255 && !pending) {
-      send({ progress: 'checked auth', agent: 'agent:sec' });
-      send({ progress: 'checked queries', agent: 'agent:perf' });
-      send({
+      send({ type: 'progress', message: 'checked auth', agent: 'agent:sec' });
+      send({ type: 'progress', message: 'checked queries', agent: 'agent:perf' });
+      send({type:'response',command:'run',id:job.id,success:true,data:{
         report: 'Combined synthesis report',
         outputs: { sec: 'Security findings', perf: 'Perf findings' }
-      });
+      }});
       rl.close();
     }
   });
@@ -1351,7 +1360,7 @@ if (has('config')) {
     const iv = setInterval(() => {
       if (fs.existsSync(${JSON.stringify(releaseFile)})) {
         clearInterval(iv);
-        process.stdout.write(JSON.stringify({ report: 'done:' + job.prompt }) + '\\n');
+        process.stdout.write(JSON.stringify({type:'response', command:'run', id:job.id, success:true, data:{ report: 'done:' + job.prompt }}) + '\\n');
         rl.close();
       }
     }, 25);
