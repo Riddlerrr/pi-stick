@@ -10,7 +10,8 @@
   - `src/workspace.ts` — Local Docker project workspaces (`create project`, discovery).
   - `src/actions.ts` — Two-tier trusted action loader/validator, scaffolding (`create action`), and host hooks (`prepare`/`after`).
   - `src/tasks.ts` — Per-task isolated workspace, base Compose validation/materialization, lifecycle (`up`/`start`/`stop`/`down`), diff capture, and multiplexed host-broker RPC (`exec`, `logs`, `ps`, `restart`, `check_clean`).
-  - `src/runs.ts` — Per-run locks, concurrent detached workers, `run`/`runs`/`follow`/`resume`/`continue`/`containers stop`/`diff`/`cleanup`, and ephemeral container JSON-RPC bridge.
+  - `src/runs.ts` — Per-run locks, concurrent detached workers, `run`/`runs`/`follow`/`resume`/`continue`/`containers stop`/`diff`/`cleanup`.
+  - `src/agent-rpc.ts` — Host-side JSONL RPC bridge to the ephemeral agent container.
   - `src/system.ts` — Ephemeral container args, multi-provider Pi model/token resolution, offline runtime probe, `doctor`, and `containers update`.
 - `agent-runtime.ts`, `Dockerfile`, `.dockerignore` — Ephemeral containerized agent runtime (runs inside Docker with `@earendil-works/*` dependencies, native file tools, Codemode, static stages, and dynamic parallel `delegate`).
 - `runtime-tools/` — Container tool implementations; `agent-runtime.ts` supplies runtime policies and registers tools.
