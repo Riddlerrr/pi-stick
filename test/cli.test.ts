@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { TestContext } from "node:test";
 import test from "node:test";
@@ -12,16 +12,22 @@ import { status } from "../src/runs.ts";
 import { ephemeralArgs, parseModelSpec } from "../src/system.ts";
 import { TaskEnv } from "../src/tasks.ts";
 
-function fixture(t: TestContext) {
+function fixture(t: TestContext, copyRelease = false) {
 	const tmp = fs.mkdtempSync(join(tmpdir(), "pi-stick-test-"));
 	const app = join(tmp, "install");
 	const bin = join(tmp, "bin");
 	t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 	fs.mkdirSync(app);
 	fs.mkdirSync(bin);
-	const binary = process.env.PI_STICK_TEST_BINARY;
-	if (binary) fs.cpSync(join(dirname(binary), "share"), app, { recursive: true });
-	else {
+	let binary = process.env.PI_STICK_TEST_BINARY;
+	if (binary && copyRelease) {
+		const dir = join(tmp, "release");
+		fs.cpSync(join(dirname(binary), "share"), join(dir, "share"), { recursive: true });
+		const local = join(dir, basename(binary));
+		fs.copyFileSync(binary, local);
+		binary = local;
+	}
+	if (!binary) {
 		for (const name of [
 			"src",
 			"pistick",
@@ -74,7 +80,19 @@ function fixture(t: TestContext) {
 	git("commit", "-qm", "initial");
 	const stub = (name: string, js: string) =>
 		fs.writeFileSync(join(bin, name), `#!/usr/bin/env node\n${js}`, { mode: 0o700 });
-	return { tmp, app, bin, source, ok, fail, invoke, git, stub, env };
+	return {
+		tmp,
+		app,
+		assets: binary ? join(dirname(binary), "share") : app,
+		bin,
+		source,
+		ok,
+		fail,
+		invoke,
+		git,
+		stub,
+		env,
+	};
 }
 
 test("native search tools are opt-in per role, including scaffolded actions", (t) => {
@@ -115,9 +133,9 @@ test("container-only commands require the containers namespace", (t) => {
 });
 
 test("containers build passes the installed lockfile to Docker without sending run state", (t) => {
-	const { app, ok, fail, stub, tmp } = fixture(t);
+	const { app, assets, ok, fail, stub, tmp } = fixture(t, true);
 	const labelFile = join(tmp, "image-label");
-	const lock = read(join(app, "package-lock.json"));
+	const lock = read(join(assets, "package-lock.json"));
 	stub(
 		"docker",
 		`const assert = require('node:assert/strict'), fs = require('node:fs');
@@ -127,15 +145,15 @@ test("containers build passes the installed lockfile to Docker without sending r
 		assert.match(label, /^io\\.pi-stick\\.build-inputs\\.sha256=[0-9a-f]{64}$/);
 		fs.writeFileSync(${JSON.stringify(labelFile)}, label.split('=')[1]);
 		assert.deepEqual([cmd, flag, image], ['build', '-t', ${JSON.stringify(process.env.PI_STICK_IMAGE || "pi-stick:current")}]);
-		assert.equal(fs.readFileSync(context + '/package-lock.json', 'utf8'), fs.readFileSync(${JSON.stringify(join(app, "package-lock.json"))}, 'utf8'));
+		assert.equal(fs.readFileSync(context + '/package-lock.json', 'utf8'), fs.readFileSync(${JSON.stringify(join(assets, "package-lock.json"))}, 'utf8'));
 		assert.ok(!fs.existsSync(context + '/state'));
 		console.log('built');`,
 	);
 	assert.match(ok(["containers", "build"]), /built/);
-	assert.equal(read(join(app, "package-lock.json")), lock);
+	assert.equal(read(join(assets, "package-lock.json")), lock);
 	fs.writeFileSync(join(app, "state/irrelevant"), "changed");
 	ok(["containers", "status"]);
-	fs.appendFileSync(join(app, "package-lock.json"), "\n");
+	fs.appendFileSync(join(assets, "package-lock.json"), "\n");
 	fail(["containers", "status"], /does not match.*containers build/);
 	ok(["containers", "build"]);
 	ok(["containers", "status"]);
@@ -143,7 +161,7 @@ test("containers build passes the installed lockfile to Docker without sending r
 	fail(["containers", "status"], /no build fingerprint/);
 	fs.unlinkSync(labelFile);
 	fail(["containers", "status"], /Cannot inspect/);
-	fs.symlinkSync(join(app, "state/irrelevant"), join(app, "runtime-tools/linked.ts"));
+	fs.symlinkSync(join(app, "state/irrelevant"), join(assets, "runtime-tools/linked.ts"));
 	fail(["containers", "build"], /Expected a regular build input/);
 });
 
@@ -1577,6 +1595,23 @@ test("stage-release.sh packages updated runtime files and excludes removed legac
 		assert.ok(!fs.existsSync(join(tmp, removed)), `stale legacy file still staged: ${removed}`);
 	}
 });
+
+test(
+	"packaged CLI uses installed data and its own schema on first launch",
+	{ skip: !process.env.PI_STICK_TEST_BINARY },
+	(t) => {
+		const { bin, tmp, env, assets } = fixture(t);
+		const result = spawnSync(join(bin, "pistick"), ["create", "action", "demo"], {
+			env: { ...env, PI_STICK_HOME: undefined },
+			cwd: tmp,
+			encoding: "utf8",
+		});
+		assert.equal(result.status, 0, result.stderr);
+		const dir = join(tmp, "pi-stick/actions/demo");
+		const schema = JSON.parse(read(join(dir, "action.json"))).$schema;
+		assert.equal(fs.realpathSync(join(dir, schema)), fs.realpathSync(join(assets, "action.schema.json")));
+	},
+);
 
 test("dev mode isolates data, settings, and image from installed home via auto-dev, --dev, and pistick-dev", (t) => {
 	const { app, tmp, bin, source, stub, env } = fixture(t);

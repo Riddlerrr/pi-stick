@@ -13,11 +13,13 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
 declare const PI_STICK_COMPILED: boolean;
 export const compiled = typeof PI_STICK_COMPILED !== "undefined" && PI_STICK_COMPILED;
+
+const checkout = typeof PI_STICK_COMPILED === "undefined";
 
 const explicitHome = process.env.PI_STICK_HOME;
 if (explicitHome !== undefined && !isAbsolute(explicitHome)) throw Error("PI_STICK_HOME must be an absolute path");
@@ -32,14 +34,15 @@ export const devMode =
 		? true
 		: envDev === "0" || envDev === "false"
 			? false
-			: !compiled && explicitHome === undefined;
+			: checkout && explicitHome === undefined;
 
-const sourceRoot = resolve(import.meta.dirname, "..");
-const assetsRoot = compiled
-	? (explicitHome ?? join(homedir(), "pi-stick"))
-	: explicitHome && !devMode
-		? explicitHome
-		: sourceRoot;
+function releaseAssets() {
+	const dir = compiled ? dirname(process.execPath) : import.meta.dirname;
+	// install.sh puts managed files beside the executable, not in share/.
+	if (compiled && existsSync(join(dir, "action.schema.json"))) return dir;
+	return join(dir, "share");
+}
+const assetsRoot = checkout ? (!devMode && explicitHome) || resolve(import.meta.dirname, "..") : releaseAssets();
 const dataRoot = devMode
 	? (explicitDevHome ?? join(homedir(), "pi-stick-dev"))
 	: (explicitHome ?? join(homedir(), "pi-stick"));
