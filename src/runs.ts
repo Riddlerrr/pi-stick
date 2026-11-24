@@ -680,7 +680,6 @@ export async function executeAgentContainer(
 	const commands = new Map<number, AbortController>();
 	let report: string | undefined;
 	let outputs: Record<string, string> | undefined;
-	let rpcCount = 0;
 
 	try {
 		await send(jobPayload);
@@ -704,7 +703,6 @@ export async function executeAgentContainer(
 				break;
 			}
 			if (typeof msg.rpc === "number" && typeof msg.method === "string") {
-				if (++rpcCount > 500) throw Error("RPC call limit exceeded");
 				const rpcId = msg.rpc as number;
 				const method = msg.method as string;
 				if (commands.has(rpcId)) throw Error("Duplicate RPC id");
