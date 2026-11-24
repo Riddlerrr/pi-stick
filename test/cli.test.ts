@@ -214,6 +214,27 @@ test("TaskEnv validates base compose, materializes bind mounts, and isolates rep
 	assert.throws(() => task.validateBase(), /host mounts/);
 });
 
+test("task workspace bind preserves each service's access mode", (t) => {
+	const { app, tmp, source, ok } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	const folder = join(app, "projects/demo");
+	const task = new TaskEnv(runId(), { name: "demo", folder, repo: join(folder, "repo") }, join(tmp, "state"));
+	writeJson(join(folder, "compose.yaml"), {
+		services: {
+			runner: { image: "alpine", volumes: ["source:/workspace"] },
+			viewer: { image: "alpine", volumes: ["source:/workspace:ro"] },
+		},
+		volumes: { source: {} },
+	});
+	task.materializeCompose();
+	const { services } = JSON.parse(read(task.composeFile));
+	const bind = { type: "bind", source: task.workspace, target: "/workspace" };
+	const workspace = (name: string) =>
+		services[name].volumes.find((m: { target: string }) => m.target === "/workspace");
+	assert.deepEqual(workspace("runner"), bind);
+	assert.deepEqual(workspace("viewer"), { ...bind, read_only: true });
+});
+
 test("task Compose recipes reject secrets before writing the task stack", (t) => {
 	const { app, tmp, source, ok } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);

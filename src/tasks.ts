@@ -231,7 +231,7 @@ export class TaskEnv {
 				svc.volumes = svc.volumes.map((m) => {
 					if (m.type === "volume" && m.source === "source" && m.target === "/workspace") {
 						usesWorkspace = true;
-						return { type: "bind", source: this.workspace, target: "/workspace" };
+						return { type: "bind", source: this.workspace, target: m.target, read_only: m.read_only };
 					}
 					if (m.type === "volume" && m.source === "source") sourceStillUsed = true;
 					return m;
