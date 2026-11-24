@@ -91,7 +91,7 @@ flowchart LR
 ### 3.6 Agent Toolset
 - **In-container native tools**: `read`, `write`, `edit`, `grep`, `find`, Pi Codemode, and `delegate` (for orchestrators), plus direct network access to project services.
 - **Host-brokered project tools** (multiplexed JSON-RPC with `requestId` for concurrent callers):
-  - `bash` — run shell commands in `runner` at `/workspace/repo`
+  - `bash` — run shell commands in `runner` at `/workspace/repo` by default, or in another allowed Compose service at its configured working directory
   - `logs` — inspect recent logs from project Compose services
   - `ps` — inspect running/health status of project Compose services
   - `restart` — restart a project service (e.g., after code edits when hot-reload is unavailable)

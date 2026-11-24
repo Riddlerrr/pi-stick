@@ -1146,6 +1146,8 @@ if (has('config')) {
     volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
     networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
   }));
+} else if (has('exec') && a.at(-1) === 'echo web') {
+  process.exit(a[a.indexOf('--') + 1] === 'web' && !has('-w') ? 0 : 1);
 } else if (has('exec') && has('runner') && has('sh') && has('-c')) {
   console.log('ran:' + a.at(-1));
 } else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
@@ -1168,7 +1170,8 @@ if (has('config')) {
       }
       if (job.agents.sec.thinkingLevel !== 'medium' || !job.orchestrator.instructions.includes('Security specialist')) process.exit(7);
       if (job.stageContext !== 'all' || job.stages.length !== 1 || job.stages[0].parallel.join(',') !== 'sec,perf') process.exit(8);
-      // Only the orchestrator may execute commands in runner.
+      send({ rpc: 7, method: 'exec', params: { service: 'web', command: 'echo web' }, agent: 'sec' });
+      send({ rpc: 8, method: 'exec', params: { service: 'missing', command: 'true' }, agent: 'orchestrator' });
       send({ rpc: 1, method: 'exec', params: { command: 'echo 1' }, agent: 'sec' });
       send({ rpc: 2, method: 'exec', params: { timeout: 5.25, command: 'echo 2' }, agent: 'orchestrator' });
       send({ rpc: 3, method: 'exec', params: { service: 'runner', command: 'echo 3' }, agent: 'perf' });
@@ -1181,8 +1184,10 @@ if (has('config')) {
     else if (m.rpc === 3 && m.result.error && m.result.text.includes('not permitted')) got |= 4;
     else if (m.rpc === 4 && JSON.parse(m.result.text).token === 'codex-token-fixture' && JSON.parse(m.result.text).validUntil > Date.now()) got |= 8;
     else if ((m.rpc === 5 || m.rpc === 6) && m.result.error) got |= 1 << (m.rpc - 1);
+    else if (m.rpc === 7 && m.result.exitCode === 0) got |= 64;
+    else if (m.rpc === 8 && m.result.error && m.result.text.includes('Unknown Compose service')) got |= 128;
     else process.exit(9);
-    if (got === 63) {
+    if (got === 255) {
       send({ progress: 'checked auth', agent: 'agent:sec' });
       send({ progress: 'checked queries', agent: 'agent:perf' });
       send({

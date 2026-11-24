@@ -383,7 +383,7 @@ export class TaskEnv {
 	private validateService(service: string): string {
 		if (!SERVICE_NAME.test(service)) throw Error(`Invalid service name: ${service}`);
 		const known = this.services();
-		if (known.length && !known.includes(service)) throw Error(`Unknown Compose service: ${service}`);
+		if (!known.includes(service)) throw Error(`Unknown Compose service: ${service}`);
 		return service;
 	}
 
@@ -399,9 +399,12 @@ export class TaskEnv {
 				if (policy.allowExec === false) return { text: "bash is not permitted for this agent", error: true };
 				const cmd = params.command;
 				if (typeof cmd !== "string" || cmd.includes("\0")) return { text: "Invalid command", error: true };
+				const target = params.service === undefined ? "runner" : params.service;
+				if (typeof target !== "string") return { text: "Invalid bash service", error: true };
+				const service = this.validateService(target);
 				const allowed = policy.allowedServices ?? ["runner"];
-				if (!allowed.includes("*") && !allowed.includes("runner"))
-					return { text: "bash in runner is not permitted", error: true };
+				if (!allowed.includes("*") && !allowed.includes(service))
+					return { text: `bash in ${service} is not permitted`, error: true };
 				const timeout = params.timeout;
 				if (
 					timeout !== undefined &&
@@ -412,9 +415,9 @@ export class TaskEnv {
 					...this.compose,
 					"exec",
 					"-T",
-					"-w",
-					CONTAINER_REPO_DIR,
-					"runner",
+					...(service === "runner" ? ["-w", CONTAINER_REPO_DIR] : []),
+					"--",
+					service,
 					"sh",
 					"-c",
 					RUNNER_SHELL,

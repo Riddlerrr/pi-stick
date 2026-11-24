@@ -108,6 +108,7 @@
           }
         },
         "allowedServices": {
+          "description": "Compose services targeted by bash. Defaults to runner; * permits any service in the project.",
           "type": "array",
           "items": { "type": "string" }
         },

@@ -18,11 +18,12 @@ export function createBashTool(run: RunCommand, scratch: (id: ConversationId) =>
 	return defineTool({
 		name: "bash",
 		description:
-			"Execute a Bash command in the current working directory. Returns combined stdout and stderr. Output is truncated to the last 2000 lines or 50 KiB; full output is saved to a temporary file when truncated.",
+			"Execute a Bash command in runner (/workspace/repo) or in the working directory of an allowed Compose service. Returns combined stdout and stderr. Output is truncated to the last 2000 lines or 50 KiB; full output is saved to a temporary file when truncated.",
 		parameters: {
 			type: "object",
 			properties: {
 				command: { type: "string" },
+				service: { type: "string", description: "Target Compose service (default: runner)." },
 				timeout: { type: "number", description: "Timeout in seconds (optional, no default timeout)." },
 			},
 			required: ["command"],
