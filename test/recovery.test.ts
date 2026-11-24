@@ -324,7 +324,10 @@ test("resume retries an unanswered root once and reattaches after interruption w
 	for (let i = 0; i < 2; i++) {
 		const failed = await run();
 		assert.equal(failed.status, 1);
-		assert.match(failed.stderr, /Task submission did not complete: unanswered: model_error/);
+		assert.equal(
+			JSON.parse(failed.stdout.trim().split("\n").at(-1)!).error,
+			"Orchestrator submission did not complete: unanswered",
+		);
 	}
 	assert.equal((await run()).signal, "SIGKILL");
 	for (let i = 0; i < 2; i++) {
@@ -333,6 +336,23 @@ test("resume retries an unanswered root once and reattaches after interruption w
 		assert.equal(JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).data.report, "answer-root");
 	}
 	assert.equal(fs.readFileSync(join(dir, "requests"), "utf8"), "A\nB\nroot\nroot\nroot\nroot\n");
+});
+
+test("unexpected action exceptions do not expose their detail in the failure response", async (t) => {
+	const { job, run, stub } = stageFixture(t);
+	job.stages = [];
+	fs.writeFileSync(
+		stub,
+		`import { Harness } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-durable"))};
+ const open = Harness.open;
+ Harness.open = async (...args) => { const h = await open(...args); h.root = () => {throw Error("private-fixture")}; return h; };`,
+	);
+	const failed = await run();
+	assert.equal(failed.status, 1);
+	const msg = JSON.parse(failed.stdout.trim().split("\n").at(-1)!);
+	assert.equal(msg.success, false);
+	assert.equal(msg.error, "Action failed");
+	assert.doesNotMatch(failed.stderr + failed.stdout, /private-fixture/);
 });
 
 test("resume resubmits an unanswered input that never entered the transcript", async (t) => {
@@ -365,7 +385,7 @@ test("a failed required agent blocks downstream work; resume retries only the fa
 	const { run, dir } = stageFixture(t, "fail-stage");
 	const first = await run();
 	assert.equal(first.status, 1, first.stdout + first.stderr);
-	assert.match(first.stdout, /Stage 'first' failed: worker/);
+	assert.equal(JSON.parse(first.stdout.trim().split("\n").at(-1)!).error, "Stage 'first' failed: worker");
 	assert.match(first.stdout, /unanswered: model_error/);
 	const requests = () => fs.readFileSync(join(dir, "requests"), "utf8").trim().split("\n");
 	assert.deepEqual(requests().sort(), ["A", "sibling"]);

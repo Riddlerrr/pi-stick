@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { UsageState } from "@earendil-works/pi-durable";
-import { type ActionJob, type HostMessage, readRuntime } from "../runtime-tools/protocol.ts";
+import { type ActionJob, type HostMessage, RunFailure, readRuntime } from "../runtime-tools/protocol.ts";
 import { closed } from "./platform.ts";
 import { ephemeralArgs } from "./system.ts";
 import type { RpcPolicy, TaskEnv } from "./tasks.ts";
@@ -49,6 +49,7 @@ export async function executeAgentContainer(
 	const inflight = new Set<Promise<void>>();
 	const commands = new Map<string, AbortController>();
 	let receivedMessage = false;
+	let failure: string | undefined;
 	let report: string | undefined;
 	let outputs: Record<string, string> | undefined;
 
@@ -68,7 +69,8 @@ export async function executeAgentContainer(
 			if (msg.type === "response") {
 				if (msg.id !== task.id || (msg.success && "ready" in msg.data)) throw Error("Unexpected run response");
 				if (msg.data && "usage" in msg.data && msg.data.usage) onUsage(msg.data.usage);
-				if (msg.success && "report" in msg.data) {
+				if (!msg.success) failure = msg.error || "Action failed";
+				else if ("report" in msg.data) {
 					report = msg.data.report;
 					outputs = msg.data.outputs;
 				}
@@ -119,11 +121,13 @@ export async function executeAgentContainer(
 		await writeQueue;
 		child.stdin.end();
 		const [code] = await exit;
+		if (failure !== undefined) throw new RunFailure(failure);
 		if (!receivedMessage)
-			throw Error(
+			throw new RunFailure(
 				"Agent exited before responding. Check Docker; for an incompatible image run pistick containers build.",
 			);
-		if (code !== 0 || !report?.trim()) throw Error("Agent container failed to return a report");
+		if (!report?.trim()) throw new RunFailure("Agent container failed to return a report");
+		if (code !== 0) throw new RunFailure("Agent container failed after returning its report");
 		return { report, outputs };
 	} finally {
 		for (const controller of commands.values()) controller.abort();

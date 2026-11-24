@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import { type ActionJob, RUN } from "../runtime-tools/protocol.ts";
+import { type ActionJob, RUN, RunFailure } from "../runtime-tools/protocol.ts";
 import { readActionSnapshot, saveActionSnapshot } from "./action-snapshot.ts";
 import { type LoadedAction, loadAction, type ResolvedAgentSpec, resolveInputs, runHook } from "./actions.ts";
 import { executeAgentContainer } from "./agent-rpc.ts";
@@ -463,7 +463,8 @@ export async function worker(id: string): Promise<number> {
 		}
 		code = 0;
 	} catch (err) {
-		status(dir, `Failed; see private log: ${join(dir, "worker.log")}`);
+		const summary = err instanceof RunFailure ? `Failed: ${err.message}` : "Failed";
+		status(dir, `${summary}; see private log: ${join(dir, "worker.log")}`);
 		console.error(err);
 	} finally {
 		if ((stackStartAttempted || cfg.phase === "stop") && !cfg.keepUp) {

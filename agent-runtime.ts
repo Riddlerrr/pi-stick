@@ -34,6 +34,7 @@ import {
 	type RpcCall,
 	type RpcData,
 	type RuntimeMessage,
+	RunFailure,
 	readJob,
 	readReply,
 } from "./runtime-tools/protocol.ts";
@@ -721,34 +722,28 @@ try {
 			throw Error(`Unexpected probe progress events: ${JSON.stringify(probeEvents)}`);
 		send({ type: "response", command: "run", id: job.id, success: true, data: { ready: true } });
 	} else {
-		let report: string | undefined;
+		let result: string | RunFailure;
 		try {
-			report = await runAction();
-		} finally {
-			protocol.signal.throwIfAborted();
-			const usage = await h.usage(ctx).catch(() => {
-				emitProgress("Warning: session usage snapshot unavailable");
-				return undefined;
-			});
-			send(
-				report === undefined
-					? {
-							type: "response",
-							command: "run",
-							id: job.id,
-							success: false,
-							error: "Action failed",
-							data: { usage },
-						}
-					: {
-							type: "response",
-							command: "run",
-							id: job.id,
-							success: true,
-							data: { report, usage, ...(Object.keys(agentOutputs).length ? { outputs: agentOutputs } : {}) },
-						},
-			);
+			result = await runAction();
+		} catch (err) {
+			result = err instanceof RunFailure ? err : new RunFailure("Action failed");
 		}
+		protocol.signal.throwIfAborted();
+		const usage = await h.usage(ctx).catch(() => {
+			emitProgress("Warning: session usage snapshot unavailable");
+			return undefined;
+		});
+		if (result instanceof RunFailure) {
+			send({ type: "response", command: "run", id: job.id, success: false, error: result.message, data: { usage } });
+			throw result;
+		}
+		send({
+			type: "response",
+			command: "run",
+			id: job.id,
+			success: true,
+			data: { report: result, usage, ...(Object.keys(agentOutputs).length ? { outputs: agentOutputs } : {}) },
+		});
 	}
 } finally {
 	process.stdin.off("end", hostDisconnected);
@@ -760,9 +755,9 @@ try {
 
 async function runAction(): Promise<string> {
 	const spec = job.orchestrator;
-	if (!job.prompt) throw Error("Missing prompt");
+	if (!job.prompt) throw new RunFailure("Missing prompt");
 	if (!spec && (job.continueRun || job.stages?.at(-1)?.parallel.length !== 1))
-		throw Error("A run without an orchestrator requires a single final agent and cannot continue");
+		throw new RunFailure("A run without an orchestrator requires a single final agent and cannot continue");
 
 	let finalPrompt = job.prompt;
 	if (!job.continueRun && job.stages?.length) {
@@ -777,7 +772,7 @@ async function runAction(): Promise<string> {
 			const requireReport = !spec && index === job.stages.length - 1;
 			const batch = stage.parallel.map((agentName) => {
 				const agentSpec = activeSubagents[agentName];
-				if (!agentSpec) throw Error(`Stage '${stage.name}' references missing agent '${agentName}'`);
+				if (!agentSpec) throw new RunFailure(`Stage '${stage.name}' references missing agent '${agentName}'`);
 				return { spec: agentSpec, prompt: stagePrompt, requireReport };
 			});
 			const { results, cleanlinessWarning } = await runParallelBatch(batch, `stage:${stage.name}`, {
@@ -786,8 +781,7 @@ async function runAction(): Promise<string> {
 			const failures = results.filter((r) => !r.ok);
 			if (failures.length) {
 				const message = `Stage '${stage.name}' failed: ${failures.map((r) => r.agent).join(", ")}`;
-				emitProgress(message, stageProgressLabel);
-				throw Error(message);
+				throw new RunFailure(message);
 			}
 			if (requireReport) return results[0].output;
 			const lines = [`## Stage: ${stage.name}`];
@@ -800,7 +794,7 @@ async function runAction(): Promise<string> {
 		finalPrompt = `${job.prompt}\n\n---\n\n# Parallel Stage Results\n\n${stageSections.join("\n\n")}`;
 	}
 
-	if (!spec) throw Error("Missing orchestrator");
+	if (!spec) throw new RunFailure("Missing orchestrator");
 	fs.mkdirSync(defaultAgentCtx.scratchDir, { recursive: true });
 	const { extensions, tools } = selectToolsAndExtensions(spec.tools);
 	const root = await h.root(ctx, {
@@ -822,16 +816,16 @@ async function runAction(): Promise<string> {
 	);
 	const settled = await sub.wait(ctx);
 	if (settled.status !== "done" || settled.type === "write")
-		throw Error(`Task submission did not complete: ${settled.status}${settled.reason ? `: ${settled.reason}` : ""}`);
+		throw new RunFailure(`Orchestrator submission did not complete: ${settled.status}`);
 	const entry = await root.commit((tx) => tx.entry(AssistantEntry, settled.answer), ctx);
 	const message = entry?.model?.[0];
-	if (message?.role !== "assistant") throw Error("Missing assistant answer");
+	if (message?.role !== "assistant") throw new RunFailure("Orchestrator returned no assistant answer");
 	const report = message.content
 		.filter((b) => b.type === "text")
 		.map((b) => b.text)
 		.join("\n")
 		.trim();
-	if (!report) throw Error("Agent returned an empty report");
+	if (!report) throw new RunFailure("Orchestrator returned an empty report");
 	return report;
 }
 

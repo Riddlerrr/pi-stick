@@ -1073,8 +1073,9 @@ if (has('git') && a[0] === 'run') {
       const db = session + '/' + job.id + '.sqlite';
       if (job.continueRun) {
         if (fs.readFileSync(db, 'utf8') !== job.id) process.exit(6);
-        if (!fs.existsSync(repoMount + '/followup-started')) { fs.writeFileSync(repoMount + '/followup-started', job.requestId); send({type:'response',command:'run',id:job.id,success:false,error:'failed',data:{usage:usage(15)}}); rl.close(); process.exitCode=7; return; }
+        if (!fs.existsSync(repoMount + '/followup-started')) { fs.writeFileSync(repoMount + '/followup-started', job.requestId); send({type:'response',command:'run',id:job.id,success:false,error:"Stage 'review' failed: worker",data:{usage:usage(15)}}); rl.close(); process.exitCode=7; return; }
         if (fs.readFileSync(repoMount + '/followup-started', 'utf8') !== job.requestId) process.exit(8);
+        if (fs.existsSync(repoMount + '/no-response')) process.exit(7);
         if (fs.existsSync(repoMount + '/invalid-usage')) { send({type:'response',command:'run',id:job.id,success:false,error:'failed',data:{usage:{models:{bad:'not counters'},tools:{}}}}); rl.close(); return; }
         fs.appendFileSync(repoMount + '/example.txt', 'followup\\n');
         send({ type: 'progress', message: 'Applying follow-up', agent: 'orchestrator' });
@@ -1183,7 +1184,9 @@ if (has('git') && a[0] === 'run') {
 	assert.notEqual(accepted.requestId, id);
 	assert.equal(accepted.exitCode, undefined);
 	fs.unlinkSync(join(tmp, "bin/mkfifo"));
-	assert.equal(invoke(["resume", id]).status, 1);
+	const failedAction = invoke(["resume", id]);
+	assert.equal(failedAction.status, 1);
+	assert.match(failedAction.stdout, /Failed: Stage 'review' failed: worker/);
 	assert.equal(JSON.parse(read(cfgPath)).requestId, accepted.requestId);
 	assert.equal(usedTokens(), 17);
 	const failedState = snapshot();
@@ -1216,6 +1219,12 @@ if (has('git') && a[0] === 'run') {
 	fail(["continue", id, "do not start"], /after checksum mismatch/);
 	assert.deepEqual(snapshot(), failedState);
 	fs.writeFileSync(savedHook, script);
+	const noResponse = join(taskRepo, "no-response");
+	fs.writeFileSync(noResponse, "");
+	const silentExit = invoke(["resume", id]);
+	assert.equal(silentExit.status, 1);
+	assert.match(silentExit.stdout, /Failed: Agent exited before responding/);
+	fs.unlinkSync(noResponse);
 	const invalidUsage = join(runPath, "workspace/repo/invalid-usage");
 	fs.writeFileSync(invalidUsage, "");
 	assert.equal(invoke(["resume", id]).status, 1);

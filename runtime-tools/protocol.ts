@@ -3,6 +3,8 @@ import type { UsageState } from "@earendil-works/pi-durable";
 import type { CredentialPayload } from "../runtime-auth.ts";
 
 export const RUN = "run.v1";
+// Only operator-safe summaries belong in a run failure, never raw provider or tool errors.
+export class RunFailure extends Error {}
 export interface AgentRuntimeSpec {
 	name: string;
 	description?: string;
