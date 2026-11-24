@@ -24,7 +24,7 @@ export async function executeAgentContainer(
 	jobPayload: ActionJob,
 	resolvePolicy: (agent?: string) => RpcPolicy,
 	onProgress: (line: string, agent?: string) => void,
-	refreshToken: (provider: string) => Promise<AccessLease>,
+	refreshToken: (provider: string, signal: AbortSignal) => Promise<AccessLease>,
 	onUsage: (usage: UsageState) => void,
 ): Promise<AgentRunResult> {
 	const argv = ephemeralArgs({
@@ -54,7 +54,7 @@ export async function executeAgentContainer(
 
 	const lines = createInterface({ input: child.stdout });
 	const inflight = new Set<Promise<void>>();
-	const commands = new Map<string, AbortController>();
+	const commands = new Map<string, { method: string; controller: AbortController }>();
 	let receivedMessage = false;
 	let failure: string | undefined;
 	let report: string | undefined;
@@ -66,7 +66,8 @@ export async function executeAgentContainer(
 			const msg = readRuntime(line);
 			receivedMessage = true;
 			if (msg.type === "cancel_exec") {
-				commands.get(msg.id)?.abort();
+				const command = commands.get(msg.id);
+				if (command?.method === "exec") command.controller.abort();
 				continue;
 			}
 			if (msg.type === "progress") {
@@ -87,21 +88,26 @@ export async function executeAgentContainer(
 			const rpcId = msg.id;
 			const method = msg.type;
 			if (commands.has(rpcId)) throw Error("Duplicate RPC id");
-			const controller = method === "exec" ? new AbortController() : undefined;
-			if (controller) commands.set(rpcId, controller);
+			const controller = new AbortController();
+			commands.set(rpcId, { method, controller });
 			const work = (async () => {
 				const base = { type: "response", id: rpcId } as const;
 				let reply: RpcResponse;
 				try {
 					if (method === "refresh_token") {
-						reply = { ...base, command: method, success: true, data: await refreshToken(msg.provider) };
+						reply = {
+							...base,
+							command: method,
+							success: true,
+							data: await refreshToken(msg.provider, controller.signal),
+						};
 					} else {
 						const result = await task.handleRpc(
 							method,
 							msg,
 							resolvePolicy(msg.agent),
 							(chunk) => send({ type: "exec_chunk", id: rpcId, chunk: chunk.toString("base64") }),
-							controller?.signal,
+							controller.signal,
 						);
 						reply = result.error
 							? { ...base, command: method, success: false, error: result.text }
@@ -120,33 +126,30 @@ export async function executeAgentContainer(
 									: "RPC operation failed",
 					};
 				}
-				commands.delete(rpcId);
 				await send(reply);
-			})();
+			})().finally(() => commands.delete(rpcId));
 			inflight.add(work);
 			work.then(
 				() => inflight.delete(work),
 				() => inflight.delete(work),
 			);
 		}
-		for (const controller of commands.values()) controller.abort();
-		await Promise.allSettled(inflight);
-		await writeQueue;
-		child.stdin.end();
-		const [code] = await exit;
-		if (failure !== undefined) throw new RunFailure(failure);
-		if (!receivedMessage)
-			throw new RunFailure(
-				"Agent exited before responding. Check Docker; for an incompatible image run pistick containers build.",
-			);
-		if (!report?.trim()) throw new RunFailure("Agent container failed to return a report");
-		if (code !== 0) throw new RunFailure("Agent container failed after returning its report");
-		return { report, outputs };
+	} catch (err) {
+		child.kill();
+		throw err;
 	} finally {
-		for (const controller of commands.values()) controller.abort();
+		for (const { controller } of commands.values()) controller.abort();
 		lines.close();
 		child.stdin.destroy();
-		child.kill();
+		await Promise.allSettled(inflight);
 		await exit;
 	}
+	if (failure !== undefined) throw new RunFailure(failure);
+	if (!receivedMessage)
+		throw new RunFailure(
+			"Agent exited before responding. Check Docker; for an incompatible image run pistick containers build.",
+		);
+	if (!report?.trim()) throw new RunFailure("Agent container failed to return a report");
+	if (child.exitCode !== 0) throw new RunFailure("Agent container failed after returning its report");
+	return { report, outputs };
 }

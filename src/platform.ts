@@ -104,6 +104,18 @@ export const run = (argv: string[], opts: SpawnSyncOptionsWithBufferEncoding = {
 export const closed = (child: ChildProcess): Promise<[number | null, string | null]> =>
 	once(child, "close") as Promise<[number | null, string | null]>;
 
+// Kill on abort but settle only when the subprocess operation finishes, not when the signal fires.
+export async function waitForChild<T>(child: ChildProcess, result: Promise<T>, signal?: AbortSignal): Promise<T> {
+	const kill = () => child.kill("SIGKILL");
+	if (signal?.aborted) kill();
+	else signal?.addEventListener("abort", kill, { once: true });
+	try {
+		return await result;
+	} finally {
+		signal?.removeEventListener("abort", kill);
+	}
+}
+
 // flock(1) locks the shared open file description. Closing the launcher does not unlock the worker's copy.
 export function tryLock(fd: number) {
 	const r = spawnSync("flock", ["-n", "-E", "75", "3"], { stdio: ["ignore", "ignore", "inherit", fd] });

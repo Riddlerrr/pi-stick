@@ -8,7 +8,19 @@ import { promisify } from "node:util";
 import type { CredentialPayload } from "../runtime-auth.ts";
 import { type HostMessage, isRequest, type Job, RUN, readRuntime } from "../runtime-tools/protocol.ts";
 import { agentName, IMAGE, isolatedRun } from "./container.ts";
-import { ASSETS, closed, devMode, json, output, ROOT, run, runId, settingsPath, userSettings } from "./platform.ts";
+import {
+	ASSETS,
+	closed,
+	devMode,
+	json,
+	output,
+	ROOT,
+	run,
+	runId,
+	settingsPath,
+	userSettings,
+	waitForChild,
+} from "./platform.ts";
 import { CONTAINER_REPO_DIR, CONTAINER_WORKSPACE_DIR, validateCompose } from "./tasks.ts";
 import { listProjects } from "./workspace.ts";
 
@@ -71,7 +83,7 @@ async function checkAuthType(provider: string): Promise<"oauth" | "api_key"> {
 	throw Error(`Could not determine Pi credential type for ${provider}`);
 }
 
-export async function exportAccessLease(model: string, authType: "oauth" | "api_key") {
+export async function exportAccessLease(model: string, authType: "oauth" | "api_key", signal?: AbortSignal) {
 	const { provider, modelId } = parseModelSpec(model);
 	const target = ["--provider", provider, "--model", modelId];
 	const minutes = 5;
@@ -81,7 +93,8 @@ export async function exportAccessLease(model: string, authType: "oauth" | "api_
 			? ["print-api-key", ...target]
 			: ["print-bearer-token", ...target, "--min-expiry", `${minutes}m`];
 	try {
-		const { stdout } = await promisify(execFile)("pi", ["auth", ...args], { timeout: 30_000 });
+		const result = promisify(execFile)("pi", ["auth", ...args], { timeout: 30_000, killSignal: "SIGKILL" });
+		const { stdout } = await waitForChild(result.child, result, signal);
 		const token = stdout.trim();
 		if (!token) throw Error();
 		return { token, validUntil };

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { IMAGE, isolatedRun } from "./container.ts";
-import { closed, command, gitCommand, output, run, runId, STATE, touch } from "./platform.ts";
+import { closed, command, gitCommand, output, run, runId, STATE, touch, waitForChild } from "./platform.ts";
 import { RUNNER_SHELL } from "./runner-shell.ts";
 import { type ProjectInfo, projectSource } from "./workspace.ts";
 
@@ -62,26 +62,22 @@ const SERVICE_NAME = /^[a-zA-Z0-9._-]+$/;
 
 async function spawnCapture(
 	argv: string[],
-	timeoutMs?: number,
+	timeoutMs: number,
+	abort?: AbortSignal,
 ): Promise<{ code: number | null; signal: string | null; text: string }> {
-	const child = spawn(argv[0], argv.slice(1), { stdio: ["ignore", "pipe", "pipe"] });
+	const child = spawn(argv[0], argv.slice(1), {
+		stdio: ["ignore", "pipe", "pipe"],
+		timeout: timeoutMs,
+		killSignal: "SIGKILL",
+	});
 	let tail: Buffer = Buffer.alloc(0);
 	const append = (chunk: Buffer) => {
 		tail = Buffer.concat([tail, chunk]).subarray(-MAX_OUTPUT);
 	};
 	child.stdout.on("data", append);
 	child.stderr.on("data", append);
-	let timer: NodeJS.Timeout | undefined;
-	if (timeoutMs) {
-		timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
-		timer.unref();
-	}
-	try {
-		const [code, signal] = await closed(child);
-		return { code, signal, text: tail.toString("utf8") };
-	} finally {
-		if (timer) clearTimeout(timer);
-	}
+	const [code, signal] = await waitForChild(child, closed(child), abort);
+	return { code, signal, text: tail.toString("utf8") };
 }
 
 export function validateCompose(folder: string, key: string): ComposeConfig {
@@ -323,7 +319,7 @@ export class TaskEnv {
 		);
 	}
 
-	private async trackedStatus(): Promise<RpcResponse> {
+	private async trackedStatus(abort?: AbortSignal): Promise<RpcResponse> {
 		const [docker, ...args] = this.inspectionArgs(
 			"timeout",
 			"-k",
@@ -336,11 +332,12 @@ export class TaskEnv {
 			"--untracked-files=no",
 		);
 		try {
-			const { stdout } = await promisify(execFile)(docker, args, {
+			const result = promisify(execFile)(docker, args, {
 				timeout: 35_000,
 				killSignal: "SIGKILL",
 				maxBuffer: 1024 * 1024,
 			});
+			const { stdout } = await waitForChild(result.child, result, abort);
 			return { text: stdout };
 		} catch (err) {
 			const { code, signal } = err as NodeJS.ErrnoException & { signal?: string };
@@ -463,6 +460,7 @@ export class TaskEnv {
 					clearTimeout(timer);
 					abort?.removeEventListener("abort", cancel);
 					cancel();
+					await exit;
 				}
 			}
 			case "logs": {
@@ -477,12 +475,12 @@ export class TaskEnv {
 					if (!allowed.length) return { text: "No services are permitted", error: true };
 					argv.push("--", ...allowed.map((service) => this.validateService(service, allowed)));
 				}
-				const res = await spawnCapture(argv, 30_000);
+				const res = await spawnCapture(argv, 30_000, abort);
 				return { text: res.text || "(no logs)", error: res.code !== 0 };
 			}
 			case "ps": {
 				if (policy.allowPs === false) return { text: "ps is not permitted for this agent", error: true };
-				const res = await spawnCapture([...this.compose, "ps", "--format", "json"], 30_000);
+				const res = await spawnCapture([...this.compose, "ps", "--format", "json"], 30_000, abort);
 				return { text: res.text || "[]", error: res.code !== 0 };
 			}
 			case "restart": {
@@ -490,14 +488,14 @@ export class TaskEnv {
 				if (typeof params.service !== "string" || !params.service.length)
 					return { text: "restart requires a service name", error: true };
 				const service = this.validateService(params.service, allowed);
-				const res = await spawnCapture([...this.compose, "restart", "--no-deps", "--", service], 120_000);
+				const res = await spawnCapture([...this.compose, "restart", "--no-deps", "--", service], 120_000, abort);
 				return {
 					text: res.code === 0 ? `Restarted service '${service}'.\n${res.text}`.trim() : res.text,
 					error: res.code !== 0,
 				};
 			}
 			case "check_clean": {
-				return this.trackedStatus();
+				return this.trackedStatus(abort);
 			}
 			default:
 				return { text: `Unsupported RPC method: ${method}`, error: true };

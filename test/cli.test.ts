@@ -7,6 +7,7 @@ import { createInterface } from "node:readline";
 import type { TestContext } from "node:test";
 import test from "node:test";
 import { loadActionFromDir } from "../src/actions.ts";
+import { executeAgentContainer } from "../src/agent-rpc.ts";
 import { closed, read, runId, tryLock, writeJson } from "../src/platform.ts";
 import { status } from "../src/runs.ts";
 import { ephemeralArgs, parseModelSpec } from "../src/system.ts";
@@ -1459,6 +1460,72 @@ if (has('config')) {
 	assert.equal(read(join(dir, "run.json")), config);
 	assert.equal(JSON.parse(config).exitCode, 0);
 });
+
+for (const end of ["duplicate", "EOF", "report"] as const) {
+	test(`agent RPC teardown reaps an active restart on ${end}`, async (t) => {
+		const { bin, tmp, stub } = fixture(t);
+		const oldPath = process.env.PATH;
+		process.env.PATH = `${bin}:${oldPath}`;
+		t.after(() => {
+			process.env.PATH = oldPath;
+		});
+		const task = new TaskEnv("demo", { name: "demo", folder: tmp, repo: tmp }, tmp);
+		fs.mkdirSync(task.dir, { recursive: true });
+		writeJson(task.composeFile, { services: { runner: {} } });
+		const pidFile = join(tmp, "restart.pid");
+		stub(
+			"docker",
+			`
+			const fs = require('node:fs'), pid = ${JSON.stringify(pidFile)};
+			if (process.argv.includes('restart')) {
+				fs.writeFileSync(pid, String(process.pid));
+				setTimeout(() => fs.writeFileSync(pid + '.expired', ''), 5000);
+			} else if (process.argv.includes('ps')) {
+				fs.writeFileSync(pid + '.duplicate', '');
+			} else {
+				const send = x => console.log(JSON.stringify(x));
+				process.stdin.once('data', () => {
+					send({ type: 'restart', id: '1', service: 'runner' });
+					const timer = setInterval(() => {
+						if (!fs.existsSync(pid)) return;
+						clearInterval(timer);
+						if ('${end}' === 'EOF') process.exit(0);
+						if ('${end}' === 'report') send({ type:'response', command:'run', id:'demo', success:true, data:{report:'done'} });
+						else send({ type:'ps', id:'1' });
+					}, 10);
+				});
+				setTimeout(() => process.exit(1), 6000).unref();
+			}
+		`,
+		);
+		const result = executeAgentContainer(
+			task,
+			{
+				type: "run.v1",
+				id: task.id,
+				models: {},
+				credentials: {},
+				agents: {},
+				stages: [],
+				prompt: "",
+				requestId: "1",
+				continueRun: false,
+			},
+			() => ({}),
+			() => {},
+			() => {
+				throw Error("Unexpected refresh");
+			},
+			() => {},
+		);
+		if (end === "report") assert.equal((await result).report, "done");
+		else await assert.rejects(result, end === "duplicate" ? /Duplicate RPC id/ : /failed to return a report/);
+		const pid = Number(read(pidFile));
+		assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+		assert.ok(!fs.existsSync(`${pidFile}.expired`));
+		assert.ok(!fs.existsSync(`${pidFile}.duplicate`));
+	});
+}
 
 test("kill interrupts only the selected concurrent run and preserves its workspace", async (t) => {
 	const { app, tmp, bin, source, ok, stub, env } = fixture(t);
