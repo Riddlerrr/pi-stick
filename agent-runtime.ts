@@ -4,7 +4,7 @@ import { writeProtocol } from "./runtime-tools/protocol-stdout.ts";
 import * as fs from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 
 import { createModels, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
@@ -63,7 +63,10 @@ interface AgentContext {
 	scratchDir: string;
 }
 
+const protocol = new AbortController();
+const ctx = withAbortSignal(protocol.signal, BACKGROUND_CONTEXT);
 const send = (data: RuntimeMessage) => {
+	if (protocol.signal.aborted) return;
 	writeProtocol(`${JSON.stringify(data)}\n`);
 };
 
@@ -92,7 +95,15 @@ function readInitialJob(): Promise<Job> {
 				}
 				return;
 			}
-			const reply = readReply(line, pendingRpc);
+			if (protocol.signal.aborted) return;
+			let reply: ReturnType<typeof readReply>;
+			try {
+				reply = readReply(line, pendingRpc);
+			} catch (err) {
+				protocol.abort(err);
+				rl.close();
+				return;
+			}
 			const pending = pendingRpc.get(reply.id)!;
 			if (reply.type === "exec_chunk") {
 				try {
@@ -111,7 +122,7 @@ function readInitialJob(): Promise<Job> {
 			if (!gotFirst) reject(Error("Host launcher disconnected before job initialization"));
 			for (const [id, pending] of pendingRpc) {
 				pendingRpc.delete(id);
-				pending.reject(Error("Host launcher disconnected"));
+				pending.reject(protocol.signal.reason ?? Error("Host launcher disconnected"));
 			}
 		});
 	});
@@ -123,6 +134,7 @@ async function callHostRpc(
 	onChunk?: (chunk: Buffer) => void,
 	signal?: AbortSignal,
 ): Promise<{ text: string; error?: boolean; exitCode?: number }> {
+	protocol.signal.throwIfAborted();
 	if (signal?.aborted) throw Error("Command aborted");
 	const id = String(++rpcSeq);
 	const cancel = () => send({ type: "cancel_exec", id: id });
@@ -194,9 +206,12 @@ function resolveAgentPath(rawPath: string, agentCtx: AgentContext, forWrite: boo
 }
 
 // Docker forwards EOF when the worker dies, even during an outstanding model request.
-const hostDisconnected = () => process.exit(1);
+const hostDisconnected = () => {
+	if (!protocol.signal.aborted) process.exit(1);
+};
 process.stdin.once("end", hostDisconnected);
 const job = await readInitialJob();
+protocol.signal.throwIfAborted();
 
 // Resolve only the mount parent so a replacement symlink cannot redefine the workspace boundary.
 const workspaceRoot = join(canonicalBase(dirname(WORKSPACE_DIR)), basename(WORKSPACE_DIR));
@@ -540,23 +555,24 @@ let rootRequestId = turnKey;
 let continueRoot = false;
 // Inspect before opening the harness: only retry failures that predate this launch.
 for (let attempt = 1; ; attempt++) {
-	const prior = await storage.submissionByRequest(ROOT_CONVERSATION_ID, rootRequestId, ctx);
+	const prior = await storage.submissionByRequest(ROOT_CONVERSATION_ID, rootRequestId, BACKGROUND_CONTEXT);
 	if (prior?.status !== "unanswered") break;
 	emitProgress(`Root attempt ${attempt} was unanswered: ${prior.reason}`, "orchestrator");
 	continueRoot = prior.type === "continue" || prior.entry !== undefined;
 	rootRequestId = `${turnKey}:retry:${attempt}`;
 }
-const h = await Harness.open(storage, { models, registry }, ctx);
-// Scheduling can resume siblings as soon as the first input is submitted.
-for (const [id, agent] of Object.entries((await h.snapshot(workflow, ctx))?.agents ?? {})) {
-	agentByConv.set(Number(id) as ConversationId, {
-		...agent,
-		label: `agent:${agent.name}`,
-		scratchDir: join(SCRATCH_DIR, agent.name),
-	});
-}
-
+const h = await Harness.open(storage, { models, registry }, BACKGROUND_CONTEXT);
 try {
+	protocol.signal.throwIfAborted();
+	// Scheduling can resume siblings as soon as the first input is submitted.
+	for (const [id, agent] of Object.entries((await h.snapshot(workflow, ctx))?.agents ?? {})) {
+		agentByConv.set(Number(id) as ConversationId, {
+			...agent,
+			label: `agent:${agent.name}`,
+			scratchDir: join(SCRATCH_DIR, agent.name),
+		});
+	}
+
 	if (job.check) {
 		// Offline self-check: exercise Codemode + multiplexed RPC + native file tools + read-only scratch + parallel multi-agent delegate + SQLite durability.
 		const { fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import("@earendil-works/pi-ai");
@@ -709,6 +725,7 @@ try {
 		try {
 			report = await runAction();
 		} finally {
+			protocol.signal.throwIfAborted();
 			const usage = await h.usage(ctx).catch(() => {
 				emitProgress("Warning: session usage snapshot unavailable");
 				return undefined;
@@ -737,7 +754,8 @@ try {
 	process.stdin.off("end", hostDisconnected);
 	rl.close();
 	await sandbox.close();
-	await h.close(ctx);
+	await h.close(BACKGROUND_CONTEXT);
+	protocol.signal.throwIfAborted();
 }
 
 async function runAction(): Promise<string> {

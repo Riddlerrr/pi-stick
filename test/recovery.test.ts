@@ -67,7 +67,7 @@ function stageFixture(
 			parallel: name === "first" && failure === "fail-stage" ? ["worker", "sibling"] : ["worker"],
 		})),
 	};
-	const run = async (payload: unknown = job, workspace = dir) => {
+	const run = async (payload: unknown = job, workspace = dir, corruptAfter?: RegExp) => {
 		const child = spawn(process.execPath, ["--import", stub, join(import.meta.dirname, "../agent-runtime.ts")], {
 			cwd: dir,
 			env: {
@@ -81,11 +81,19 @@ function stageFixture(
 		const exit = closed(child);
 		let stdout = "",
 			stderr = "";
+		const corrupt = (output: string) => {
+			if (corruptAfter?.test(output)) {
+				corruptAfter = undefined;
+				child.stdin.write("private-fixture-not-json\n");
+			}
+		};
 		child.stdout.on("data", (chunk) => {
 			stdout += chunk;
+			corrupt(stdout);
 		});
 		child.stderr.on("data", (chunk) => {
 			stderr += chunk;
+			corrupt(stderr);
 		});
 		child.stdin.write(`${JSON.stringify(payload)}\n`);
 		const [status, signal] = await exit;
@@ -100,6 +108,37 @@ test("runtime rejects an old launcher before starting a session", async (t) => {
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /run revision/);
 });
+
+for (const pending of [true, false]) {
+	test(`invalid host reply shuts down cleanly with ${pending ? "an outstanding RPC" : "no pending RPC"}`, async (t) => {
+		const { dir, job, stub, run } = stageFixture(t);
+		// Mark completed cleanup, not merely a nonzero exit from an uncaught exception.
+		fs.writeFileSync(
+			stub,
+			`import { Harness } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-durable"))};
+			const open = Harness.open;
+			Harness.open = async (...args) => {
+				const h = await open(...args);
+				const close = h.close.bind(h);
+				h.close = async (...args) => { await close(...args); console.error('harness closed'); };
+				return h;
+			};
+			globalThis.fetch = async (_url, init) => {
+				console.error('model waiting');
+				await new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), {once:true}));
+			};`,
+		);
+		const result = await run(
+			pending ? { type: job.type, id: job.id, check: true, models: {}, credentials: {} } : job,
+			dir,
+			pending ? /"type":"ps"/ : /model waiting/,
+		);
+		assert.equal(result.status, 1, result.stderr);
+		assert.match(result.stderr, /Invalid agent protocol/);
+		assert.match(result.stderr, /harness closed/);
+		assert.doesNotMatch(result.stderr + result.stdout, /private-fixture|"success":true/);
+	});
+}
 
 test("runtime requires a real checkout directory", async (t) => {
 	const { dir, job, run } = stageFixture(t);
