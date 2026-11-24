@@ -945,6 +945,7 @@ export async function cleanup(days: number, dry: boolean) {
 				console.log(`Skipping ${id}: active or changed since listing.`);
 				continue;
 			}
+			removeOrphanAgent(id);
 			const compose = join(dir, "compose.yaml");
 			if (fs.existsSync(compose)) run(["docker", "compose", "-p", key, "-f", compose, "down", "--volumes"]);
 			// Retire the run ID before recursive removal can unlink its lock file.

@@ -318,7 +318,8 @@ test("ephemeral container args enforce hardening and model spec validation", () 
 });
 
 test("per-run locks allow concurrent runs, follow, diff, and selective cleanup", (t) => {
-	const { app, ok, fail } = fixture(t);
+	const { app, ok, fail, stub } = fixture(t);
+	stub("docker", "process.exit(process.argv[2] === 'ps' ? 0 : 1)");
 	ok(["cleanup", "--dry-run"]);
 	const runs = join(app, "state/runs");
 	const idA = "a".repeat(32);
@@ -384,7 +385,8 @@ test("per-run locks allow concurrent runs, follow, diff, and selective cleanup",
 });
 
 test("cleanup includes old interrupted runs but preserves recent ones", (t) => {
-	const { app, ok } = fixture(t);
+	const { app, ok, stub } = fixture(t);
+	stub("docker", "process.exit(process.argv[2] === 'ps' ? 0 : 1)");
 	const runs = join(app, "state/runs");
 	const [old, early, recent] = [runId(), runId(), runId()];
 	for (const id of [old, early, recent]) {
@@ -403,7 +405,8 @@ test("cleanup includes old interrupted runs but preserves recent ones", (t) => {
 });
 
 test("cleanup rechecks listed runs after confirmation", async (t) => {
-	const { app, bin, env } = fixture(t);
+	const { app, bin, env, stub } = fixture(t);
+	stub("docker", "process.exit(process.argv[2] === 'ps' ? 0 : 1)");
 	const [busy, reused, interrupted, gone, eligible] = Array.from({ length: 5 }, () =>
 		join(app, "state/runs", runId()),
 	);
@@ -437,8 +440,8 @@ test("cleanup rechecks listed runs after confirmation", async (t) => {
 	}
 });
 
-test("cleanup holds the run lock during teardown and retains state if Compose fails", (t) => {
-	const { app, ok, invoke, stub } = fixture(t);
+test("cleanup verifies and removes the orphan under lock before Compose teardown", (t) => {
+	const { app, tmp, ok, invoke, stub } = fixture(t);
 	const id = runId();
 	const dir = join(app, "state/runs", id);
 	fs.mkdirSync(join(dir, "session"), { recursive: true });
@@ -450,11 +453,27 @@ test("cleanup holds the run lock during teardown and retains state if Compose fa
 	fs.utimesSync(join(dir, "last-used"), 1, 1);
 	stub(
 		"docker",
-		`const { spawnSync } = require('node:child_process');
-		if (process.argv.slice(-2).join(' ') !== 'down --volumes') process.exit(2);
-		const probe = spawnSync('flock', ['-n', '-E', '75', ${JSON.stringify(join(dir, "lock"))}, 'true']);
-		process.exit(probe.status === 75 ? 7 : 3);`,
+		`const fs = require('node:fs');
+		const owner = ${JSON.stringify(join(tmp, "owner"))};
+		const probe = require('node:child_process').spawnSync('flock', ['-n', '-E', '75', ${JSON.stringify(join(dir, "lock"))}, 'true']);
+		if (probe.status !== 75) process.exit(3);
+		const args = process.argv.slice(2), container = 'a'.repeat(64);
+		if (args[0] === 'ps') {
+			if (fs.existsSync(owner)) console.log(container, fs.readFileSync(owner, 'utf8'));
+		} else if (args.join(' ') === 'rm -f ' + container) fs.unlinkSync(owner);
+		else if (args.slice(-2).join(' ') === 'down --volumes' && !fs.existsSync(owner)) process.exit(7);
+		else process.exit(2);`,
 	);
+	const owner = join(tmp, "owner");
+	fs.writeFileSync(owner, runId());
+	const refused = invoke(["cleanup"], "y\n");
+	assert.equal(refused.status, 1);
+	assert.match(refused.stderr, /Cannot verify ownership/);
+	assert.equal(read(db), "history");
+	fs.writeFileSync(owner, id);
+	ok(["cleanup", "--dry-run"]);
+	ok(["cleanup"], "n\n");
+	assert.ok(fs.existsSync(owner));
 	const failed = invoke(["cleanup"], "y\n");
 	assert.equal(failed.status, 1);
 	assert.match(failed.stderr, /docker failed \(7\)/);
