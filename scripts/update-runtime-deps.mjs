@@ -1,7 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+import { imageFingerprint, probe } from "../src/system.ts";
 
 process.chdir(join(import.meta.dirname, ".."));
 const dockerfile = readFileSync("Dockerfile", "utf8");
@@ -16,14 +19,21 @@ if (!digest || !/^\d+\.\d+\.\d+$/.test(npm)) throw Error("Cannot resolve Node di
 const files = ["package.json", "package-lock.json"];
 const stage = mkdtempSync(join(tmpdir(), "pi-stick-deps-"));
 try {
-	for (const file of files) copyFileSync(file, join(stage, file));
+	imageFingerprint(stage, process.cwd());
 	const { dependencies } = JSON.parse(readFileSync(join(stage, "package.json"), "utf8"));
 	execFileSync("npm", [
 		"install", "--package-lock-only", "--save-exact", "--ignore-scripts", "--no-audit", "--no-fund",
 		...Object.keys(dependencies).map((name) => `${name}@latest`),
 	], { cwd: stage, stdio: "inherit" });
-	for (const file of files) copyFileSync(join(stage, file), file);
-	writeFileSync("Dockerfile", dockerfile.replace(from[0], `FROM ${from[1]}@${digest}`).replace(npmPin, `ARG NPM_VERSION=${npm}`));
+	writeFileSync(join(stage, "Dockerfile"), dockerfile.replace(from[0], `FROM ${from[1]}@${digest}`).replace(npmPin, `ARG NPM_VERSION=${npm}`));
+	const image = `pi-stick:deps-${randomUUID()}`;
+	execFileSync("docker", ["build", "-t", image, stage], { stdio: "inherit" });
+	try {
+		await probe(image);
+	} finally {
+		execFileSync("docker", ["image", "rm", image], { stdio: "inherit" });
+	}
+	for (const file of [...files, "Dockerfile"]) copyFileSync(join(stage, file), file);
 	console.log("Review: git diff -- Dockerfile package.json package-lock.json");
 } finally {
 	rmSync(stage, { recursive: true, force: true });

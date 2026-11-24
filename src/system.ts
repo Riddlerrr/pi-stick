@@ -256,12 +256,12 @@ export async function doctor(extraChecks: Array<[string, () => unknown | Promise
 
 const inputLabel = "io.pi-stick.build-inputs.sha256";
 
-function imageFingerprint(stage?: string) {
+export function imageFingerprint(stage?: string, assets = ASSETS) {
 	const hash = createHash("sha256");
-	if (!fs.lstatSync(join(ASSETS, "runtime-tools")).isDirectory())
+	if (!fs.lstatSync(join(assets, "runtime-tools")).isDirectory())
 		throw Error("Expected a real runtime-tools directory");
 	const tools = fs
-		.readdirSync(join(ASSETS, "runtime-tools"))
+		.readdirSync(join(assets, "runtime-tools"))
 		.filter((name) => name.endsWith(".ts"))
 		.sort();
 	if (stage) fs.mkdirSync(join(stage, "runtime-tools"));
@@ -274,7 +274,7 @@ function imageFingerprint(stage?: string) {
 		"runtime-auth.ts",
 		...tools.map((name) => `runtime-tools/${name}`),
 	]) {
-		const file = join(ASSETS, name);
+		const file = join(assets, name);
 		if (!fs.lstatSync(file).isFile()) throw Error(`Expected a regular build input: ${file}`);
 		const bytes = fs.readFileSync(file);
 		hash.update(`${name}\0${bytes.length}\0`).update(bytes);
