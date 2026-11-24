@@ -16,7 +16,7 @@ export function createDelegateTool(
 		name: "delegate",
 		replay: "unsafe",
 		description:
-			"Run one or more configured subagents in parallel and collect their results. Multiple read-only subagents may run concurrently; read-write subagents must run one at a time.",
+			"Run one or more configured subagents in parallel and collect their results. Each agent may appear only once per call. Multiple read-only subagents may run concurrently; read-write subagents must run one at a time.",
 		parameters: {
 			type: "object",
 			properties: {

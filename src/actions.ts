@@ -263,8 +263,11 @@ export function loadActionFromDir(
 		for (const [i, stage] of manifest.stages.entries()) {
 			if (names.has(stage.name)) throw Error(`stages[${i}].name: duplicate stage '${stage.name}'`);
 			names.add(stage.name);
+			const seen = new Set<string>();
 			let rwCount = 0;
 			for (const ref of stage.parallel) {
+				if (seen.has(ref)) throw Error(`Stage '${stage.name}' repeats agent '${ref}'`);
+				seen.add(ref);
 				if (!Object.hasOwn(agents, ref)) throw Error(`Stage '${stage.name}' references undefined agent '${ref}'`);
 				if (agents[ref].mode === "read-write") rwCount++;
 			}

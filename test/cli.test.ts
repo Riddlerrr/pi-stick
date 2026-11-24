@@ -641,6 +641,7 @@ test("action validation reports the invalid field before creating a run", (t) =>
 		[{ inputs: { ticket: { required: "false" } } }, /inputs\.ticket\.required: expected boolean/],
 		[{ inputs: { ticket: null } }, /inputs\.ticket: expected object/],
 		[{ stages: [{ ...stage, promp: "x" }] }, /stages\[0\]\.promp: unknown field/],
+		[{ stages: [{ ...stage, parallel: ["audit", "audit"] }] }, /Stage 'pass' repeats agent 'audit'/],
 		[{ stageContext: "latest" }, /stageContext: expected one of previous, all/],
 		[{ stages: [stage, stage] }, /stages\[1\]\.name: duplicate stage/],
 		[

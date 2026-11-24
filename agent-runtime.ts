@@ -400,6 +400,11 @@ async function runParallelBatch(
 	batchLabel: string,
 	recovery: { stageKey: string } | { taskId: TaskId },
 ): Promise<BatchResult> {
+	const names = new Set<string>();
+	for (const { spec } of batch) {
+		if (names.has(spec.name)) throw Error(`Batch '${batchLabel}' repeats agent '${spec.name}'`);
+		names.add(spec.name);
+	}
 	const stageKey = "stageKey" in recovery ? recovery.stageKey : undefined;
 	const owner = "taskId" in recovery ? recovery.taskId : undefined;
 	const cached = stageKey ? (await h.snapshot(workflow, ctx))?.stages[stageKey] : undefined;

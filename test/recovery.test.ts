@@ -84,6 +84,30 @@ function stageFixture(
 	return { run, dir, job, stub };
 }
 
+test("delegate rejects a repeated agent before dispatch, even with different prompts", async (t) => {
+	const { job, run, stub } = stageFixture(t);
+	job.stages = [];
+	job.orchestrator.tools = ["delegate"];
+	fs.writeFileSync(
+		stub,
+		`globalThis.fetch = async (_url, init) => {
+		const { messages } = JSON.parse(init.body);
+		if (messages.find(m => m.role === 'user').content !== 'task') throw Error('Unexpected worker request');
+		const result = messages.find(m => m.role === 'tool');
+		const tasks = ['first', 'second'].map(prompt => ({agent:'sibling', prompt}));
+		const delta = result ? {role:'assistant',content:result.content} : {role:'assistant',tool_calls:[{index:0,id:'call',type:'function',function:{name:'delegate',arguments:JSON.stringify({tasks})}}]};
+		const data = {choices:[{index:0,delta,finish_reason:result?'stop':'tool_calls'}]};
+		return new Response('data: ' + JSON.stringify(data) + '\\n\\ndata: [DONE]\\n\\n', {headers:{'content-type':'text/event-stream'}});
+	};`,
+	);
+	const result = await run();
+	assert.equal(result.status, 0, result.stdout + result.stderr);
+	assert.match(
+		JSON.parse(result.stdout.trim().split("\n").at(-1)!).report,
+		/Batch 'delegate' repeats agent 'sibling'/,
+	);
+});
+
 test("resume aborts an interrupted delegate; only a fresh delegation runs", async (t) => {
 	const { run, dir, job, stub } = stageFixture(t);
 	job.stages = [];
