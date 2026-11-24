@@ -61,8 +61,8 @@ type Outcome = { ready: true } | { report: string; outputs?: Record<string, stri
 export type RuntimeMessage =
 	| Request
 	| { type: "progress"; message: string; agent?: string }
-	| { type: "cancel_exec"; id: string }
-	| ({ type: "response"; command: "run"; id: string } & (
+	| { type: "cancel_exec"; id: string; agent?: never }
+	| ({ type: "response"; command: "run"; id: string; agent?: never } & (
 			| { success: true; data: Outcome }
 			| { success: false; error: string; data?: { usage?: UsageState } }
 	  ));
@@ -229,6 +229,7 @@ export function readReply(line: string, pending: ReadonlyMap<string, { command: 
 }
 export function readRuntime(line: string): RuntimeMessage {
 	const m = message(line);
+	if ("agent" in m && (m.type === "response" || m.type === "cancel_exec")) invalid("agent");
 	if (!optional(m.agent, "string") || m.agent === "") invalid("agent");
 	if (m.type === "progress") {
 		if (typeof m.message !== "string") invalid("progress.message");

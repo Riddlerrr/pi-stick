@@ -59,6 +59,19 @@ test("refresh replies carry only the lease and match a runtime-owned request", (
 			(e: Error) => /Invalid agent protocol/.test(e.message) && !e.message.includes(token),
 		);
 });
+test("run responses and exec cancellation do not accept an agent", () => {
+	for (const message of [
+		{ type: "response", command: "run", id: "r", success: true, data: { report: "ok" } },
+		{ type: "response", command: "run", id: "r", success: false, error: "Action failed" },
+		{ type: "cancel_exec", id: "1" },
+	]) {
+		assert.deepEqual(readRuntime(JSON.stringify(message)), message);
+		assert.throws(
+			() => readRuntime(JSON.stringify({ ...message, agent: "worker" })),
+			/Invalid agent protocol: agent/,
+		);
+	}
+});
 test("run outputs must be strings and RPC replies match the pending id and command", () => {
 	const result = {
 		type: "response",
