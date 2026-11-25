@@ -1159,7 +1159,7 @@ if (has('git') && a[0] === 'run') {
       job = m;
       if (job.credentials['openai-codex'].token !== (job.continueRun ? 'fresh-token' : 'secret-fixture-token')) process.exit(3);
       if (job.orchestrator.thinkingLevel !== 'high' || job.orchestrator.model.modelId !== 'gpt-6.2-sol' || !job.orchestrator.instructions.includes('PINNED PROJECT NOTES') || !job.orchestrator.instructions.includes('PINNED INSTRUCTIONS') || job.orchestrator.tools.includes('restart')) process.exit(10);
-      if (job.continueRun && !job.orchestrator.instructions.includes('updated-context.md')) process.exit(11);
+      if (job.continueRun && !job.orchestrator.instructions.includes('files in /context: reports/updated-context.md, ticket.txt.')) process.exit(11);
       if (workspaceMount !== ${JSON.stringify(join(app, "state/runs"))} + '/' + job.id + '/workspace:/workspace') process.exit(15);
       if (!job.orchestrator.instructions.includes('Repository workspace: /workspace/repo')) process.exit(12);
       if (!fs.readFileSync(ctxMount + '/ticket.txt', 'utf8').includes('ISSUE-42')) process.exit(4);
@@ -1268,7 +1268,9 @@ if (has('git') && a[0] === 'run') {
 	fs.rmSync(actionDir, { recursive: true });
 	writeJson(settings, { default_model: "different/model" });
 	fs.writeFileSync(join(projectDir, "AGENTS.md"), "CHANGED NOTES");
-	fs.writeFileSync(join(runPath, "context/updated-context.md"), "new context");
+	fs.mkdirSync(join(runPath, "context/reports"));
+	fs.writeFileSync(join(runPath, "context/reports/updated-context.md"), "new context");
+	fs.symlinkSync(projectDir, join(runPath, "context/linked"));
 	stub("pi", "console.log('fresh-token')");
 
 	// Continue run with follow-up prompt

@@ -63,6 +63,20 @@ export function status(dir: string, msg: string, agent?: string) {
 	fs.appendFileSync(join(dir, "progress"), `${safe}\n`);
 }
 
+function listContextFiles(root: string): string[] {
+	const files: string[] = [];
+	function visit(dir: string) {
+		// Recursive readdir can descend into directory symlinks before filtering.
+		for (const entry of fs.readdirSync(join(root, dir), { withFileTypes: true })) {
+			const path = join(dir, entry.name);
+			if (entry.isDirectory()) visit(path);
+			else if (entry.isFile()) files.push(path);
+		}
+	}
+	if (fs.lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) visit("");
+	return files.sort();
+}
+
 function composeInstructions(
 	agent: ResolvedAgentSpec,
 	project: ProjectInfo,
@@ -359,7 +373,7 @@ export async function worker(id: string, freshContinue: boolean): Promise<number
 		const outputsDir = join(dir, "outputs");
 		const patchFile = join(dir, "changes.patch");
 		if (cfg.phase === "agent" || cfg.phase === "agent-started") {
-			const contextFiles = fs.existsSync(task.context) ? fs.readdirSync(task.context).sort() : [];
+			const contextFiles = listContextFiles(task.context);
 			const modelSpecs = Object.values(action.agents).map((a) => a.model);
 			if (action.orchestrator) modelSpecs.unshift(action.orchestrator.model);
 			const auth = await resolveModels(modelSpecs);
