@@ -459,7 +459,7 @@ test("diff preserves patch bytes and publishes only successful captures", (t) =>
 	const dir = join(app, "state/runs", id);
 	const repo = join(dir, "workspace/repo");
 	fs.cpSync(source, repo, { recursive: true });
-	writeJson(join(dir, "run.json"), { version: 1, mode: "run", phase: "checkout", id, project: "demo" });
+	writeJson(join(dir, "run.json"), { version: 2, turn: 1, mode: "run", phase: "checkout", id, project: "demo" });
 	stub(
 		"docker",
 		`const args = process.argv.slice(process.argv.indexOf('sh') + 1);
@@ -511,7 +511,8 @@ test("per-run locks allow concurrent runs, follow, diff, and selective cleanup",
 		action: "check",
 		createdAt: "2026-01-01T00:00:00.000Z",
 		updatedAt: "2026-01-01T00:00:00.000Z",
-		version: 1,
+		version: 2,
+		turn: 1,
 		mode: "run",
 		phase: "agent-started",
 	});
@@ -521,7 +522,8 @@ test("per-run locks allow concurrent runs, follow, diff, and selective cleanup",
 		action: "check",
 		createdAt: "2026-01-01T00:00:00.000Z",
 		updatedAt: "2026-01-01T00:00:00.000Z",
-		version: 1,
+		version: 2,
+		turn: 1,
 		mode: "run",
 		phase: "stop",
 		exitCode: 0,
@@ -585,7 +587,7 @@ test("cleanup includes old interrupted runs but preserves recent ones", (t) => {
 	for (const id of [old, early, recent]) {
 		const dir = join(runs, id);
 		fs.mkdirSync(dir, { recursive: true });
-		writeJson(join(dir, "run.json"), { version: 1, mode: "run", phase: "checkout", project: "demo" });
+		writeJson(join(dir, "run.json"), { version: 2, turn: 1, mode: "run", phase: "checkout", project: "demo" });
 		if (id !== early) fs.writeFileSync(join(dir, "last-used"), "");
 		if (id !== recent) fs.utimesSync(join(dir, id === early ? "run.json" : "last-used"), 1, 1);
 	}
@@ -605,7 +607,14 @@ test("cleanup rechecks listed runs after confirmation", async (t) => {
 	);
 	for (const dir of [busy, reused, interrupted, gone, eligible]) {
 		fs.mkdirSync(dir, { recursive: true });
-		writeJson(join(dir, "run.json"), { version: 1, mode: "run", phase: "stop", exitCode: 0, project: "demo" });
+		writeJson(join(dir, "run.json"), {
+			version: 2,
+			turn: 1,
+			mode: "run",
+			phase: "stop",
+			exitCode: 0,
+			project: "demo",
+		});
 		fs.writeFileSync(join(dir, "last-used"), "");
 		fs.utimesSync(join(dir, "last-used"), 1, 1);
 	}
@@ -620,7 +629,13 @@ test("cleanup rechecks listed runs after confirmation", async (t) => {
 			fd = fs.openSync(join(busy, "lock"), "a");
 			assert.ok(tryLock(fd));
 			fs.utimesSync(join(reused, "last-used"), 2, 2);
-			writeJson(join(interrupted, "run.json"), { version: 1, mode: "run", phase: "agent", project: "demo" });
+			writeJson(join(interrupted, "run.json"), {
+				version: 2,
+				turn: 1,
+				mode: "run",
+				phase: "agent",
+				project: "demo",
+			});
 			fs.rmSync(gone, { recursive: true });
 			child.stdin.end("y\n");
 		}
@@ -641,7 +656,7 @@ test("cleanup verifies and removes the orphan under lock before Compose teardown
 	const db = join(dir, "session", `${id}.sqlite`);
 	fs.writeFileSync(db, "history");
 	fs.writeFileSync(join(dir, "compose.yaml"), "services: {}");
-	writeJson(join(dir, "run.json"), { version: 1, mode: "run", phase: "stop", exitCode: 0, project: "demo" });
+	writeJson(join(dir, "run.json"), { version: 2, turn: 1, mode: "run", phase: "stop", exitCode: 0, project: "demo" });
 	fs.writeFileSync(join(dir, "last-used"), "");
 	fs.utimesSync(join(dir, "last-used"), 1, 1);
 	stub(
@@ -1291,6 +1306,7 @@ if (has('git') && a[0] === 'run') {
 	const accepted = JSON.parse(read(cfgPath));
 	assert.equal(accepted.prompt, "Explain --help usage");
 	assert.equal(accepted.phase, "agent");
+	assert.equal(accepted.turn, 2);
 	assert.notEqual(accepted.requestId, id);
 	assert.equal(accepted.exitCode, undefined);
 	fs.unlinkSync(join(tmp, "bin/mkfifo"));
@@ -1380,6 +1396,10 @@ if (has('git') && a[0] === 'run') {
 	fail(["resume", id], /already completed/);
 	assert.deepEqual(fs.readdirSync(outputs), ["b.md"]);
 	assert.equal(read(join(outputs, "b.md")), "updated\n");
+	assert.deepEqual(fs.readdirSync(join(runPath, "turns")).sort(), ["1", "2"]);
+	assert.equal(read(join(runPath, "turns/1/report.md")), "Initial report\n");
+	assert.equal(read(join(runPath, "turns/1/outputs/b.md")), "second\n");
+	assert.equal(read(join(runPath, "turns/2/report.md")), "Follow-up complete\n");
 	ok(["continue", id, "--", "--help"]);
 	assert.ok(!fs.existsSync(outputs));
 });
@@ -1900,7 +1920,7 @@ test("install-dev.sh prepares dev folder, suggests Pi default model, supports fr
 	const activeId = "a".repeat(32);
 	const activeRunDir = join(devDir, "state/runs", activeId);
 	fs.mkdirSync(activeRunDir, { recursive: true });
-	const checkpoint = { id: activeId, version: 1, project: "demo", phase: "stop", mode: "run" };
+	const checkpoint = { id: activeId, version: 2, turn: 1, project: "demo", phase: "stop", mode: "run" };
 	writeJson(join(activeRunDir, "meta.json"), checkpoint);
 	fs.writeFileSync(join(activeRunDir, "compose.yaml"), "services: {}\n");
 	const fd = fs.openSync(join(activeRunDir, "lock"), "a");

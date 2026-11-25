@@ -201,6 +201,6 @@ The host atomically records the current turn, its next step and its outcome in `
 
 After an agent turn succeeds or returns an error, `run.json` records the latest session-wide `usage` snapshot: token counts and costs by model (`usage.models`) and by tool reporting usage (`usage.tools`). It includes committed stage, delegation, and compaction usage. `resume` and `continue` replace the snapshot rather than adding to it. A hard stop can leave an older snapshot, or no `usage` field at all; missing data is not zero cost. These figures are not a provider invoice.
 
-`outputs/` contains only subagent reports from the latest successful agent turn. If the turn produced none, the directory is removed and the `after` hook receives no `PI_STICK_OUTPUTS_DIR`.
+Each accepted `continue` starts a numbered turn; `resume` keeps the same number. Reports and subagent outputs are preserved in `turns/<n>/`. Top-level `report.md` and `outputs/` resolve through `latest` to the last published agent response, even if the current turn has not produced a report. If that response has no subagent outputs, the `after` hook receives no `PI_STICK_OUTPUTS_DIR`. Older run checkpoints without turn numbers cannot be resumed.
 
 Multiple tasks can run concurrently across the same or different projects. When a run finishes, its project containers are stopped (`docker compose stop`) to free CPU/RAM while preserving workspace files, volumes, `report.md`, `outputs/*.md`, `changes.patch`, and the Pi Durable SQLite session until `pistick cleanup` (pass `--keep-up` to keep containers running).

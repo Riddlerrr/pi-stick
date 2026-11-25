@@ -201,9 +201,12 @@ export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 	try {
 		if (!tryLock(fd)) throw Error("Could not acquire run lock");
 		const actionDigest = saveActionSnapshot(task.dir, action, project.folder);
+		fs.mkdirSync(join(task.dir, "turns"), { mode: 0o700 });
+		for (const name of ["report.md", "outputs"]) fs.symlinkSync(join("latest", name), join(task.dir, name));
 		const now = new Date().toISOString();
 		saveState(task.dir, {
-			version: 1,
+			version: 2,
+			turn: 1,
 			id,
 			project: project.name,
 			action: action.name,
@@ -276,6 +279,7 @@ export async function launchContinue(id: string, promptText: string, keepUp?: bo
 		cfg.mode = "continue";
 		cfg.prompt = promptText.trim();
 		cfg.requestId = runId();
+		cfg.turn++;
 		if (keepUp !== undefined) cfg.keepUp = keepUp;
 		saveState(dir, cfg);
 		await spawnWorker(id, fd, true);
@@ -435,13 +439,26 @@ export async function worker(id: string, freshContinue: boolean): Promise<number
 				},
 			);
 
-			fs.writeFileSync(reportFile, `${result.report}\n`);
-			fs.rmSync(outputsDir, { recursive: true, force: true });
-			for (const [name, content] of Object.entries(result.outputs ?? {})) {
-				if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) continue;
-				fs.mkdirSync(outputsDir, { recursive: true, mode: 0o700 });
-				fs.writeFileSync(join(outputsDir, `${name}.md`), `${content}\n`);
+			// Publish a complete immutable turn, then switch both compatibility paths together.
+			const turns = join(dir, "turns");
+			const published = join(turns, String(cfg.turn));
+			if (!fs.existsSync(published)) {
+				const staging = join(turns, ".pending");
+				fs.rmSync(staging, { recursive: true, force: true });
+				fs.mkdirSync(staging, { mode: 0o700 });
+				fs.writeFileSync(join(staging, "report.md"), `${result.report}\n`, { mode: 0o600 });
+				for (const [name, content] of Object.entries(result.outputs ?? {})) {
+					if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) continue;
+					const outputs = join(staging, "outputs");
+					fs.mkdirSync(outputs, { recursive: true, mode: 0o700 });
+					fs.writeFileSync(join(outputs, `${name}.md`), `${content}\n`, { mode: 0o600 });
+				}
+				fs.renameSync(staging, published);
 			}
+			const next = join(dir, ".next-turn");
+			fs.rmSync(next, { force: true });
+			fs.symlinkSync(join("turns", String(cfg.turn)), next);
+			fs.renameSync(next, join(dir, "latest"));
 
 			const { patchFile, untracked } = task.captureDiff(cfg.baseHead);
 			status(dir, result.report, action.orchestrator ? "orchestrator" : `agent:${reporter.name}`);

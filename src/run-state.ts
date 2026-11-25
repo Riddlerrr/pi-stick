@@ -18,7 +18,8 @@ const phases = [
 export type Phase = (typeof phases)[number];
 
 export interface RunState {
-	version: 1;
+	version: 2;
+	turn: number;
 	id: string;
 	project: string;
 	action: string;
@@ -42,7 +43,9 @@ export function readState(dir: string): RunState {
 	if (!existsSync(file)) throw Error(`Missing run.json: unknown or unsupported run at ${dir}; start a new run`);
 	const state = json(file);
 	if (
-		state?.version !== 1 ||
+		state?.version !== 2 ||
+		!Number.isSafeInteger(state.turn) ||
+		state.turn < 1 ||
 		typeof state.project !== "string" ||
 		!/^[a-z0-9][a-z0-9-]{0,62}$/.test(state.project) ||
 		!phases.includes(state.phase) ||
