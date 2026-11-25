@@ -1034,6 +1034,10 @@ test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async
 	fs.mkdirSync(hooksDir, { recursive: true });
 	const prepareScript = join(hooksDir, "prepare.sh");
 	const afterScript = join(hooksDir, "after.sh");
+	fs.writeFileSync(join(hooksDir, "helper"), '#!/bin/sh\ntest "$(cat "$PI_STICK_ACTION_DIR/template")" = pinned\n', {
+		mode: 0o700,
+	});
+	fs.writeFileSync(join(actionDir, "template"), "pinned");
 	const afterMarker = join(tmp, "after-called.json");
 	const failHook = join(tmp, "fail-after");
 	const projectDir = join(app, "projects/demo");
@@ -1046,7 +1050,7 @@ test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async
 	);
 	fs.writeFileSync(
 		afterScript,
-		`#!/usr/bin/env bash\nset -euo pipefail\n[[ "$PI_STICK_ACTION_DIR" == ${JSON.stringify(actionDir)} && "$PI_STICK_HOOK_SOURCE_DIR" == ${JSON.stringify(hooksDir)} && "$0" == "$PI_STICK_RUN_DIR/action-snapshot/after" && "$PWD" == "$PI_STICK_REPO" ]]\n[[ ! -e ${JSON.stringify(failHook)} ]]\nif [[ -d "$PI_STICK_RUN_DIR/outputs" ]]; then [[ "$PI_STICK_OUTPUTS_DIR" == "$PI_STICK_RUN_DIR/outputs" ]]; else [[ ! -v PI_STICK_OUTPUTS_DIR ]]; fi\nprintf '{"code":%s,"report":"%s","patch":"%s"}\n' "$PI_STICK_EXIT_CODE" "$PI_STICK_REPORT_FILE" "\${PI_STICK_PATCH_FILE:-}" > ${JSON.stringify(afterMarker)}\n`,
+		`#!/usr/bin/env bash\nset -euo pipefail\n[[ "$PI_STICK_ACTION_DIR" == "$PI_STICK_RUN_DIR/action-snapshot/action" && "$PI_STICK_HOOK_SOURCE_DIR" == "$PI_STICK_ACTION_DIR/hooks" && "$0" == "$PI_STICK_HOOK_SOURCE_DIR/after.sh" && "$PWD" == "$PI_STICK_REPO" ]]\n"$(dirname "$0")/helper"\n[[ ! -e ${JSON.stringify(failHook)} ]]\nif [[ -d "$PI_STICK_RUN_DIR/outputs" ]]; then [[ "$PI_STICK_OUTPUTS_DIR" == "$PI_STICK_RUN_DIR/outputs" ]]; else [[ ! -v PI_STICK_OUTPUTS_DIR ]]; fi\nprintf '{"code":%s,"report":"%s","patch":"%s"}\n' "$PI_STICK_EXIT_CODE" "$PI_STICK_REPORT_FILE" "\${PI_STICK_PATCH_FILE:-}" > ${JSON.stringify(afterMarker)}\n`,
 		{ mode: 0o700 },
 	);
 
@@ -1259,7 +1263,8 @@ if (has('git') && a[0] === 'run') {
 	fs.writeFileSync(db, id);
 
 	const pinned = join(runPath, "action-snapshot");
-	for (const name of fs.readdirSync(pinned)) assert.ok(!read(join(pinned, name)).includes("secret-fixture-token"));
+	for (const entry of fs.readdirSync(pinned, { recursive: true, withFileTypes: true }))
+		if (entry.isFile()) assert.ok(!read(join(entry.parentPath, entry.name)).includes("secret-fixture-token"));
 	fs.rmSync(actionDir, { recursive: true });
 	writeJson(settings, { default_model: "different/model" });
 	fs.writeFileSync(join(projectDir, "AGENTS.md"), "CHANGED NOTES");
@@ -1312,14 +1317,22 @@ if (has('git') && a[0] === 'run') {
 	fail(["continue", id, "ignore legacy run"], /Missing action snapshot/);
 	assert.deepEqual(snapshot(), legacyState);
 	writeJson(cfgPath, cfg);
-	const savedHook = join(pinned, "after");
+	const extra = join(pinned, "action/extra");
+	fs.symlinkSync(projectDir, extra);
+	fail(["resume", id], /Unsupported action entry/);
+	fs.unlinkSync(extra);
+	fs.writeFileSync(extra, "unexpected");
+	fail(["resume", id], /action tree checksum mismatch/);
+	fs.unlinkSync(extra);
+	const savedHook = join(pinned, "action/hooks/helper");
 	fs.chmodSync(savedHook, 0o700);
 	const script = read(savedHook);
 	fs.appendFileSync(savedHook, "# changed bytes\n");
-	fail(["resume", id], /after checksum mismatch/);
-	fail(["continue", id, "do not start"], /after checksum mismatch/);
+	fail(["resume", id], /action tree checksum mismatch/);
+	fail(["continue", id, "do not start"], /action tree checksum mismatch/);
 	assert.deepEqual(snapshot(), failedState);
 	fs.writeFileSync(savedHook, script);
+	fs.chmodSync(savedHook, 0o500);
 	const noResponse = join(taskRepo, "no-response");
 	fs.writeFileSync(noResponse, "");
 	const silentExit = invoke(["resume", id]);

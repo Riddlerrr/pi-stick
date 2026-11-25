@@ -1,46 +1,64 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import type { LoadedAction } from "./actions.ts";
 
-const hookNames = ["prepare", "after"] as const;
-const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+const digest = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 
 type Snapshot = Pick<
 	LoadedAction,
-	"name" | "scope" | "dir" | "orchestrator" | "agents" | "stageContext" | "stages" | "hooks"
+	"name" | "scope" | "orchestrator" | "agents" | "stageContext" | "stages" | "hooks"
 > & {
-	version: 1;
+	version: 2;
 	projectNotes: string | null;
-	hookHashes: Partial<Record<(typeof hookNames)[number], string>>;
+	treeHash: string;
 };
+
+// Hash the same entries and bytes that we copy, including empty directories.
+function treeHash(dir: string, copyTo?: string): string {
+	if (!fs.lstatSync(dir).isDirectory()) throw Error(`Not a directory: ${dir}`);
+	if (copyTo) fs.mkdirSync(copyTo, { mode: 0o700 });
+	const entries = fs
+		.readdirSync(dir)
+		.sort()
+		.map((name) => {
+			const path = join(dir, name);
+			const target = copyTo && join(copyTo, name);
+			const stat = fs.lstatSync(path);
+			if (stat.isDirectory()) return [name, "dir", treeHash(path, target)];
+			if (!stat.isFile()) throw Error(`Unsupported action entry: ${path}`);
+			const mode = target ? (stat.mode & 0o111 ? 0o500 : 0o400) : stat.mode & 0o7777;
+			const bytes = fs.readFileSync(path);
+			if (target) fs.writeFileSync(target, bytes, { mode, flag: "wx" });
+			return [name, mode, digest(bytes)];
+		});
+	return digest(JSON.stringify(entries));
+}
 
 // The launcher publishes the digest in run.json only after every file exists.
 export function saveActionSnapshot(runDir: string, action: LoadedAction, projectDir: string): string {
 	const dir = join(runDir, "action-snapshot");
 	fs.mkdirSync(dir, { mode: 0o700 });
-	const hookHashes: Snapshot["hookHashes"] = {};
-	for (const name of hookNames) {
+	const hooks: Snapshot["hooks"] = {};
+	for (const name of ["prepare", "after"] as const) {
 		const source = action.hooks[name];
 		if (!source) continue;
+		if (!fs.lstatSync(source).isFile()) throw Error(`Not a hook file: ${source}`);
 		fs.accessSync(source, fs.constants.X_OK);
-		const bytes = fs.readFileSync(source);
-		fs.writeFileSync(join(dir, name), bytes, { mode: 0o500, flag: "wx" });
-		hookHashes[name] = digest(bytes);
+		hooks[name] = relative(action.dir, source);
 	}
 	const notes = join(projectDir, "AGENTS.md");
-	const { name, scope, dir: sourceDir, orchestrator, agents, stages, hooks } = action;
+	const { name, scope, orchestrator, agents, stages, stageContext } = action;
 	const snapshot: Snapshot = {
-		version: 1,
+		version: 2,
 		name,
 		scope,
-		dir: sourceDir,
 		orchestrator,
 		agents,
-		stageContext: action.stageContext,
 		stages,
+		stageContext,
 		hooks,
-		hookHashes,
+		treeHash: treeHash(action.dir, join(dir, "action")),
 		projectNotes: fs.existsSync(notes) ? fs.readFileSync(notes, "utf8") : null,
 	};
 	const bytes = Buffer.from(JSON.stringify(snapshot));
@@ -48,26 +66,27 @@ export function saveActionSnapshot(runDir: string, action: LoadedAction, project
 	return digest(bytes);
 }
 
-export function readActionSnapshot(runDir: string, expected: string | undefined): Snapshot {
+export function readActionSnapshot(runDir: string, expected: string | undefined) {
 	if (!expected) throw Error("Missing action snapshot for this run; start a new run");
 	const dir = join(runDir, "action-snapshot");
 	try {
 		if (!fs.lstatSync(dir).isDirectory()) throw Error("not a directory");
-		const verified = (name: string, hash: string | undefined) => {
-			const path = join(dir, name);
-			if (!fs.lstatSync(path).isFile()) throw Error(`${name} is not a regular file`);
-			const bytes = fs.readFileSync(path);
-			if (digest(bytes) !== hash) throw Error(`${name} checksum mismatch`);
-			return bytes;
-		};
-		const snapshot: Snapshot = JSON.parse(verified("definition.json", expected).toString("utf8"));
-		if (snapshot.version !== 1) throw Error("unsupported version");
-		for (const name of hookNames)
-			if (snapshot.hooks[name]) {
-				verified(name, snapshot.hookHashes[name]);
-				fs.accessSync(join(dir, name), fs.constants.X_OK);
+		const definition = join(dir, "definition.json");
+		if (!fs.lstatSync(definition).isFile()) throw Error("definition.json is not a regular file");
+		const bytes = fs.readFileSync(definition);
+		if (digest(bytes) !== expected) throw Error("definition.json checksum mismatch");
+		const snapshot: Snapshot = JSON.parse(bytes.toString("utf8"));
+		if (snapshot.version !== 2) throw Error("unsupported version; start a new run");
+		const actionDir = join(dir, "action");
+		if (treeHash(actionDir) !== snapshot.treeHash) throw Error("action tree checksum mismatch");
+		for (const name of ["prepare", "after"] as const) {
+			const hook = snapshot.hooks[name];
+			if (hook) {
+				snapshot.hooks[name] = join(actionDir, hook);
+				fs.accessSync(snapshot.hooks[name], fs.constants.X_OK);
 			}
-		return snapshot;
+		}
+		return { ...snapshot, dir: actionDir };
 	} catch (err) {
 		throw Error(`Invalid action snapshot: ${err instanceof Error ? err.message : err}`);
 	}

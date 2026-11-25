@@ -425,7 +425,7 @@ export interface HookEnvContext {
 	outputsDir?: string;
 }
 
-export function runHook(name: keyof ActionHooks, source: string, envCtx: HookEnvContext) {
+export function runHook(source: string, envCtx: HookEnvContext) {
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		PI_STICK_RUN_ID: envCtx.runId,
@@ -447,5 +447,5 @@ export function runHook(name: keyof ActionHooks, source: string, envCtx: HookEnv
 		PI_STICK_PATCH_FILE: envCtx.patchFile,
 		PI_STICK_OUTPUTS_DIR: envCtx.outputsDir,
 	};
-	run([join(envCtx.runDir, "action-snapshot", name)], { cwd: envCtx.repoDir, env });
+	run([source], { cwd: envCtx.repoDir, env });
 }

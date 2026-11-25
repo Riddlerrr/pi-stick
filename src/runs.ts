@@ -317,7 +317,7 @@ export async function worker(id: string, freshContinue: boolean): Promise<number
 			if (action.hooks.prepare) {
 				advance("preparing-hook");
 				status(dir, "Running prepare hook…");
-				runHook("prepare", action.hooks.prepare, {
+				runHook(action.hooks.prepare, {
 					runId: id,
 					project,
 					action,
@@ -442,7 +442,7 @@ export async function worker(id: string, freshContinue: boolean): Promise<number
 			if (!action.hooks.after) throw Error("Missing after hook");
 			advance("after-hook");
 			status(dir, "Running after hook…");
-			runHook("after", action.hooks.after, {
+			runHook(action.hooks.after, {
 				runId: id,
 				project,
 				action,
