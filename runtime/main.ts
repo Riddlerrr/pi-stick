@@ -29,6 +29,7 @@ import {
 	wrapTool,
 } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import { createFitImagesExtension } from "@earendil-works/pi-durable/images/fit";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
 import {
@@ -55,7 +56,7 @@ import { createFindTool } from "./tools/find.ts";
 import { createGrepTool } from "./tools/grep.ts";
 import { createLogsTool } from "./tools/logs.ts";
 import { createPsTool } from "./tools/ps.ts";
-import { readTool, withReadDiagnostics } from "./tools/read.ts";
+import { images, readTool, withReadDiagnostics } from "./tools/read.ts";
 import { createRestartTool } from "./tools/restart.ts";
 import type { AgentRpc } from "./tools/rpc.ts";
 import { writeTool } from "./tools/write.ts";
@@ -465,10 +466,12 @@ registry.install(mainExtension);
 const sandbox = new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 });
 const codemodeExtension = createCodemodeExtension({ sandbox, models: false });
 registry.install(codemodeExtension);
+const fitImagesExtension = createFitImagesExtension(images);
+registry.install(fitImagesExtension);
 
 function selectToolsAndExtensions(toolNames: string[]) {
 	const wantCodemode = toolNames.includes("codemode");
-	const extensions = wantCodemode ? [mainExtension, codemodeExtension] : [mainExtension];
+	const extensions = [mainExtension, ...(wantCodemode ? [codemodeExtension] : []), fitImagesExtension];
 	const selectedTools: ToolRegistration[] = [];
 	for (const name of toolNames) {
 		const t = toolMap.get(name);

@@ -2,7 +2,8 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { createReadTool } from "@earendil-works/pi-durable/tools";
 import { CONTAINER_REPO_DIR } from "../paths.ts";
 
-export const readTool = createReadTool({ images: await createNodePhotonImages() });
+export const images = await createNodePhotonImages();
+export const readTool = createReadTool({ images });
 
 export function withReadDiagnostics(read: typeof readTool): typeof readTool {
 	return {

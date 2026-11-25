@@ -83,6 +83,10 @@ export async function selfCheck(
 					[
 						fauxToolCall("find", { path: "probe-src", query: "**/*.ts", maxResults: 1 }),
 						fauxToolCall("find", { path: "probe-src", maxResults: 1 }),
+						// PNG signature only: passes Codemode's MIME check, but cannot be decoded.
+						fauxToolCall("codemode", {
+							code: `text("image-probe"); image("data:image/png;base64,iVBORw0KGgo=");`,
+						}),
 						fauxToolCall("codemode", {
 							code: `// @options: {"max_output_tokens": 4}
 							const own = await tools.write({path: "/scratch/checker-b/note.txt", content: "ok-b"});
@@ -96,7 +100,15 @@ export async function selfCheck(
 					{ stopReason: "toolUse" },
 				);
 			}
-			const results = transcript.messages.filter((m) => m.role === "toolResult" && !m.isError).map(msgText);
+			const toolResults = transcript.messages.filter((m) => m.role === "toolResult" && !m.isError);
+			const imageProbe = toolResults.find((m) => msgText(m).includes("image-probe"));
+			if (
+				!imageProbe ||
+				!msgText(imageProbe).includes("was left out") ||
+				(Array.isArray(imageProbe.content) && imageProbe.content.some((b) => b.type === "image"))
+			)
+				return fauxAssistantMessage([fauxText("image-probe-failed")]);
+			const results = toolResults.map(msgText);
 			const find =
 				results.includes("z/.visible.ts") && results.includes("000.txt\n[More files omitted; narrow the search.]");
 			return fauxAssistantMessage([
