@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 import type { UsageState } from "@earendil-works/pi-durable";
 import type { AccessLease } from "../runtime/protocol.ts";
 import { type ActionJob, type HostMessage, type RpcResponse, RunFailure, readRuntime } from "../runtime/protocol.ts";
+import { removeOrphanAgent } from "./container.ts";
 import { closed } from "./platform.ts";
 import { ephemeralArgs } from "./system.ts";
 import type { RpcPolicy, TaskEnv } from "./tasks.ts";
@@ -50,6 +51,7 @@ export async function executeAgentContainer(
 	const inflight = new Set<Promise<void>>();
 	const commands = new Map<string, { method: string; controller: AbortController }>();
 	let receivedMessage = false;
+	let timedOut = false;
 	let failure: string | undefined;
 	let report: string | undefined;
 	let outputs: Record<string, string> | undefined;
@@ -135,8 +137,30 @@ export async function executeAgentContainer(
 		for (const { controller } of commands.values()) controller.abort();
 		lines.close();
 		child.stdin.destroy();
-		await Promise.allSettled(inflight);
-		await exit;
+		const drained = Promise.all([Promise.allSettled(inflight), exit]);
+		if (report === undefined && failure === undefined) await drained;
+		else {
+			let timer: NodeJS.Timeout | undefined;
+			try {
+				await Promise.race([
+					drained,
+					new Promise<void>((resolve) => {
+						timer = setTimeout(() => {
+							timedOut = true;
+							resolve();
+						}, 5000);
+					}),
+				]);
+			} finally {
+				clearTimeout(timer);
+			}
+		}
+	}
+	if (timedOut) {
+		child.kill("SIGKILL");
+		child.stdout.destroy();
+		removeOrphanAgent(task.id);
+		throw new RunFailure("Agent shutdown timed out after its final response");
 	}
 	if (failure !== undefined) throw new RunFailure(failure);
 	if (!receivedMessage)

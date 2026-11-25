@@ -1560,7 +1560,7 @@ else if (has('config')) {
 	assert.equal(JSON.parse(config).exitCode, 0);
 });
 
-for (const end of ["duplicate", "EOF", "report"] as const) {
+for (const end of ["duplicate", "EOF", "report", "hang"] as const) {
 	test(`agent RPC teardown reaps an active restart on ${end}`, async (t) => {
 		const { bin, tmp, stub } = fixture(t);
 		const oldPath = process.env.PATH;
@@ -1589,7 +1589,8 @@ for (const end of ["duplicate", "EOF", "report"] as const) {
 						if (!fs.existsSync(pid)) return;
 						clearInterval(timer);
 						if ('${end}' === 'EOF') process.exit(0);
-						if ('${end}' === 'report') send({ type:'response', command:'run', id:'demo', success:true, data:{report:'done'} });
+						if ('${end}' === 'hang') setInterval(() => {}, 1000);
+						if (['report','hang'].includes('${end}')) send({ type:'response', command:'run', id:'demo', success:true, data:{report:'done'} });
 						else send({ type:'ps', id:'1' });
 					}, 10);
 				});
@@ -1618,11 +1619,12 @@ for (const end of ["duplicate", "EOF", "report"] as const) {
 			() => {},
 		);
 		if (end === "report") assert.equal((await result).report, "done");
+		else if (end === "hang") await assert.rejects(result, /shutdown timed out/);
 		else await assert.rejects(result, end === "duplicate" ? /Duplicate RPC id/ : /failed to return a report/);
 		const pid = Number(read(pidFile));
 		assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
 		assert.ok(!fs.existsSync(`${pidFile}.expired`));
-		assert.ok(!fs.existsSync(`${pidFile}.duplicate`));
+		assert.equal(fs.existsSync(`${pidFile}.duplicate`), end === "hang");
 	});
 }
 

@@ -8,21 +8,8 @@ import { type ActionJob, RUN, RunFailure } from "../runtime/protocol.ts";
 import { readActionSnapshot, saveActionSnapshot } from "./action-snapshot.ts";
 import { type LoadedAction, loadAction, type ResolvedAgentSpec, resolveInputs, runHook } from "./actions.ts";
 import { executeAgentContainer } from "./agent-rpc.ts";
-import { agentName } from "./container.ts";
-import {
-	command,
-	compiled,
-	devMode,
-	isLocked,
-	output,
-	prompt,
-	read,
-	run,
-	runId,
-	STATE,
-	touch,
-	tryLock,
-} from "./platform.ts";
+import { removeOrphanAgent } from "./container.ts";
+import { command, compiled, devMode, isLocked, prompt, read, run, runId, STATE, touch, tryLock } from "./platform.ts";
 import { needsSession, type Phase, pendingEffect, readState, saveState, tryReadState } from "./run-state.ts";
 import { exportAccessLease, parseModelSpec, resolveModels } from "./system.ts";
 import { CONTAINER_REPO_DIR, composeKey, type RpcPolicy, TaskEnv } from "./tasks.ts";
@@ -575,33 +562,6 @@ export function listRuns(all: boolean) {
 }
 
 // Caller holds the run lock; remove by immutable container ID, never by a reusable name.
-function removeOrphanAgent(id: string) {
-	const lookup = () =>
-		output([
-			"docker",
-			"ps",
-			"-a",
-			"--no-trunc",
-			"--filter",
-			`name=^/${agentName(id)}$`,
-			"--format",
-			'{{.ID}} {{.Label "pi-stick.run"}}',
-		]);
-	const found = lookup();
-	if (!found) return;
-	const [container, owner] = found.split(" ");
-	if (!/^[0-9a-f]{64}$/.test(container) || owner !== id)
-		throw Error(`Cannot verify ownership of ${agentName(id)}; refusing to remove it`);
-	try {
-		run(["docker", "rm", "-f", container]);
-	} catch (err) {
-		// --rm may have already removed the agent after its stdin closed.
-		if (lookup()) throw err;
-		return;
-	}
-	if (lookup()) throw Error(`Agent container for run ${id} still exists`);
-}
-
 export async function killRun(id: string) {
 	const meta = readState(runDir(id));
 	const dir = runDir(id);
