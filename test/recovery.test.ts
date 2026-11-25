@@ -228,7 +228,7 @@ test("resume aborts an interrupted delegate; only a fresh delegation runs", asyn
 	}
 });
 
-test("resume exports completed delegations once and continue does not inherit them", async (t) => {
+test("same-turn delegates run sequentially, survive resume once, and do not carry into continue", async (t) => {
 	const { run, dir, job, stub } = stageFixture(t);
 	job.stages = [];
 	job.orchestrator.tools = ["delegate"];
@@ -243,9 +243,11 @@ test("resume exports completed delegations once and continue does not inherit th
 			if (prompt.startsWith('worker-')) {
 				fs.appendFileSync('workers', prompt + '\\n');
 				delta.content = prompt;
-			} else if (prompt === 'task' && results.length < 2) {
-				const tasks = [{agent:'worker', prompt:'worker-' + results.length}];
-				delta = {role:'assistant', tool_calls:[{index:0,id:'call'+results.length,type:'function',function:{name:'delegate',arguments:JSON.stringify({tasks})}}]};
+			} else if (prompt === 'task' && !results.length) {
+				const tool_calls = [0, 1].map(index => ({index, id:'call'+index, type:'function', function:{
+					name:'delegate', arguments:JSON.stringify({tasks:[{agent:'worker', prompt:'worker-'+index}]})
+				}}));
+				delta = {role:'assistant', tool_calls};
 			} else if (!fs.existsSync('interrupted')) {
 				fs.writeFileSync('interrupted', '1');
 				process.kill(process.pid, 'SIGKILL');
@@ -254,7 +256,17 @@ test("resume exports completed delegations once and continue does not inherit th
 			return new Response('data: ' + JSON.stringify(data) + '\\n\\ndata: [DONE]\\n\\n', {headers:{'content-type':'text/event-stream'}});
 		};`,
 	);
-	assert.equal((await run()).signal, "SIGKILL");
+	const first = await run();
+	assert.equal(first.signal, "SIGKILL", first.stderr + first.stdout);
+	const lifecycle = first.stdout
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line))
+		.filter((e) => e.agent === "agent:worker" && ["started", "completed"].includes(e.message));
+	assert.deepEqual(
+		lifecycle.map((e) => e.message),
+		["started", "completed", "started", "completed"],
+	);
 	const resumed = await run();
 	assert.equal(resumed.status, 0, resumed.stderr + resumed.stdout);
 	assert.deepEqual(JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).data.outputs, {
