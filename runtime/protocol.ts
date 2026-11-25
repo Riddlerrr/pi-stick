@@ -10,7 +10,7 @@ export interface CredentialPayload extends AccessLease {
 	authType?: "oauth" | "api_key";
 }
 
-export const RUN = "run.v2";
+export const RUN = "run.v1";
 // Only operator-safe summaries belong in a run failure, never raw provider or tool errors.
 export class RunFailure extends Error {}
 export interface AgentRuntimeSpec {
