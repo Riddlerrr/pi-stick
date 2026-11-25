@@ -20,7 +20,7 @@ import { createInterface } from "node:readline";
 declare const PI_STICK_COMPILED: boolean;
 export const compiled = typeof PI_STICK_COMPILED !== "undefined" && PI_STICK_COMPILED;
 
-const checkout = typeof PI_STICK_COMPILED === "undefined";
+export const checkout = typeof PI_STICK_COMPILED === "undefined";
 
 const explicitHome = process.env.PI_STICK_HOME;
 if (explicitHome !== undefined && !isAbsolute(explicitHome)) throw Error("PI_STICK_HOME must be an absolute path");
@@ -37,13 +37,9 @@ export const devMode =
 			? false
 			: checkout && explicitHome === undefined;
 
-function releaseAssets() {
-	const dir = compiled ? dirname(process.execPath) : import.meta.dirname;
-	// install.sh puts managed files beside the executable, not in share/.
-	if (compiled && existsSync(join(dir, "action.schema.json"))) return dir;
-	return join(dir, "share");
-}
-const assetsRoot = checkout ? (!devMode && explicitHome) || resolve(import.meta.dirname, "..") : releaseAssets();
+const assetsRoot = checkout
+	? resolve(import.meta.dirname, "..")
+	: join(compiled ? dirname(process.execPath) : import.meta.dirname, "share");
 const dataRoot = devMode
 	? (explicitDevHome ?? join(homedir(), "pi-stick-dev"))
 	: (explicitHome ?? join(homedir(), "pi-stick"));

@@ -1,7 +1,19 @@
 import * as fs from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { ASSETS, canonicalPath, json, prompt, ROOT, read, run, STATE, userSettings, writeJson } from "./platform.ts";
+import {
+	ASSETS,
+	canonicalPath,
+	checkout,
+	json,
+	prompt,
+	ROOT,
+	read,
+	run,
+	STATE,
+	userSettings,
+	writeJson,
+} from "./platform.ts";
 
 export const NAME = "[a-z0-9][a-z0-9-]{0,62}";
 const validName = new RegExp(`^${NAME}$`);
@@ -22,9 +34,12 @@ export function projectsDir() {
 	if (
 		within(ROOT, dir) ||
 		within(ASSETS, dir) ||
+		(!checkout && within(dir, ASSETS)) ||
 		[STATE, join(ROOT, "actions"), join(ASSETS, ".git"), join(ASSETS, "project-template")].some((p) => within(dir, p))
 	)
-		throw Error("Choose a dedicated projects directory outside pi-stick state, actions, template and Git metadata");
+		throw Error(
+			"Choose a dedicated projects directory outside pi-stick release assets, state, actions, template and Git metadata",
+		);
 	return dir;
 }
 

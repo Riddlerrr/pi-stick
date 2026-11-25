@@ -47,19 +47,17 @@ asset="pi-stick-linux-$arch.tar.gz"
 curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
   "https://github.com/Riddlerrr/pi-stick/releases/latest/download/$asset" -o "$tmp/$asset"
 tar -xzf "$tmp/$asset" -C "$tmp" --no-same-owner pi-stick/pistick pi-stick/share
-files="$tmp/pi-stick/share"
-binary="$tmp/pi-stick/pistick"
-[[ -f $binary && -x $binary && ! -L $binary ]] || die "Missing release binary."
-# Only install release-owned paths; never copy the archive over operator data.
-managed=(Dockerfile .dockerignore package.json package-lock.json action.schema.json)
-for name in "${managed[@]}"; do
-  [[ -f $files/$name && ! -L $files/$name ]] || die "Missing release file: $name"
+release="$tmp/pi-stick"
+share="$release/share"
+[[ -f $release/pistick && -x $release/pistick && ! -L $release/pistick ]] || die "Missing release binary."
+[[ -d $share && ! -L $share ]] || die "Missing release directory: share"
+for name in Dockerfile .dockerignore package.json package-lock.json action.schema.json; do
+  [[ -f $share/$name && ! -L $share/$name ]] || die "Missing release file: $name"
 done
 for name in project-template runtime; do
-  [[ -d $files/$name && ! -L $files/$name ]] || die "Missing release directory: $name"
+  [[ -d $share/$name && ! -L $share/$name ]] || die "Missing release directory: $name"
 done
-managed+=(project-template runtime pistick)
-mv -T -- "$binary" "$files/pistick"
+managed=(pistick share)
 printf 'CLI and runtime: %s\n' "$asset"
 
 if $reuse; then
@@ -76,11 +74,11 @@ if $reuse; then
     dest="$app/$name"
     [[ ! -L $dest ]] || die "Unsafe update path: $dest"
     if [[ ! -e $dest ]]; then echo "Missing: $name"
-    elif [[ -d $dest && -d $files/$name ]]; then
-      if diff -qr --no-dereference -- "$files/$name" "$dest" >/dev/null; then continue; fi
+    elif [[ -d $dest && -d $release/$name ]]; then
+      if diff -qr --no-dereference -- "$release/$name" "$dest" >/dev/null; then continue; fi
       echo "Changed: $name"
-    elif [[ -f $dest && -f $files/$name ]]; then
-      if cmp -s -- "$files/$name" "$dest" && [[ $name != pistick || -x $dest ]]; then continue; fi
+    elif [[ -f $dest && -f $release/$name ]]; then
+      if cmp -s -- "$release/$name" "$dest" && [[ $name != pistick || -x $dest ]]; then continue; fi
       echo "Changed: $name"
     else die "Unexpected update path: $dest"
     fi
@@ -96,7 +94,7 @@ if $reuse; then
     esac
     for name in "${changed[@]}"; do
       if [[ -d $app/$name ]]; then rm -r -- "$app/$name"; fi
-      mv -fT -- "$files/$name" "$app/$name"
+      mv -fT -- "$release/$name" "$app/$name"
     done
   else
     echo 'Installed files are unchanged.'
@@ -104,7 +102,7 @@ if $reuse; then
 else
   mkdir -p -- "$(dirname "$app")" "$bin"
   mkdir -- "$app"
-  for name in "${managed[@]}"; do mv -T -- "$files/$name" "$app/$name"; done
+  for name in "${managed[@]}"; do mv -T -- "$release/$name" "$app/$name"; done
   mkdir -p -- "$app/projects" "$app/actions" "$app/state/runs"
   write_launcher "$app" > "$tmp/launcher"
   chmod 755 "$tmp/launcher"

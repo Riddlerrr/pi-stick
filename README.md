@@ -30,9 +30,9 @@ Requires Linux, Git, util-linux `flock`, Docker with Compose/Buildx, and Pi (`pi
 
 ### Interactive Linux installer
 
-Run `./scripts/install.sh` as your normal user (no sudo). It downloads the Linux archive for your architecture and installs both its CLI and its runtime files (including `package-lock.json`) into `~/pi-stick` or `$PI_STICK_HOME`; it does not take runtime files from a local checkout. The launcher is `~/.local/bin/pistick`.
+Run `./scripts/install.sh` as your normal user (no sudo). It downloads the Linux archive for your architecture and installs `pistick` and its sibling `share/` under `$PI_STICK_HOME` (default: `~/pi-stick`); it does not take runtime files from a local checkout. The launcher is `~/.local/bin/pistick`.
 
-On upgrade, accept all listed release changes or cancel. Local edits inside release-owned directories (`runtime/`, `project-template/`) are replaced; `projects/`, `actions/`, and `state/` are preserved. If the image already matches the installed build inputs, no rebuild is offered. Otherwise image rebuild is a separate prompt: accept to run `pistick containers build` and `pistick doctor`, or skip to keep the previous image.
+On upgrade, accept all listed release changes or cancel. Local edits inside `share/` are replaced; `settings.json`, `projects/`, `actions/`, and `state/` are preserved. If the image already matches the installed build inputs, no rebuild is offered. Otherwise image rebuild is a separate prompt: accept to run `pistick containers build` and `pistick doctor`, or skip to keep the previous image.
 
 ### Source install (Node.js 24.12+)
 

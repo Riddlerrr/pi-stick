@@ -19,7 +19,9 @@ install_with() { printf '%b' "$1" | "$tmp/install.sh" > "$tmp/log" 2>&1; }
 app="$HOME/custom install"
 pack
 install_with "$app\nn\n"
-cmp "$tmp/pi-stick/share/package-lock.json" "$app/package-lock.json"
+cmp "$tmp/pi-stick/share/package-lock.json" "$app/share/package-lock.json"
+test ! -e "$app/Dockerfile"
+printf '{"default_model":"test/model"}\n' > "$app/settings.json"
 test ! -e "$HOME/cli.log"
 for dir in state actions projects; do touch "$app/$dir/keep"; done
 install_with '\nn\n'
@@ -27,20 +29,21 @@ grep -F 'Installed files are unchanged.' "$tmp/log"
 printf 'release v2\n' >> "$tmp/pi-stick/share/Dockerfile"
 printf '{"version":"v2"}\n' > "$tmp/pi-stick/share/package-lock.json"
 sed -i s/v1/v2/ "$tmp/pi-stick/pistick"
-touch "$app/runtime/obsolete.ts"
+touch "$app/share/runtime/obsolete.ts"
 pack
 install_with '\nn\n'
 grep -F 'Installation unchanged.' "$tmp/log"
 grep -F 'v1' "$app/pistick"
-test -e "$app/runtime/obsolete.ts"
-if cmp -s "$app/package-lock.json" "$tmp/pi-stick/share/package-lock.json"; then exit 1; fi
+test -e "$app/share/runtime/obsolete.ts"
+if cmp -s "$app/share/package-lock.json" "$tmp/pi-stick/share/package-lock.json"; then exit 1; fi
 mkdir "$app/state/runs/active"
 flock "$app/state/runs/active/lock" bash -c 'if printf "\n\ny\n" | "$1"; then exit 1; fi' _ "$tmp/install.sh"
 install_with '\n\ny\n'
 cmp "$app/pistick" "$tmp/pi-stick/pistick"
-cmp "$app/Dockerfile" "$tmp/pi-stick/share/Dockerfile"
-cmp "$app/package-lock.json" "$tmp/pi-stick/share/package-lock.json"
-test ! -e "$app/runtime/obsolete.ts"
+cmp "$app/share/Dockerfile" "$tmp/pi-stick/share/Dockerfile"
+cmp "$app/share/package-lock.json" "$tmp/pi-stick/share/package-lock.json"
+test ! -e "$app/share/runtime/obsolete.ts"
+grep -Fx '{"default_model":"test/model"}' "$app/settings.json"
 for dir in state actions projects; do test -f "$app/$dir/keep"; done
 diff -u <(printf 'v2 containers build\nv2 doctor\n') "$HOME/cli.log"
 touch "$HOME/current"
@@ -50,4 +53,4 @@ rm "$tmp/pi-stick/share/package-lock.json"
 pack
 if install_with '\n\nn\n'; then exit 1; fi
 grep -F 'Missing release file: package-lock.json' "$tmp/log"
-grep -F v2 "$app/package-lock.json"
+grep -F v2 "$app/share/package-lock.json"

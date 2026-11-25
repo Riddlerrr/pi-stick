@@ -1752,7 +1752,9 @@ test(
 	"packaged CLI uses installed data and its own schema on first launch",
 	{ skip: !process.env.PI_STICK_TEST_BINARY },
 	(t) => {
-		const { bin, tmp, env, assets } = fixture(t);
+		const { app, bin, tmp, env, assets, fail } = fixture(t);
+		writeJson(join(app, "settings.json"), { projects_dir: join(assets, "workspaces") });
+		fail(["actions", "--project", "demo"], /Choose a dedicated projects directory/);
 		const result = spawnSync(join(bin, "pistick"), ["create", "action", "demo"], {
 			env: { ...env, PI_STICK_HOME: undefined },
 			cwd: tmp,
