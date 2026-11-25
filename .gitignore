@@ -1,4 +1,5 @@
 state/
+/.pi/mcp.json
 /projects/
 /actions/
 node_modules/
