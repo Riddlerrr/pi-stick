@@ -94,7 +94,7 @@ interrupt() {
   agent=$(docker ps --filter "label=pi-stick.run=$id" --format '{{.Names}}')
   [[ $agent == "pi-stick-agent-$id" ]]
   if [[ $step == follow-up ]]; then
-    worker=$(pgrep -f " _worker $id$")
+    worker=$(pgrep -f " _worker $id( --continue)?$")
     [[ $worker =~ ^[0-9]+$ && /proc/$worker/fd/3 -ef $run/lock ]]
     kill -KILL "$worker"
     deadline=$((SECONDS+15))
