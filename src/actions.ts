@@ -442,11 +442,10 @@ export function runHook(name: keyof ActionHooks, source: string, envCtx: HookEnv
 		PI_STICK_BASE_HEAD: envCtx.baseHead ?? "",
 		PI_STICK_PROMPT: envCtx.prompt,
 		PI_STICK_INPUTS_JSON: JSON.stringify(envCtx.inputs),
+		PI_STICK_EXIT_CODE: envCtx.exitCode?.toString(),
+		PI_STICK_REPORT_FILE: envCtx.reportFile,
+		PI_STICK_PATCH_FILE: envCtx.patchFile,
+		PI_STICK_OUTPUTS_DIR: envCtx.outputsDir,
 	};
-	if (envCtx.exitCode !== undefined) env.PI_STICK_EXIT_CODE = String(envCtx.exitCode);
-	if (envCtx.reportFile) env.PI_STICK_REPORT_FILE = envCtx.reportFile;
-	if (envCtx.patchFile) env.PI_STICK_PATCH_FILE = envCtx.patchFile;
-	if (envCtx.outputsDir) env.PI_STICK_OUTPUTS_DIR = envCtx.outputsDir;
-	else delete env.PI_STICK_OUTPUTS_DIR;
 	run([join(envCtx.runDir, "action-snapshot", name)], { cwd: envCtx.repoDir, env });
 }

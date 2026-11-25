@@ -1008,7 +1008,12 @@ test("resume may initialize a session only before the first agent launch attempt
 
 test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async (t) => {
 	const { app, tmp, source, ok, fail, stub, invoke, env } = fixture(t);
-	Object.assign(env, { PI_STICK_OUTPUTS_DIR: "stale-parent-value" });
+	Object.assign(env, {
+		PI_STICK_EXIT_CODE: "9",
+		PI_STICK_REPORT_FILE: "stale-report",
+		PI_STICK_PATCH_FILE: "stale-patch",
+		PI_STICK_OUTPUTS_DIR: "stale-outputs",
+	});
 	ok(["create", "project", "demo", "--repo", source]);
 	ok(["create", "action", "fix"]);
 
@@ -1024,7 +1029,7 @@ test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async
 	fs.writeFileSync(join(actionDir, "instructions.md"), "PINNED INSTRUCTIONS");
 	fs.writeFileSync(
 		prepareScript,
-		`#!/usr/bin/env bash\nset -euo pipefail\nprintf 'ticket=%s\\n' "$PI_STICK_INPUTS_JSON" > "$PI_STICK_CONTEXT/ticket.txt"\n`,
+		`#!/usr/bin/env bash\nset -euo pipefail\n[[ ! -v PI_STICK_EXIT_CODE && ! -v PI_STICK_REPORT_FILE && ! -v PI_STICK_PATCH_FILE && ! -v PI_STICK_OUTPUTS_DIR ]]\nprintf 'ticket=%s\\n' "$PI_STICK_INPUTS_JSON" > "$PI_STICK_CONTEXT/ticket.txt"\n`,
 		{ mode: 0o700 },
 	);
 	fs.writeFileSync(
