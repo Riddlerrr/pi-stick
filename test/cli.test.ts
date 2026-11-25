@@ -258,7 +258,11 @@ test("TaskEnv validates base compose, materializes bind mounts, and isolates rep
 	assert.equal(mat.volumes, undefined);
 
 	const head = git("rev-parse", "HEAD");
+	// A killed clone can leave a nonempty directory without a usable HEAD.
+	fs.mkdirSync(join(task.repo, ".git"), { recursive: true });
+	fs.writeFileSync(join(task.repo, "partial"), "");
 	const { baseHead } = task.prepareWorkspace(head);
+	assert.ok(!fs.existsSync(join(task.repo, "partial")));
 	assert.equal(baseHead, head);
 	fs.writeFileSync(join(task.repo, "example.txt"), "task edit\n");
 	// Original project repo remains untouched
@@ -911,11 +915,13 @@ test("resume may initialize a session only before the first agent launch attempt
 		orchestrator: { instructions: "instructions.md" },
 	});
 	const attempts = join(tmp, "agent-attempts");
+	const starts = join(tmp, "stack-starts");
 	stub(
 		"docker",
 		`const fs = require('node:fs');
 		const args = process.argv.slice(2);
 		if (args.includes('config')) console.log(JSON.stringify({services:{runner: {networks: {default: null}, volumes:[{type:'volume',source:'source',target:'/workspace'}]}}}));
+		for (const cmd of ['up', 'start']) if (args.includes(cmd)) fs.appendFileSync(${JSON.stringify(starts)}, cmd + '\\n');
 		if (args[0] === 'run' && args.includes('/app/agent-runtime.ts')) {
 			const session = args.find(a => a.endsWith(':/sessions')).slice(0, -':/sessions'.length);
 			const config = JSON.parse(fs.readFileSync(session + '/../run.json'));
@@ -945,6 +951,7 @@ test("resume may initialize a session only before the first agent launch attempt
 		`console.log(process.argv[3] === 'check' ? '{"status":"ready","provider":"test","authType":"api_key"}' : 'test-token');`,
 	);
 	ok(["resume", unstarted]);
+	assert.equal(read(starts), "up\nstart\n");
 	assert.equal(read(join(first, "session", `${unstarted}.sqlite`)), "initial history");
 
 	fs.writeFileSync(join(tmp, "fail-launch"), "");
@@ -1058,6 +1065,8 @@ if (has('git') && a[0] === 'run') {
     volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
     networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
   }));
+} else if (has('start') && fs.existsSync(${JSON.stringify(join(tmp, "fail-start"))})) {
+  process.exit(9);
 } else if (has('stop') && fs.existsSync(${JSON.stringify(join(tmp, "fail-stop"))})) {
   process.exit(9);
 } else if (has('exec') && !has('timeout') && has('sh') && has('-c')) {
@@ -1206,6 +1215,13 @@ if (has('git') && a[0] === 'run') {
 	assert.notEqual(accepted.requestId, id);
 	assert.equal(accepted.exitCode, undefined);
 	fs.unlinkSync(join(tmp, "bin/mkfifo"));
+	const failStart = join(tmp, "fail-start");
+	fs.writeFileSync(failStart, "");
+	const beforeStart = read(dockerLog);
+	assert.equal(invoke(["resume", id]).status, 1);
+	assert.match(read(dockerLog).slice(beforeStart.length), /^compose [^\n]+ start\ncompose [^\n]+ stop\n$/);
+	assert.equal(JSON.parse(read(cfgPath)).phase, "agent");
+	fs.unlinkSync(failStart);
 	const failedAction = invoke(["resume", id]);
 	assert.equal(failedAction.status, 1);
 	assert.match(failedAction.stdout, /Failed: Stage 'review' failed: worker/);

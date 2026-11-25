@@ -164,23 +164,23 @@ export class TaskEnv {
 		fs.mkdirSync(this.scratch, { recursive: true, mode: 0o700 });
 		fs.mkdirSync(this.context, { recursive: true, mode: 0o700 });
 		const source = projectSource(this.project.folder);
-		if (!fs.existsSync(this.repo)) {
-			if (!fs.existsSync(this.project.repo)) throw Error(`Project repository not found at ${this.project.repo}`);
-			run(
-				[
-					"git",
-					"-c",
-					"core.hooksPath=/dev/null",
-					"clone",
-					"--no-local",
-					"--no-hardlinks",
-					"--",
-					this.project.repo,
-					this.repo,
-				],
-				{ env: { ...process.env, GIT_ALLOW_PROTOCOL: "file:https:ssh" } },
-			);
-		}
+		if (!fs.existsSync(this.project.repo)) throw Error(`Project repository not found at ${this.project.repo}`);
+		// Checkout is replayable until the worker checkpoints prepare.
+		fs.rmSync(this.repo, { recursive: true, force: true });
+		run(
+			[
+				"git",
+				"-c",
+				"core.hooksPath=/dev/null",
+				"clone",
+				"--no-local",
+				"--no-hardlinks",
+				"--",
+				this.project.repo,
+				this.repo,
+			],
+			{ env: { ...process.env, GIT_ALLOW_PROTOCOL: "file:https:ssh" } },
+		);
 		const git = gitCommand(this.repo);
 		if (source) run([...git, "remote", "set-url", "origin", source]);
 		if (ref) {

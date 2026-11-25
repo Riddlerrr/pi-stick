@@ -182,13 +182,13 @@ export async function main(rawArgs: string[]) {
 		console.log(pkg.version);
 		return 0;
 	}
-	if (cmd === "_worker" && args.length === 1) {
+	if (cmd === "_worker" && (args.length === 1 || (args.length === 2 && args[1] === "--continue"))) {
 		const id = args[0];
 		const inherited = fs.fstatSync(3);
 		const lock = fs.statSync(runLock(id));
 		if (inherited.ino !== lock.ino || inherited.dev !== lock.dev || !tryLock(3))
 			throw Error("Invalid worker invocation");
-		return worker(id);
+		return worker(id, args[1] === "--continue");
 	}
 	const action = parse(cmd, args);
 	fs.mkdirSync(join(STATE, "runs"), { recursive: true, mode: 0o700 });

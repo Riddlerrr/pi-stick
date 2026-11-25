@@ -128,7 +128,7 @@ function policyForAgent(action: Pick<LoadedAction, "agents" | "orchestrator">, a
 	};
 }
 
-async function spawnWorker(id: string, fd: number) {
+async function spawnWorker(id: string, fd: number, freshContinue = false) {
 	const dir = runDir(id);
 	touch(join(dir, "last-used"));
 	const fifo = join(dir, "kill.fifo");
@@ -138,6 +138,7 @@ async function spawnWorker(id: string, fd: number) {
 	const log = fs.openSync(join(dir, "worker.log"), "a");
 	try {
 		const args = ["_worker", id];
+		if (freshContinue) args.push("--continue");
 		if (!compiled) args.unshift(process.argv[1]);
 		const child = spawn(process.execPath, args, {
 			detached: true,
@@ -263,7 +264,7 @@ export async function launchContinue(id: string, promptText: string, keepUp?: bo
 		cfg.requestId = runId();
 		if (keepUp !== undefined) cfg.keepUp = keepUp;
 		saveState(dir, cfg);
-		await spawnWorker(id, fd);
+		await spawnWorker(id, fd, true);
 	} finally {
 		fs.closeSync(fd);
 	}
@@ -271,7 +272,7 @@ export async function launchContinue(id: string, promptText: string, keepUp?: bo
 	return id;
 }
 
-export async function worker(id: string): Promise<number> {
+export async function worker(id: string, freshContinue: boolean): Promise<number> {
 	const dir = runDir(id);
 	const fifo = join(dir, "kill.fifo");
 	const inherited = fs.fstatSync(4);
@@ -338,13 +339,15 @@ export async function worker(id: string): Promise<number> {
 			if (cfg.phase === "setup" || !fs.existsSync(task.composeFile)) task.materializeCompose();
 			services = task.services();
 			stackStartAttempted = true;
-			if (cfg.mode === "continue") {
+			if (cfg.phase === "setup" || cfg.phase === "setting-up") task.up();
+			else {
 				try {
 					task.start();
-				} catch {
+				} catch (err) {
+					if (!freshContinue) throw err;
 					task.up();
 				}
-			} else task.up();
+			}
 		}
 		if (cfg.phase === "setup" || cfg.phase === "setting-up") {
 			advance("setting-up");
