@@ -498,7 +498,7 @@ test("resume retries an unanswered root once and reattaches after interruption w
 		assert.equal(failed.status, 1);
 		assert.equal(
 			JSON.parse(failed.stdout.trim().split("\n").at(-1)!).error,
-			"Orchestrator submission did not complete: unanswered",
+			"Orchestrator submission did not complete: model_error",
 		);
 	}
 	assert.equal((await run()).signal, "SIGKILL");
@@ -510,6 +510,38 @@ test("resume retries an unanswered root once and reattaches after interruption w
 	assert.equal(fs.readFileSync(join(dir, "requests"), "utf8"), "A\nB\nroot\nroot\nroot\nroot\n");
 });
 
+test("follow reports retry and compaction transitions once per conversation without provider text", async (t) => {
+	const { job, run, stub } = stageFixture(t);
+	job.stages.length = 1;
+	fs.appendFileSync(
+		stub,
+		`
+		import { Harness } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-durable"))};
+		const open = Harness.open;
+		Harness.open = async (...args) => {
+			const h = await open(...args);
+			h.observeDoc = async (_doc, _id, observer) => {
+				const live = {generation:{attempt:1, retry:{at: Date.now()+5000, error:'private-fixture'}}, compactions:[{taskId:2}]};
+				for (let i=0;i<2;i++) observer.advance({kind:'value', value:live});
+				return {value: {}, detach() {}};
+			};
+			return h;
+		};`,
+	);
+	const result = await run();
+	assert.equal(result.status, 0, result.stderr);
+	const events = result.stdout
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line));
+	for (const agent of ["agent:worker", "orchestrator"]) {
+		const lines = events.filter((e) => e.agent === agent).map((e) => e.message);
+		assert.equal(lines.filter((line) => line.startsWith("Model retry in")).length, 1);
+		assert.equal(lines.filter((line) => line === "Compacting context").length, 1);
+	}
+	assert.doesNotMatch(result.stdout + result.stderr, /private-fixture/);
+});
+
 test("unexpected action exceptions log only a safe category and runtime location", async (t) => {
 	const { job, run, stub } = stageFixture(t);
 	job.stages = [];
@@ -517,7 +549,9 @@ test("unexpected action exceptions log only a safe category and runtime location
 		stub,
 		`import { Harness } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-durable"))};
  const open = Harness.open;
- Harness.open = async (...args) => { const h = await open(...args); h.root = () => {
+ Harness.open = async (...args) => {
+   args[1].onReport({ kind: "task_interrupted", reason: "restart_limit", restarts: 5, error: new Error("private-fixture-report") });
+   const h = await open(...args); h.root = () => {
    throw Object.assign(new TypeError("failure\\nprivate-fixture-message"), { name: "private-fixture-name", code: "private-fixture-code" });
  }; return h; };`,
 	);
@@ -526,6 +560,7 @@ test("unexpected action exceptions log only a safe category and runtime location
 	const msg = JSON.parse(failed.stdout.trim().split("\n").at(-1)!);
 	assert.equal(msg.success, false);
 	assert.equal(msg.error, "Action failed");
+	assert.match(failed.stderr, /Durable task_interrupted: restart_limit \(restarts: 5\)/);
 	assert.match(failed.stderr, /^Unexpected TypeError at runtime\/main\.ts:\d+:\d+$/m);
 	assert.doesNotMatch(failed.stdout, /Unexpected TypeError|runtime\/main\.ts/);
 	assert.doesNotMatch(failed.stderr + failed.stdout, /private-fixture/);

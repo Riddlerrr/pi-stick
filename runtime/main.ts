@@ -21,6 +21,9 @@ import {
 	GenerationTask,
 	Harness,
 	hook,
+	LiveDoc,
+	type LiveState,
+	type Submission,
 	ROOT_CONVERSATION_ID,
 	section,
 	type TaskId,
@@ -281,6 +284,58 @@ async function prepareConversations(
 	return ids;
 }
 
+// Submission reasons are arbitrary strings in durable storage; only expose known codes.
+function safeReason(reason: string) {
+	return [
+		"turn_limit",
+		"model_error",
+		"restart_limit",
+		"interrupted",
+		"no_model",
+		"aborted",
+		"reset",
+		"faulted",
+		"orphaned",
+		"nothing_to_answer",
+		"stale",
+		"run_failed",
+	].includes(reason)
+		? reason
+		: "unknown";
+}
+
+async function waitForAnswer(sub: Submission, id: ConversationId, label: string, context: Context) {
+	let previous: LiveState | undefined;
+	const progress = (live: LiveState) => {
+		const retry = live.generation?.retry;
+		if (retry && retry.at !== previous?.generation?.retry?.at)
+			emitProgress(`Model retry in ${Math.max(0, Math.ceil((retry.at - Date.now()) / 1000))}s`, label);
+		for (const task of live.compactions ?? []) {
+			if (!previous?.compactions?.some((prior) => prior.taskId === task.taskId))
+				emitProgress("Compacting context", label);
+		}
+		previous = live;
+	};
+	const observation = await h.observeDoc(
+		LiveDoc,
+		id,
+		{
+			advance(call) {
+				if (call.kind === "value") progress(call.value);
+			},
+			end() {},
+		},
+		context,
+	);
+	try {
+		// An update can arrive before attachment resolves; don't then replay the older initial state.
+		if (observation && !previous) progress(observation.value);
+		return await sub.wait(context);
+	} finally {
+		observation?.detach();
+	}
+}
+
 async function runSubagent(
 	{ spec, prompt, requireReport }: Batch[number],
 	id: ConversationId,
@@ -293,14 +348,14 @@ async function runSubagent(
 	const label = `agent:${spec.name}`;
 	emitProgress("started", label);
 	const sub = await conv.submit({ type: "input", content: prompt, requestId: "work" }, context);
-	const settled = await sub.wait(context);
+	const settled = await waitForAnswer(sub, id, label, context);
 	const failed = (msg: string) => {
 		emitProgress(msg, label);
 		return { agent: spec.name, ok: false, output: msg };
 	};
 	if (settled.status !== "done" || settled.type !== "input")
 		return failed(
-			`Subagent '${spec.name}' did not complete (${settled.status}${settled.reason ? `: ${settled.reason}` : ""})`,
+			`Subagent '${spec.name}' did not complete (${settled.status}${settled.reason ? `: ${safeReason(settled.reason)}` : ""})`,
 		);
 	const entry = await conv.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
 	const message = entry?.model?.[0];
@@ -526,7 +581,7 @@ let continueRoot = false;
 for (let attempt = 1; ; attempt++) {
 	const prior = await storage.submissionByRequest(ROOT_CONVERSATION_ID, rootRequestId, BACKGROUND_CONTEXT);
 	if (prior?.status !== "unanswered") break;
-	emitProgress(`Root attempt ${attempt} was unanswered: ${prior.reason}`, "orchestrator");
+	emitProgress(`Root attempt ${attempt} was unanswered: ${safeReason(prior.reason)}`, "orchestrator");
 	continueRoot = prior.type === "continue" || prior.entry !== undefined;
 	rootRequestId = `${turnKey}:retry:${attempt}`;
 }
@@ -535,6 +590,13 @@ const h = await Harness.open(
 	{
 		models,
 		registry,
+		onReport(report) {
+			// Never log the error itself, even to the private worker log.
+			const reason =
+				report.kind === "task_faulted" || report.kind === "task_interrupted" ? `: ${report.reason}` : "";
+			const count = report.kind === "task_interrupted" ? ` (restarts: ${report.restarts})` : "";
+			console.error(`Durable ${report.kind}${reason}${count}`);
+		},
 		async env({ conversationId, read }, context) {
 			const agent = await getAgentCtx(conversationId, read, context);
 			return new AgentExecutionEnv(agent.name, (path, write) => resolveAgentPath(path, agent, write));
@@ -664,9 +726,11 @@ async function runAction(): Promise<string> {
 			: { type: "input", content: finalPrompt, requestId: rootRequestId },
 		ctx,
 	);
-	const settled = await sub.wait(ctx);
+	const settled = await waitForAnswer(sub, root.id, "orchestrator", ctx);
 	if (settled.status !== "done" || settled.type === "write")
-		throw new RunFailure(`Orchestrator submission did not complete: ${settled.status}`);
+		throw new RunFailure(
+			`Orchestrator submission did not complete: ${settled.reason ? safeReason(settled.reason) : settled.status}`,
+		);
 	const entry = await root.commit((tx) => tx.entry(AssistantEntry, settled.answer), ctx);
 	const message = entry?.model?.[0];
 	if (message?.role !== "assistant") throw new RunFailure("Orchestrator returned no assistant answer");
