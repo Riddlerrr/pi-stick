@@ -1,5 +1,6 @@
 state/
 /.pi/mcp.json
+/skills/system/
 /projects/
 /actions/
 node_modules/
