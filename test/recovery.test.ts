@@ -228,6 +228,44 @@ test("resume aborts an interrupted delegate; only a fresh delegation runs", asyn
 	}
 });
 
+test("resume exports completed delegations once and continue does not inherit them", async (t) => {
+	const { run, dir, job, stub } = stageFixture(t);
+	job.stages = [];
+	job.orchestrator.tools = ["delegate"];
+	fs.writeFileSync(
+		stub,
+		`import fs from 'node:fs';
+		globalThis.fetch = async (_url, init) => {
+			const { messages } = JSON.parse(init.body);
+			const prompt = messages.filter(m => m.role === 'user').at(-1).content;
+			const results = messages.filter(m => m.role === 'tool');
+			let delta = {role:'assistant', content:'done'};
+			if (prompt.startsWith('worker-')) {
+				fs.appendFileSync('workers', prompt + '\\n');
+				delta.content = prompt;
+			} else if (prompt === 'task' && results.length < 2) {
+				const tasks = [{agent:'worker', prompt:'worker-' + results.length}];
+				delta = {role:'assistant', tool_calls:[{index:0,id:'call'+results.length,type:'function',function:{name:'delegate',arguments:JSON.stringify({tasks})}}]};
+			} else if (!fs.existsSync('interrupted')) {
+				fs.writeFileSync('interrupted', '1');
+				process.kill(process.pid, 'SIGKILL');
+			}
+			const data = {choices:[{index:0,delta,finish_reason:delta.tool_calls?'tool_calls':'stop'}]};
+			return new Response('data: ' + JSON.stringify(data) + '\\n\\ndata: [DONE]\\n\\n', {headers:{'content-type':'text/event-stream'}});
+		};`,
+	);
+	assert.equal((await run()).signal, "SIGKILL");
+	const resumed = await run();
+	assert.equal(resumed.status, 0, resumed.stderr + resumed.stdout);
+	assert.deepEqual(JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).data.outputs, {
+		worker: "worker-0\n\n---\n\nworker-1",
+	});
+	const next = await run({ ...job, requestId: runId(), continueRun: true, prompt: "follow-up" });
+	assert.equal(next.status, 0, next.stderr + next.stdout);
+	assert.equal(JSON.parse(next.stdout.trim().split("\n").at(-1)!).data.outputs, undefined);
+	assert.equal(fs.readFileSync(join(dir, "workers"), "utf8"), "worker-0\nworker-1\n");
+});
+
 test("unsupported thinking levels fail before a request; valid levels reach each agent", async (t) => {
 	const { job, run, dir } = stageFixture(t);
 	const model = { provider: "groq", modelId: "openai/gpt-oss-120b" };

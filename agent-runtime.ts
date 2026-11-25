@@ -297,6 +297,7 @@ const workflow = defineDoc<{
 	slots: Record<string, ConversationId>;
 	agents: Record<string, { name: string; mode: "read-only" | "read-write" }>;
 	stages: Record<string, BatchResult>;
+	delegates?: { requestId: string; tasks: TaskId<BatchResult>[] };
 }>({
 	kind: "pi-stick.workflow",
 	version: 1,
@@ -379,7 +380,7 @@ async function runSubagent(
 			return { agent: spec.name, ok: false, output: msg };
 		}
 		const final = text || "(empty output)";
-		recordAgentOutput(spec.name, final);
+		if (slot) recordAgentOutput(spec.name, final);
 		emitProgress("completed", label);
 		return { agent: spec.name, ok: true, output: final };
 	} catch (err) {
@@ -474,7 +475,12 @@ const delegateBatch = defineTask<DelegateTasks, { phase: "run" }, BatchResult>({
 				return { spec, prompt };
 			});
 			const result = await runParallelBatch(batch, "delegate", { taskId: runtime.taskId });
-			await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
+			await runtime.commit(async (tx) => {
+				const state = await tx.doc(workflow);
+				if (state.delegates?.requestId !== turnKey) state.delegates = { requestId: turnKey, tasks: [] };
+				state.delegates.tasks.push(runtime.taskId);
+				return { status: "terminal", outcome: { status: "completed", result } };
+			}, context);
 		},
 	},
 	abort: async (_task, runtime, context) => {
@@ -855,6 +861,15 @@ async function runAction(): Promise<string> {
 		.join("\n")
 		.trim();
 	if (!report) throw new RunFailure("Orchestrator returned an empty report");
+	const delegates = (await h.snapshot(workflow, ctx))?.delegates;
+	if (delegates?.requestId === turnKey) {
+		for (const id of delegates.tasks) {
+			const task = await h.getTask(id, ctx);
+			if (task?.state.status !== "terminal" || task.state.outcome.status !== "completed")
+				throw new RunFailure("Missing completed delegate result");
+			for (const r of task.state.outcome.result.results) if (r.ok) recordAgentOutput(r.agent, r.output);
+		}
+	}
 	return report;
 }
 
