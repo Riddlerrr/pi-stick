@@ -1,4 +1,3 @@
-import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { type ConversationId, defineTool, type Task } from "@earendil-works/pi-durable";
 
 export type DelegateTasks = Array<{ agent: string; prompt: string }>;
@@ -8,14 +7,14 @@ export type BatchResult = {
 	cleanlinessWarning?: string;
 };
 
-export function createDelegateTool(
-	delegateBatch: Task<DelegateTasks, { phase: "run" }, BatchResult, object>,
+export function createDelegateTool<S extends { phase: string }>(
+	delegateBatch: Task<DelegateTasks, S, BatchResult, object>,
 	isOrchestrator: (id: ConversationId) => boolean,
 ) {
 	return defineTool({
 		name: "delegate",
 		executionMode: "sequential",
-		replay: "unsafe",
+		replay: "safe",
 		description:
 			"Run one or more configured subagents in parallel and collect their results. Each agent may appear only once per call. Multiple read-only subagents may run concurrently; read-write subagents must run one at a time.",
 		parameters: {
@@ -40,7 +39,7 @@ export function createDelegateTool(
 			additionalProperties: false,
 		},
 		callers: ["model"],
-		execute: async (args, api) => {
+		execute: async (args, api, ctx) => {
 			if (!isOrchestrator(api.conversationId)) {
 				return {
 					output: [{ type: "text" as const, text: "Only the orchestrator may call delegate." }],
@@ -52,9 +51,10 @@ export function createDelegateTool(
 				const id = await api.createTask(
 					delegateBatch,
 					tasks,
-					{ ownership: { kind: "task", taskId: api.taskId }, abandonOnRestart: true },
+					{ ownership: { kind: "task", taskId: api.taskId }, key: "batch" },
 					ctx,
 				);
+				if (!api.wake) return { kind: "wait", on: [id], policy: "allSettled" };
 				const { outcome } = (await api.waitForTask(id, ctx)).state;
 				if (outcome.status !== "completed")
 					throw Error(outcome.error?.message ?? `Delegate batch ${outcome.status}`);

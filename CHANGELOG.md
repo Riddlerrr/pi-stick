@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `pistick resume` now resumes interrupted delegations instead of abandoning the batch. Completed subagents keep their answers. Rebuild the agent image and start new runs; existing sessions are not migrated.
+
 ## 0.3.0 — 2026-11-25
 
 - Use `pistick projects` to list workspaces and `pistick show RUN_ID` to inspect the current phase, session usage and latest published report. Public run commands accept an unambiguous prefix of at least eight lowercase hex digits.

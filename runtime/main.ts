@@ -4,13 +4,14 @@ import { writeProtocol } from "./tools/protocol-stdout.ts";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context, withAbortSignal } from "@earendil-works/chord/context";
 
 import { createModels, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import {
 	AssistantEntry,
+	configure,
 	type ConversationId,
 	createRegistry,
 	defineDoc,
@@ -23,6 +24,7 @@ import {
 	type TaskId,
 	type ToolRegistration,
 	ToolTask,
+	type Tx,
 } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -224,16 +226,19 @@ const stageProgressLabel = job.check || job.orchestrator ? "orchestrator" : unde
 const activeSubagents: Record<string, AgentRuntimeSpec> = { ...(job.agents ?? {}) };
 const agentOutputs: Record<string, string> = {};
 
+type Batch = Array<{ spec: AgentRuntimeSpec; prompt: string; requireReport?: boolean }>;
+type PreparedBatch = { conversations: ConversationId[]; baseline?: RpcData };
+type StageBatch = PreparedBatch & { result?: BatchResult };
+
 const workflow = defineDoc<{
-	slots: Record<string, ConversationId>;
 	agents: Record<string, { name: string; mode: "read-only" | "read-write" }>;
-	stages: Record<string, BatchResult>;
+	stages: Record<string, StageBatch>;
 	delegates?: { requestId: string; tasks: TaskId<BatchResult>[] };
 }>({
 	kind: "pi-stick.workflow",
-	version: 1,
+	version: 2,
 	scope: "session",
-	initial: () => ({ slots: {}, agents: {}, stages: {} }),
+	initial: () => ({ agents: {}, stages: {} }),
 	checkpointWhen: () => false,
 });
 
@@ -242,41 +247,44 @@ function recordAgentOutput(agentName: string, text: string) {
 	else agentOutputs[agentName] = text;
 }
 
+async function prepareConversations(
+	tx: Tx,
+	batch: Batch,
+	owner?: TaskId,
+	prior?: StageBatch,
+): Promise<ConversationId[]> {
+	const state = await tx.doc(workflow);
+	const ids: ConversationId[] = [];
+	for (const [i, { spec }] of batch.entries()) {
+		if (prior?.result?.results[i].ok) {
+			ids.push(prior.conversations[i]);
+			continue;
+		}
+		const { id } = await tx.createConversation({
+			ownership: owner === undefined ? { kind: "ownerless" } : { kind: "task", taskId: owner },
+		});
+		await configure(tx, id, {
+			...selectToolsAndExtensions(spec.tools.filter((t) => t !== "delegate")),
+			model: spec.model,
+			instructions: spec.instructions,
+			thinkingLevel: spec.thinkingLevel ?? null,
+			maxTurns: spec.maxTurns ?? null,
+		});
+		state.agents[id] = { name: spec.name, mode: spec.mode };
+		ids.push(id);
+	}
+	return ids;
+}
+
 async function runSubagent(
-	spec: AgentRuntimeSpec,
-	promptText: string,
-	slot?: string,
-	ownerTaskId?: TaskId,
-	requireReport = false,
-): Promise<{ agent: string; ok: boolean; output: string }> {
+	{ spec, prompt, requireReport }: Batch[number],
+	id: ConversationId,
+	context: Context,
+): Promise<BatchResult["results"][number]> {
 	const scratchDir = join(SCRATCH_DIR, spec.name);
 	fs.mkdirSync(scratchDir, { recursive: true });
-	const subTools = spec.tools.filter((t) => t !== "delegate");
-	const { extensions, tools } = selectToolsAndExtensions(subTools);
-	const existing = slot && (await h.snapshot(workflow, ctx))?.slots[slot];
-	const conv = existing
-		? await h.conversation(existing, ctx)
-		: await h.createConversation(
-				{
-					ownership: ownerTaskId === undefined ? { kind: "ownerless" } : { kind: "task", taskId: ownerTaskId },
-					init: async (tx, id) => {
-						const state = await tx.doc(workflow);
-						state.agents[id] = { name: spec.name, mode: spec.mode };
-						if (slot) state.slots[slot] = id;
-					},
-					agent: {
-						model: spec.model,
-						instructions: spec.instructions,
-						extensions,
-						tools,
-						// Clear the owner’s setting for delegated agents without an explicit level.
-						thinkingLevel: spec.thinkingLevel ?? null,
-						maxTurns: spec.maxTurns ?? null,
-					},
-				},
-				ctx,
-			);
-	if (!conv) throw Error(`Missing stage conversation: ${existing}`);
+	const conv = await h.conversation(id, context);
+	if (!conv) throw Error(`Missing subagent conversation: ${id}`);
 	const label = `agent:${spec.name}`;
 	agentByConv.set(conv.id, {
 		name: spec.name,
@@ -285,68 +293,34 @@ async function runSubagent(
 		scratchDir,
 	});
 	emitProgress("started", label);
-	try {
-		const sub = await conv.submit({ type: "input", content: promptText, ...(slot ? { requestId: slot } : {}) }, ctx);
-		const settled = await sub.wait(ctx);
-		if (settled.status !== "done" || settled.type !== "input") {
-			const msg = `Subagent '${spec.name}' did not complete (${settled.status}${settled.reason ? `: ${settled.reason}` : ""})`;
-			emitProgress(msg, label);
-			return { agent: spec.name, ok: false, output: msg };
-		}
-		const entry = await conv.commit((tx) => tx.entry(AssistantEntry, settled.answer), ctx);
-		const message = entry?.model?.[0];
-		if (message?.role !== "assistant") {
-			const msg = `Subagent '${spec.name}' returned no assistant answer`;
-			emitProgress(msg, label);
-			return { agent: spec.name, ok: false, output: msg };
-		}
-		const text = message.content
-			.filter((b) => b.type === "text")
-			.map((b) => b.text)
-			.join("\n")
-			.trim();
-		if (requireReport && !text) {
-			const msg = `Final agent ${spec.name} returned an empty report`;
-			emitProgress(msg, label);
-			return { agent: spec.name, ok: false, output: msg };
-		}
-		const final = text || "(empty output)";
-		if (slot) recordAgentOutput(spec.name, final);
-		emitProgress("completed", label);
-		return { agent: spec.name, ok: true, output: final };
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		emitProgress(`error: ${msg}`, label);
-		if (slot) throw err; // Unknown submission outcome: resume the same slot.
-		return { agent: spec.name, ok: false, output: `Error: ${msg}` };
-	}
+	const sub = await conv.submit({ type: "input", content: prompt, requestId: "work" }, context);
+	const settled = await sub.wait(context);
+	const failed = (msg: string) => {
+		emitProgress(msg, label);
+		return { agent: spec.name, ok: false, output: msg };
+	};
+	if (settled.status !== "done" || settled.type !== "input")
+		return failed(
+			`Subagent '${spec.name}' did not complete (${settled.status}${settled.reason ? `: ${settled.reason}` : ""})`,
+		);
+	const entry = await conv.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
+	const message = entry?.model?.[0];
+	if (message?.role !== "assistant") return failed(`Subagent '${spec.name}' returned no assistant answer`);
+	const text = message.content
+		.filter((b) => b.type === "text")
+		.map((b) => b.text)
+		.join("\n")
+		.trim();
+	if (requireReport && !text) return failed(`Final agent ${spec.name} returned an empty report`);
+	emitProgress("completed", label);
+	return { agent: spec.name, ok: true, output: text || "(empty output)" };
 }
 
-async function runParallelBatch(
-	batch: Array<{ spec: AgentRuntimeSpec; prompt: string; requireReport?: boolean }>,
-	batchLabel: string,
-	recovery: { stageKey: string } | { taskId: TaskId },
-): Promise<BatchResult> {
+async function prepareBatch(batch: Batch, batchLabel: string): Promise<Pick<PreparedBatch, "baseline">> {
 	const names = new Set<string>();
 	for (const { spec } of batch) {
 		if (names.has(spec.name)) throw Error(`Batch '${batchLabel}' repeats agent '${spec.name}'`);
 		names.add(spec.name);
-	}
-	const stageKey = "stageKey" in recovery ? recovery.stageKey : undefined;
-	const owner = "taskId" in recovery ? recovery.taskId : undefined;
-	const cached = stageKey ? (await h.snapshot(workflow, ctx))?.stages[stageKey] : undefined;
-	if (cached?.results.every((r) => r.ok)) {
-		for (const r of cached.results) recordAgentOutput(r.agent, r.output);
-		emitProgress(`Restored completed ${batchLabel}`, stageProgressLabel);
-		return cached;
-	}
-	if (stageKey && cached) {
-		// A settled failure needs a new conversation; successful siblings keep their durable submissions.
-		await h.commit(async (tx) => {
-			const state = await tx.doc(workflow);
-			for (const [i, r] of cached.results.entries()) if (!r.ok) delete state.slots[`${stageKey}:${i}:${r.agent}`];
-			delete state.stages[stageKey];
-		}, ctx);
 	}
 	const rwCount = batch.filter((b) => b.spec.mode === "read-write").length;
 	if (rwCount > 1) {
@@ -354,58 +328,76 @@ async function runParallelBatch(
 			`Cannot run ${rwCount} read-write subagents in parallel in '${batchLabel}'; run read-write subagents sequentially or use read-only subagents for parallel execution.`,
 		);
 	}
-	const allReadOnly = batch.every((b) => b.spec.mode === "read-only");
+	return rwCount ? {} : { baseline: await callHostRpc({ type: "check_clean" }) };
+}
+
+async function runParallelBatch(
+	batch: Batch,
+	batchLabel: string,
+	{ conversations, baseline }: PreparedBatch,
+	context: Context,
+): Promise<BatchResult> {
+	const results = await Promise.all(batch.map((item, i) => runSubagent(item, conversations[i], context)));
 	let cleanlinessWarning: string | undefined;
-	const trackedStatus = async () => {
-		const res = await callHostRpc({ type: "check_clean" });
-		if (!res.error) return res.text;
-		cleanlinessWarning = `WARNING: Could not verify tracked files in read-only round '${batchLabel}': ${res.text}`;
-		emitProgress(cleanlinessWarning, stageProgressLabel);
-		return undefined;
-	};
-	const beforeClean = allReadOnly ? await trackedStatus() : undefined;
-	const results = await Promise.all(
-		batch.map((item, i) =>
-			runSubagent(
-				item.spec,
-				item.prompt,
-				stageKey && `${stageKey}:${i}:${item.spec.name}`,
-				owner,
-				item.requireReport,
-			),
-		),
-	);
-	if (beforeClean !== undefined) {
-		const after = await trackedStatus();
-		if (after !== undefined && after !== beforeClean) {
-			cleanlinessWarning = `WARNING: Tracked repository files changed during read-only round '${batchLabel}':\n${after.trim()}`;
-			emitProgress(cleanlinessWarning, stageProgressLabel);
-		}
+	if (baseline) {
+		const after = baseline.error ? baseline : await callHostRpc({ type: "check_clean" });
+		if (after.error)
+			cleanlinessWarning = `WARNING: Could not verify tracked files in read-only round '${batchLabel}': ${after.text}`;
+		else if (after.text !== baseline.text)
+			cleanlinessWarning = `WARNING: Tracked repository files changed during read-only round '${batchLabel}':\n${after.text.trim()}`;
 	}
-	const result = { results, ...(cleanlinessWarning ? { cleanlinessWarning } : {}) };
-	if (stageKey)
-		await h.commit(async (tx) => {
-			(await tx.doc(workflow)).stages[stageKey] = result;
+	if (cleanlinessWarning) emitProgress(cleanlinessWarning, stageProgressLabel);
+	return { results, ...(cleanlinessWarning ? { cleanlinessWarning } : {}) };
+}
+
+async function runStage(batch: Batch, label: string, key: string): Promise<BatchResult> {
+	let stage = (await h.snapshot(workflow, ctx))?.stages[key];
+	if (stage?.result?.results.every((r) => r.ok)) {
+		emitProgress(`Restored completed ${label}`, stageProgressLabel);
+		return stage.result;
+	}
+	if (!stage || stage.result) {
+		const prior = stage;
+		const baseline = await prepareBatch(batch, label);
+		stage = await h.commit(async (tx) => {
+			const conversations = await prepareConversations(tx, batch, undefined, prior);
+			const prepared = { conversations, ...baseline };
+			(await tx.doc(workflow)).stages[key] = prepared;
+			return prepared;
 		}, ctx);
+	}
+	const result = await runParallelBatch(batch, label, stage, ctx);
+	await h.commit(async (tx) => {
+		(await tx.doc(workflow)).stages[key].result = result;
+	}, ctx);
 	return result;
 }
 
-// An abandoned batch is marked before recovery dispatches any of its owned conversations.
-const delegateBatch = defineTask<DelegateTasks, { phase: "run" }, BatchResult>({
+function delegatedAgents(tasks: DelegateTasks): Batch {
+	return tasks.map(({ agent, prompt }) => {
+		const spec = activeSubagents[agent];
+		if (!spec)
+			throw Error(`Unknown subagent '${agent}'. Available: ${Object.keys(activeSubagents).join(", ") || "(none)"}`);
+		return { spec, prompt };
+	});
+}
+
+type DelegatePhase = { phase: "prepare" } | ({ phase: "run" } & PreparedBatch);
+const delegateBatch = defineTask<DelegateTasks, DelegatePhase, BatchResult>({
 	name: "pi-stick.delegate-batch",
-	version: 1,
-	initial: () => ({ phase: "run" }),
+	version: 2,
+	initial: () => ({ phase: "prepare" }),
 	phases: {
+		prepare: async (task, runtime, context) => {
+			const batch = delegatedAgents(task.input);
+			const baseline = await prepareBatch(batch, "delegate");
+			await runtime.commit(async (tx) => {
+				const conversations = await prepareConversations(tx, batch, runtime.taskId);
+				return { status: "running", checkpoint: { phase: "run", conversations, ...baseline } };
+			}, context);
+		},
 		run: async (task, runtime, context) => {
-			const batch = task.input.map(({ agent, prompt }) => {
-				const spec = activeSubagents[agent];
-				if (!spec)
-					throw Error(
-						`Unknown subagent '${agent}'. Available: ${Object.keys(activeSubagents).join(", ") || "(none)"}`,
-					);
-				return { spec, prompt };
-			});
-			const result = await runParallelBatch(batch, "delegate", { taskId: runtime.taskId });
+			const result = await runParallelBatch(delegatedAgents(task.input), "delegate", task.state.checkpoint, context);
 			await runtime.commit(async (tx) => {
 				const state = await tx.doc(workflow);
 				if (state.delegates?.requestId !== turnKey) state.delegates = { requestId: turnKey, tasks: [] };
@@ -598,9 +590,12 @@ async function runAction(): Promise<string> {
 				if (!agentSpec) throw new RunFailure(`Stage '${stage.name}' references missing agent '${agentName}'`);
 				return { spec: agentSpec, prompt: stagePrompt, requireReport };
 			});
-			const { results, cleanlinessWarning } = await runParallelBatch(batch, `stage:${stage.name}`, {
-				stageKey: `${job.requestId}:${index}:${stage.name}`,
-			});
+			const { results, cleanlinessWarning } = await runStage(
+				batch,
+				`stage:${stage.name}`,
+				`${turnKey}:${index}:${stage.name}`,
+			);
+			for (const r of results) if (r.ok) recordAgentOutput(r.agent, r.output);
 			const failures = results.filter((r) => !r.ok);
 			if (failures.length) {
 				const message = `Stage '${stage.name}' failed: ${failures.map((r) => r.agent).join(", ")}`;

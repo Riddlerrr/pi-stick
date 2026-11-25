@@ -179,50 +179,98 @@ test("delegate rejects a repeated agent before dispatch, even with different pro
 	);
 });
 
-test("resume aborts an interrupted delegate; only a fresh delegation runs", async (t) => {
+test("resume reuses an unparked delegate batch, then restores three settled workers while the fourth resumes", async (t) => {
 	const { run, dir, job, stub } = stageFixture(t);
 	job.stages = [];
 	job.orchestrator.tools = ["delegate"];
 	job.orchestrator.model.modelId = "openai/gpt-oss-120b";
-	job.agents.worker.model = job.orchestrator.model;
 	Object.assign(job.orchestrator, { thinkingLevel: "high" });
+	const names = ["worker", "sibling", "third", "fourth"];
+	for (const name of names)
+		Object.assign(job.agents, {
+			[name]: {
+				...job.agents.sibling,
+				name,
+				model: job.orchestrator.model,
+				mode: name === "worker" ? "read-write" : "read-only",
+			},
+		});
 	fs.writeFileSync(
 		stub,
 		`import fs from 'node:fs';
+		import { Harness } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-durable"))};
+		const open = Harness.open;
+		let settled = 0, fourthPending = false;
+		const interruptFourth = () => {
+			if (settled === 3 && fourthPending) {
+				fs.writeFileSync('partial', '');
+				process.kill(process.pid, 'SIGKILL');
+			}
+		};
+		Harness.open = async (...args) => {
+			const h = await open(...args);
+			h.observeCommits({end() {}, advance({changes}) {
+				for (const {type, value} of changes) {
+					if (type === 'task' && value.kind === 'pi-stick.delegate-batch' && !fs.existsSync('unparked')) {
+						fs.writeFileSync('unparked', '');
+						process.kill(process.pid, 'SIGKILL');
+					}
+					if (type === 'submission' && value.status === 'done') { settled++; interruptFourth(); }
+				}
+			}});
+			return h;
+		};
 		globalThis.fetch = async (_url, init) => {
 			const { messages, reasoning_effort } = JSON.parse(init.body);
 			const prompt = messages.find(m => m.role === 'user').content;
 			if (reasoning_effort !== (prompt === 'task' ? 'high' : undefined)) throw Error('Unexpected inherited thinking level');
-			const results = messages.filter(m => m.role === 'tool');
 			let delta = {role:'assistant', content:prompt};
 			if (prompt !== 'task') {
 				fs.appendFileSync('workers', prompt + '\\n');
-				if (prompt === 'original') process.kill(process.pid, 'SIGKILL');
-			} else if (results.length < 2) {
-				if (results.length && !results[0].content.includes('delegate was interrupted')) throw Error('Expected interrupted delegate');
-				const tasks = [{agent:'worker', prompt: results.length ? 'fresh' : 'original'}];
-				delta = {role:'assistant', tool_calls:[{index:0,id:'call'+results.length,type:'function',function:{name:'delegate',arguments:JSON.stringify({tasks})}}]};
-			} else delta.content = results[1].content;
+				if (prompt === 'fourth' && !fs.existsSync('partial')) {
+					fourthPending = true; interruptFourth(); await new Promise(() => {});
+				}
+			} else if (!messages.some(m => m.role === 'tool')) {
+				const tasks = ${JSON.stringify(names)}.map(agent => ({agent, prompt:agent}));
+				delta = {role:'assistant', tool_calls:[{index:0,id:'call',type:'function',function:{name:'delegate',arguments:JSON.stringify({tasks})}}]};
+			} else delta.content = messages.at(-1).content;
 			const data = {choices:[{index:0,delta,finish_reason:delta.tool_calls?'tool_calls':'stop'}]};
 			return new Response('data: ' + JSON.stringify(data) + '\\n\\ndata: [DONE]\\n\\n', {headers:{'content-type':'text/event-stream'}});
 		};`,
 	);
-	assert.equal((await run()).signal, "SIGKILL");
+	for (const marker of ["unparked", "partial"]) {
+		const killed = await run();
+		assert.equal(killed.signal, "SIGKILL", killed.stderr + killed.stdout);
+		assert.ok(fs.existsSync(join(dir, marker)));
+	}
 	const resumed = await run();
 	assert.equal(resumed.status, 0, resumed.stderr + resumed.stdout);
-	assert.match(JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).data.report, /worker \(ok\)\s+fresh/);
-	assert.equal(fs.readFileSync(join(dir, "workers"), "utf8"), "original\nfresh\n");
-	// A fast orchestrator can exit before a ghost's retry timer fires. Check its durable outcome too.
+	const { report, outputs } = JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).data;
+	assert.equal(report, names.map((name) => `### Agent: ${name} (ok)\n\n${name}`).join("\n\n"));
+	assert.deepEqual(outputs, Object.fromEntries(names.map((name) => [name, name])));
+	assert.deepEqual(
+		fs.readFileSync(join(dir, "workers"), "utf8").trim().split("\n").sort(),
+		[...names, "fourth"].sort(),
+	);
 	const storage = await openNodeSqliteStorage(join(dir, `${job.id}.sqlite`));
 	try {
-		const { items } = await storage.scanSubmissions({}, 10, undefined, BACKGROUND_CONTEXT);
-		assert.deepEqual(
-			items
-				.filter((s) => s.requestId === undefined)
-				.map((s) => (s.status === "unanswered" ? s.reason : s.status))
-				.sort(),
-			["aborted", "done"],
+		const { items: batches } = await storage.scanTasks(
+			{ kind: "pi-stick.delegate-batch" },
+			10,
+			undefined,
+			BACKGROUND_CONTEXT,
 		);
+		assert.equal(batches.length, 1);
+		const children = await storage.scanConversations(
+			{ ownerTaskId: batches[0].id },
+			10,
+			undefined,
+			BACKGROUND_CONTEXT,
+		);
+		assert.equal(children.items.length, names.length);
+		const submissions = await storage.scanSubmissions({}, 10, undefined, BACKGROUND_CONTEXT);
+		assert.equal(submissions.items.length, names.length + 1);
+		assert.ok(submissions.items.every((s) => s.status === "done"));
 	} finally {
 		await storage.close(BACKGROUND_CONTEXT);
 	}
