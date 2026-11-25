@@ -59,15 +59,25 @@ export class AgentExecutionEnv extends NodeExecutionEnv {
 		return super.fileInfo(this.resolve(path), context);
 	}
 
+	private async openFile(path: string, create: boolean) {
+		const resolved = this.resolve(path);
+		try {
+			return await openDestination(resolved, create);
+		} catch (cause) {
+			if (!(cause instanceof Error) || !("code" in cause)) throw cause;
+			throw Error(`Cannot ${create ? "write" : "edit"} ${JSON.stringify(path)}: ${cause.code}`, { cause });
+		}
+	}
+
 	override async readTextFile(path: string, context: Context) {
 		context.abortSignal?.throwIfAborted();
-		this.editFile = await openDestination(this.resolve(path), false);
+		this.editFile = await this.openFile(path, false);
 		if (!(await this.editFile.stat()).isFile()) throw Error(`Cannot edit ${path}: not a regular file`);
 		return { ok: true as const, value: await readFile(`/proc/self/fd/${this.editFile.fd}`, "utf8") };
 	}
 
 	override async writeFile(path: string, content: string | Uint8Array, context: Context) {
-		const file = this.editFile ?? (await openDestination(this.resolve(path), true));
+		const file = this.editFile ?? (await this.openFile(path, true));
 		try {
 			if (!(await file.stat()).isFile()) throw Error(`Cannot write ${path}: not a regular file`);
 			context.abortSignal?.throwIfAborted();

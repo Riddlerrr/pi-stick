@@ -24,6 +24,8 @@ test("write creates parents and shares edit's queue, including when creating the
 	await Promise.all([replace(), overwrite("")]);
 	assert.equal(await readFile(resolve(path), "utf8"), "");
 	await symlink(resolve("missing"), resolve("link"));
-	await assert.rejects(write.execute({ path: "link", content: "denied" }, api, BACKGROUND_CONTEXT));
+	await assert.rejects(write.execute({ path: "link", content: "denied" }, api, BACKGROUND_CONTEXT), {
+		message: 'Cannot write "link": ELOOP',
+	});
 	await assert.rejects(readFile(resolve("missing")), { code: "ENOENT" });
 });
