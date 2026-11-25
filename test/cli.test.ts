@@ -233,6 +233,23 @@ test("settings projects_dir validation", (t) => {
 	}
 });
 
+test("first launch through a symlinked home keeps projects outside run state", (t) => {
+	const { app, tmp, source, env, ok, fail } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	const home = join(tmp, "home-link");
+	fs.symlinkSync(tmp, home);
+	env.HOME = home;
+	env.PI_STICK_HOME = join(home, "first-install");
+	const conf = join(tmp, ".config/pi-stick/settings.json");
+	fs.mkdirSync(dirname(conf), { recursive: true });
+	writeJson(conf, { projects_dir: "~/first-install/state/runs" });
+	fail(["actions", "--project", "demo"], /Choose a dedicated projects directory/);
+
+	env.PI_STICK_HOME = join(home, "another-install");
+	writeJson(conf, { projects_dir: join(app, "projects") });
+	ok(["actions", "--project", "demo"]);
+});
+
 test("TaskEnv validates base compose, materializes bind mounts, and isolates repo checkout", (t) => {
 	const { app, tmp, source, git, ok } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);

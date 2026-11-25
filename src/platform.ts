@@ -6,6 +6,7 @@ import {
 	closeSync,
 	existsSync,
 	futimesSync,
+	lstatSync,
 	openSync,
 	readFileSync,
 	realpathSync,
@@ -13,7 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
 declare const PI_STICK_COMPILED: boolean;
@@ -47,8 +48,13 @@ const dataRoot = devMode
 	? (explicitDevHome ?? join(homedir(), "pi-stick-dev"))
 	: (explicitHome ?? join(homedir(), "pi-stick"));
 
-export const ASSETS = existsSync(assetsRoot) ? realpathSync(assetsRoot) : assetsRoot;
-export const ROOT = existsSync(dataRoot) ? realpathSync(dataRoot) : dataRoot;
+export function canonicalPath(path: string): string {
+	if (lstatSync(path, { throwIfNoEntry: false })) return realpathSync(path);
+	return join(canonicalPath(dirname(path)), basename(path));
+}
+
+export const ASSETS = canonicalPath(assetsRoot);
+export const ROOT = canonicalPath(dataRoot);
 export const STATE = join(ROOT, "state");
 export const read = (path: string) => readFileSync(path, "utf8");
 export const json = (path: string) => JSON.parse(read(path));
