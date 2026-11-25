@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import schema from "../action.schema.json" with { type: "json" };
-import { ASSETS, json, ROOT, read, run, userSettings, writeJson } from "./platform.ts";
+import { ASSETS, json, ROOT, read, run, settingsPath, userSettings, writeJson } from "./platform.ts";
 import { parseModelSpec } from "./system.ts";
 import { isValidName, type ProjectInfo } from "./workspace.ts";
 
@@ -186,7 +186,7 @@ function resolveAgent(
 	if (model) parseModelSpec(model);
 	else if (requireModel)
 		throw Error(
-			`No model configured for agent '${name}'; set 'model' in action.json or 'default_model' in ~/.config/pi-stick/settings.json`,
+			`No model configured for agent '${name}'; set 'model' in action.json or 'default_model' in ${settingsPath()}`,
 		);
 	let instructions = "";
 	if (raw.instructions !== undefined) {

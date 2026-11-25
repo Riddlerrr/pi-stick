@@ -232,8 +232,7 @@ test("task refs resolve locally first, then fetch from the recorded project sour
 
 test("settings projects_dir validation", (t) => {
 	const { app, source, tmp, ok, fail } = fixture(t);
-	const conf = join(tmp, ".config/pi-stick/settings.json");
-	fs.mkdirSync(join(tmp, ".config/pi-stick"), { recursive: true });
+	const conf = join(app, "settings.json");
 	writeJson(conf, { projects_dir: "~/my projects" });
 	ok(["create", "project", "demo", "--repo", source]);
 	assert.ok(fs.existsSync(join(tmp, "my projects/demo/project.json")));
@@ -250,13 +249,16 @@ test("first launch through a symlinked home keeps projects outside run state", (
 	fs.symlinkSync(tmp, home);
 	env.HOME = home;
 	env.PI_STICK_HOME = `${tmp}/missing/../home-link/first-install`;
-	const conf = join(tmp, ".config/pi-stick/settings.json");
+	const conf = join(tmp, "first-install/settings.json");
 	fs.mkdirSync(dirname(conf), { recursive: true });
 	writeJson(conf, { projects_dir: "~/first-install/state/runs" });
 	fail(["actions", "--project", "demo"], /Choose a dedicated projects directory/);
 
-	env.PI_STICK_HOME = join(home, "another-install");
 	writeJson(conf, { projects_dir: join(app, "projects") });
+	ok(["actions", "--project", "demo"]);
+	env.PI_STICK_HOME = join(home, "another-install");
+	fail(["actions", "--project", "demo"], /Unknown project demo/);
+	writeJson(join(env.PI_STICK_HOME, "settings.json"), { projects_dir: join(app, "projects") });
 	ok(["actions", "--project", "demo"]);
 });
 
@@ -1048,8 +1050,7 @@ test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async
 		{ mode: 0o700 },
 	);
 
-	const settings = join(tmp, ".config/pi-stick/settings.json");
-	fs.mkdirSync(dirname(settings), { recursive: true });
+	const settings = join(app, "settings.json");
 	writeJson(settings, { default_model: "openai-codex/gpt-6.2-sol" });
 	writeJson(join(actionDir, "action.json"), {
 		name: "fix",
@@ -1768,8 +1769,7 @@ test("dev mode isolates data, settings, and image from installed home via auto-d
 	const { app, tmp, bin, source, stub, env } = fixture(t);
 	stub("docker", `process.exit(1);`);
 	// Put a production settings.json that must NOT leak into dev mode
-	fs.mkdirSync(join(tmp, ".config/pi-stick"), { recursive: true });
-	writeJson(join(tmp, ".config/pi-stick/settings.json"), { projects_dir: join(tmp, "prod-projects") });
+	writeJson(join(app, "settings.json"), { projects_dir: join(tmp, "prod-projects") });
 
 	const devHome = join(tmp, "pi-stick-dev");
 

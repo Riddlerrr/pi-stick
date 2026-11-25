@@ -186,8 +186,8 @@ mkdir -p -- "$dev_dir/projects" "$dev_dir/actions" "$dev_dir/state/runs"
 # Discover suggested default_model:
 # 1. Existing dev settings.json (when keeping)
 # 2. Pi settings (~/.pi/agent/settings.json: defaultProvider + defaultModel)
-# 3. Installed pi-stick settings (~/.config/pi-stick/settings.json: default_model)
-suggestion_info=$(node --input-type=module - "$dev_dir/settings.json" "$HOME/.pi/agent/settings.json" "$HOME/.config/pi-stick/settings.json" <<'JS'
+# 3. Installed pi-stick settings ($PI_STICK_HOME/settings.json: default_model)
+suggestion_info=$(node --input-type=module - "$dev_dir/settings.json" "$HOME/.pi/agent/settings.json" "${PI_STICK_HOME:-$HOME/pi-stick}/settings.json" <<'JS'
 import { existsSync, readFileSync } from "node:fs";
 const [devFile, piFile, prodFile] = process.argv.slice(2);
 const readObj = (file) => {

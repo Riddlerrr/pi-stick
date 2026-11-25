@@ -99,7 +99,7 @@ flowchart LR
 
 ### 3.7 Models & Authentication
 - Multi-provider support via the host's local Pi installation (`~/.pi/agent/models-store.json` and `pi auth`).
-- Each agent role in `action.json` may specify `provider/model`; omitted values fall back to the action default or global default in `~/.config/pi-stick/settings.json`.
+- Each agent role in `action.json` may specify `provider/model`; omitted values fall back to the action default or global default in `$PI_STICK_HOME/settings.json`.
 - Before launching a task container, the host resolves all models referenced by the action, requests fresh credentials via `pi auth`, and delivers them strictly over stdin (never in env vars, argv, files, or logs).
 
 ---

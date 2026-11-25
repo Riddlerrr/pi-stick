@@ -82,7 +82,7 @@ export interface UserSettings {
 }
 
 export function settingsPath() {
-	return devMode ? join(ROOT, "settings.json") : join(homedir(), ".config/pi-stick/settings.json");
+	return join(ROOT, "settings.json");
 }
 
 export function userSettings(): UserSettings {

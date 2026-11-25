@@ -19,7 +19,7 @@ A Linux CLI platform for running independent, isolated AI tasks against local Do
 - `npm run build:image:dev` — Build the dev agent image (`pi-stick:dev`).
 - `./pistick-dev ...` (or `./pistick ...` without `PI_STICK_HOME`, `pistick --dev ...`, `PI_STICK_DEV=1`) — Run in isolated **dev mode**:
   - Data (`projects/`, `actions/`, `state/`) lives in `~/pi-stick-dev` (override with `PI_STICK_DEV_HOME`), keeping both the Git checkout and your installed `~/pi-stick` untouched.
-  - Settings are read from `~/pi-stick-dev/settings.json` instead of `~/.config/pi-stick/settings.json`.
+  - Settings are read from `settings.json` in the selected dev home.
   - Templates, schema, and `Dockerfile` are read live from the checkout (`ASSETS`).
   - Uses Docker image `pi-stick:dev` (override with `PI_STICK_IMAGE`).
 - `npm run build:binary` / `npm run pack:npm` — Build Linux release archive or npm package (uses Bun pinned in `mise.toml`).
@@ -53,7 +53,7 @@ pistick create project my-app               # prompts for Git URL or local path
 pistick create project my-app --repo https://github.com/OWNER/REPO.git
 ```
 
-By default workspaces live under `$PI_STICK_HOME/projects/`. To override, create `~/.config/pi-stick/settings.json`:
+By default workspaces live under `$PI_STICK_HOME/projects/`. To override, create `$PI_STICK_HOME/settings.json` (default: `~/pi-stick/settings.json`):
 
 ```json
 {
