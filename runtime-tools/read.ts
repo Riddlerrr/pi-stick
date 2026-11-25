@@ -14,7 +14,7 @@ export function createReadTool(repoDir: string, resolvePath: (path: string, conv
 		execute: async (args, api, context) => {
 			const resolve = (path: string) => resolvePath(path, api.conversationId);
 			context.abortSignal?.throwIfAborted();
-			const env = new AgentExecutionEnv(repoDir, resolve);
+			const env = new AgentExecutionEnv(resolve);
 			const result = await piRead.execute(args, { ...api, env }, context);
 			if (!("structuredOutput" in result)) return result;
 			const value = result.structuredOutput;

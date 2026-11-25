@@ -10,7 +10,7 @@ export function createEditTool(resolvePath: (path: string, conversationId: Conve
 		description: `${piEdit.description} In read-only mode, edits are restricted to your agent scratch directory.`,
 		async execute(input, api, context) {
 			context.abortSignal?.throwIfAborted();
-			const env = new AgentExecutionEnv("/", (path) => resolvePath(path, api.conversationId));
+			const env = new AgentExecutionEnv((path) => resolvePath(path, api.conversationId));
 			try {
 				return await piEdit.execute(input, { ...api, env }, context);
 			} finally {

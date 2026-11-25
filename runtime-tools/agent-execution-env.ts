@@ -41,8 +41,8 @@ export class AgentExecutionEnv extends NodeExecutionEnv {
 
 	private editFile?: FileHandle;
 
-	constructor(cwd: string, resolve: (path: string) => string) {
-		super({ cwd });
+	constructor(resolve: (path: string) => string) {
+		super({ cwd: "/" });
 		this.resolve = resolve;
 	}
 

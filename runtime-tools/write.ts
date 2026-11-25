@@ -10,7 +10,7 @@ export function createWriteTool(resolvePath: (path: string, conversationId: Conv
 		description: `${piWrite.description} In read-only mode, writes are restricted to your agent scratch directory.`,
 		async execute(input, api, context) {
 			context.abortSignal?.throwIfAborted();
-			const env = new AgentExecutionEnv("/", (path) => resolvePath(path, api.conversationId));
+			const env = new AgentExecutionEnv((path) => resolvePath(path, api.conversationId));
 			return piWrite.execute(input, { ...api, env }, context);
 		},
 	});
