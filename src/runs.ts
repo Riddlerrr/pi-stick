@@ -12,7 +12,7 @@ import { removeOrphanAgent } from "./container.ts";
 import { command, compiled, devMode, isLocked, prompt, read, run, runId, STATE, touch, tryLock } from "./platform.ts";
 import { needsSession, type Phase, pendingEffect, readState, saveState, tryReadState } from "./run-state.ts";
 import { exportAccessLease, parseModelSpec, resolveModels } from "./system.ts";
-import { CONTAINER_REPO_DIR, composeKey, type RpcPolicy, TaskEnv } from "./tasks.ts";
+import { CONTAINER_REPO_DIR, composeKey, type RpcPolicy, TaskEnv, validateCompose } from "./tasks.ts";
 import { getProject, type ProjectInfo } from "./workspace.ts";
 
 export const VALID_ID = /^[0-9a-f]{32}$/;
@@ -186,8 +186,8 @@ export async function launchRun(opts: LaunchRunOptions): Promise<string> {
 	const action = loadAction(opts.actionName, project, true);
 	const inputs = resolveInputs(action, opts.rawInputs);
 	const id = runId();
-	const task = new TaskEnv(id, project);
-	const { services } = task.validateBase();
+	const task = new TaskEnv(id, project.name);
+	const { services } = validateCompose(project.folder, task.key);
 	for (const agent of [action.orchestrator, ...Object.values(action.agents)]) {
 		if (!agent) continue;
 		for (const service of agent.allowedServices) {
@@ -273,7 +273,7 @@ export async function launchContinue(id: string, promptText: string, keepUp?: bo
 		if (!readActionSnapshot(dir, cfg.actionDigest).orchestrator)
 			throw Error("Cannot continue a run without an orchestrator");
 		const project = getProject(cfg.project);
-		const task = new TaskEnv(id, project);
+		const task = new TaskEnv(id, project.name);
 		if (!fs.existsSync(task.repo)) throw Error(`Workspace for run ${id} is no longer present`);
 		requireSession(id);
 		if (cfg.exitCode !== 0) throw Error(`Current turn did not finish successfully; use 'pistick resume ${id}'`);
@@ -324,14 +324,14 @@ export async function worker(id: string, freshContinue: boolean): Promise<number
 	};
 	const project = getProject(cfg.project);
 	const action = readActionSnapshot(dir, cfg.actionDigest);
-	const task = new TaskEnv(id, project);
+	const task = new TaskEnv(id, project.name);
 	let code = 1;
 	let stackStartAttempted = false;
 
 	try {
 		if (cfg.phase === "checkout") {
 			status(dir, `Preparing isolated workspace for ${project.name}…`);
-			cfg.baseHead = task.prepareWorkspace(cfg.ref).baseHead;
+			cfg.baseHead = task.prepareWorkspace(project, cfg.ref).baseHead;
 			advance("prepare");
 		}
 		if (cfg.phase === "prepare" || cfg.phase === "preparing-hook") {
@@ -357,7 +357,7 @@ export async function worker(id: string, freshContinue: boolean): Promise<number
 		}
 		let services: string[] = [];
 		if (cfg.phase !== "stop") {
-			if (cfg.phase === "setup" || !fs.existsSync(task.composeFile)) task.materializeCompose();
+			if (cfg.phase === "setup" || !fs.existsSync(task.composeFile)) task.materializeCompose(project.folder);
 			services = task.services();
 			stackStartAttempted = true;
 			if (cfg.phase === "setup" || cfg.phase === "setting-up") task.up();
@@ -630,7 +630,7 @@ export async function killRun(id: string) {
 			if (attempt.dev !== current.dev || attempt.ino !== current.ino || readState(dir).exitCode !== undefined)
 				throw Error("Run attempt already ended; not stopping its containers");
 			removeOrphanAgent(id);
-			new TaskEnv(id, getProject(meta.project)).stop();
+			new TaskEnv(id, meta.project).stop();
 			status(dir, "Killed by operator; workspace and session retained.");
 			console.log(`Killed run ${id}.`);
 		} finally {
@@ -647,7 +647,7 @@ export function stopRun(id: string) {
 	try {
 		if (!tryLock(fd)) throw Error(`Run ${id} is currently active; wait for it to finish before stopping`);
 		removeOrphanAgent(id);
-		const task = new TaskEnv(id, getProject(meta.project));
+		const task = new TaskEnv(id, meta.project);
 		task.stop();
 		touch(join(task.dir, "last-used"));
 	} finally {
@@ -658,7 +658,7 @@ export function stopRun(id: string) {
 
 export async function diffRun(id: string) {
 	const meta = readState(runDir(id));
-	const task = new TaskEnv(id, getProject(meta.project));
+	const task = new TaskEnv(id, meta.project);
 	const saved = join(task.dir, "changes.patch");
 	const { patchFile, untracked } = fs.existsSync(task.repo)
 		? task.captureDiff(meta.baseHead)

@@ -11,7 +11,7 @@ import { executeAgentContainer } from "../src/agent-rpc.ts";
 import { closed, read, runId, tryLock, writeJson } from "../src/platform.ts";
 import { status } from "../src/runs.ts";
 import { ephemeralArgs, parseModelSpec } from "../src/system.ts";
-import { TaskEnv } from "../src/tasks.ts";
+import { TaskEnv, validateCompose } from "../src/tasks.ts";
 
 function fixture(t: TestContext, copyRelease = false) {
 	const tmp = fs.mkdtempSync(join(tmpdir(), "pi-stick-test-"));
@@ -207,7 +207,8 @@ test("task refs resolve locally first, then fetch from the recorded project sour
 	ok(["create", "project", "demo", "--repo", source]);
 	const folder = join(app, "projects/demo");
 	const repo = join(folder, "repo");
-	const task = () => new TaskEnv(runId(), { name: "demo", folder, repo }, join(tmp, "state"));
+	const project = { name: "demo", folder, repo };
+	const task = () => new TaskEnv(runId(), project.name, join(tmp, "state"));
 	const origin = (workspace: TaskEnv) =>
 		execFileSync("git", ["-C", workspace.repo, "remote", "get-url", "origin"], { encoding: "utf8" }).trim();
 	const initial = git("rev-parse", "HEAD");
@@ -215,18 +216,18 @@ test("task refs resolve locally first, then fetch from the recorded project sour
 	git("checkout", "-qb", "new-upstream-branch");
 	git("commit", "--allow-empty", "-qm", "upstream only");
 	const upstream = task();
-	assert.equal(upstream.prepareWorkspace("new-upstream-branch").baseHead, git("rev-parse", "HEAD"));
+	assert.equal(upstream.prepareWorkspace(project, "new-upstream-branch").baseHead, git("rev-parse", "HEAD"));
 	assert.equal(origin(upstream), source);
 	assert.equal(execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), initial);
 
 	fs.renameSync(source, `${source}-offline`);
-	assert.equal(task().prepareWorkspace("local-only").baseHead, initial);
+	assert.equal(task().prepareWorkspace(project, "local-only").baseHead, initial);
 	const metadata = join(folder, "project.json");
 	writeJson(metadata, { source: "https://user:secret@example.invalid/repo" });
-	assert.throws(() => task().prepareWorkspace(), /without embedded credentials/);
+	assert.throws(() => task().prepareWorkspace(project), /without embedded credentials/);
 	fs.unlinkSync(metadata);
 	const manual = task();
-	assert.equal(manual.prepareWorkspace().baseHead, initial);
+	assert.equal(manual.prepareWorkspace(project).baseHead, initial);
 	assert.equal(origin(manual), repo);
 });
 
@@ -267,7 +268,8 @@ test("TaskEnv validates base compose, materializes bind mounts, and isolates rep
 	ok(["create", "project", "demo", "--repo", source]);
 	const folder = join(app, "projects/demo");
 	const id = runId();
-	const task = new TaskEnv(id, { name: "demo", folder, repo: join(folder, "repo") }, join(tmp, "state"));
+	const project = { name: "demo", folder, repo: join(folder, "repo") };
+	const task = new TaskEnv(id, project.name, join(tmp, "state"));
 
 	const dev = JSON.parse(
 		execFileSync("docker", ["compose", "config", "--format", "json"], { cwd: folder, encoding: "utf8" }),
@@ -277,7 +279,7 @@ test("TaskEnv validates base compose, materializes bind mounts, and isolates rep
 	assert.equal(dev.name, "pi-dev-demo");
 	assert.ok(dev.services.runner.volumes.some((m: { source: string }) => m.source === join(folder, "repo")));
 
-	const { network, services } = task.materializeCompose();
+	const { network, services } = task.materializeCompose(folder);
 	assert.equal(network, `${task.key}_default`);
 	assert.deepEqual(services, ["runner"]);
 	const mat = JSON.parse(read(task.composeFile).replaceAll("$$", "$"));
@@ -300,7 +302,7 @@ test("TaskEnv validates base compose, materializes bind mounts, and isolates rep
 	// A killed clone can leave a nonempty directory without a usable HEAD.
 	fs.mkdirSync(join(task.repo, ".git"), { recursive: true });
 	fs.writeFileSync(join(task.repo, "partial"), "");
-	const { baseHead } = task.prepareWorkspace(head);
+	const { baseHead } = task.prepareWorkspace(project, head);
 	assert.ok(!fs.existsSync(join(task.repo, "partial")));
 	assert.equal(baseHead, head);
 	fs.writeFileSync(join(task.repo, "example.txt"), "task edit\n");
@@ -309,14 +311,14 @@ test("TaskEnv validates base compose, materializes bind mounts, and isolates rep
 
 	const composePath = join(folder, "compose.yaml");
 	fs.writeFileSync(composePath, read(composePath).replace("source:/workspace", "./repo:/workspace"));
-	assert.throws(() => task.validateBase(), /host mounts/);
+	assert.throws(() => validateCompose(folder, task.key), /host mounts/);
 });
 
 test("task workspace bind preserves each service's access mode", (t) => {
 	const { app, tmp, source, ok } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);
 	const folder = join(app, "projects/demo");
-	const task = new TaskEnv(runId(), { name: "demo", folder, repo: join(folder, "repo") }, join(tmp, "state"));
+	const task = new TaskEnv(runId(), "demo", join(tmp, "state"));
 	writeJson(join(folder, "compose.yaml"), {
 		services: {
 			runner: { image: "alpine", volumes: ["source:/workspace"] },
@@ -324,7 +326,7 @@ test("task workspace bind preserves each service's access mode", (t) => {
 		},
 		volumes: { source: {} },
 	});
-	task.materializeCompose();
+	task.materializeCompose(folder);
 	const { services } = JSON.parse(read(task.composeFile));
 	const bind = { type: "bind", source: task.workspace, target: "/workspace" };
 	const workspace = (name: string) =>
@@ -337,14 +339,14 @@ test("task Compose recipes reject secrets before writing the task stack", (t) =>
 	const { app, tmp, source, ok } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);
 	const folder = join(app, "projects/demo");
-	const task = new TaskEnv(runId(), { name: "demo", folder, repo: join(folder, "repo") }, join(tmp, "state"));
+	const task = new TaskEnv(runId(), "demo", join(tmp, "state"));
 	for (const secret of [{ file: join(source, "example.txt") }, { external: true }]) {
 		writeJson(join(folder, "compose.yaml"), {
 			services: { runner: { image: "alpine", volumes: ["source:/workspace"], secrets: ["sample"] } },
 			volumes: { source: {} },
 			secrets: { sample: secret },
 		});
-		assert.throws(() => task.materializeCompose(), /Compose secrets are not supported/);
+		assert.throws(() => task.materializeCompose(folder), /Compose secrets are not supported/);
 		assert.ok(!fs.existsSync(task.composeFile));
 	}
 });
@@ -353,7 +355,7 @@ test("task Compose configs must resolve to regular trusted project files", (t) =
 	const { app, tmp, source, ok } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);
 	const folder = join(app, "projects/demo");
-	const task = new TaskEnv(runId(), { name: "demo", folder, repo: join(folder, "repo") }, join(tmp, "state"));
+	const task = new TaskEnv(runId(), "demo", join(tmp, "state"));
 	const recipe = (config: object) =>
 		writeJson(join(folder, "compose.yaml"), {
 			services: { runner: { image: "alpine", volumes: ["source:/workspace"], configs: ["settings"] } },
@@ -362,7 +364,7 @@ test("task Compose configs must resolve to regular trusted project files", (t) =
 		});
 	fs.symlinkSync("setup-project", join(folder, "settings"));
 	recipe({ file: "./settings" });
-	task.materializeCompose();
+	task.materializeCompose(folder);
 	assert.equal(
 		JSON.parse(read(task.composeFile)).configs.settings.file,
 		fs.realpathSync(join(folder, "setup-project")),
@@ -373,12 +375,12 @@ test("task Compose configs must resolve to regular trusted project files", (t) =
 	for (const file of ["./settings", "./repo/example.txt", join(source, "example.txt"), "."])
 		assert.throws(() => {
 			recipe({ file });
-			task.validateBase();
+			validateCompose(folder, task.key);
 		}, /regular project file outside repo/);
 	for (const config of [{ external: true }, { content: "inline" }, { environment: "HOME" }])
 		assert.throws(() => {
 			recipe(config);
-			task.validateBase();
+			validateCompose(folder, task.key);
 		}, /must use a project file/);
 });
 
@@ -413,7 +415,7 @@ test("runner must share the default network with the agent before run preparatio
 	};
 	const compose = join(folder, "compose.yaml");
 	writeJson(compose, recipe);
-	new TaskEnv(runId(), { name: "demo", folder, repo: join(folder, "repo") }).validateBase();
+	validateCompose(folder, "pi-stick-demo-check");
 	recipe.services.runner.networks = ["private"];
 	writeJson(compose, recipe);
 	fail(["run", "demo", "check"], /Attach the runner service to the default network/);
@@ -452,9 +454,8 @@ test("ephemeral container args enforce hardening and model spec validation", () 
 	}
 });
 
-test("diff preserves patch bytes and publishes only successful captures", (t) => {
-	const { app, bin, env, source, ok, fail, stub } = fixture(t);
-	ok(["create", "project", "demo", "--repo", source]);
+test("diff without the original project preserves patch bytes and publishes only successful captures", (t) => {
+	const { app, bin, env, source, fail, stub } = fixture(t);
 	const id = runId();
 	const dir = join(app, "state/runs", id);
 	const repo = join(dir, "workspace/repo");
@@ -1604,7 +1605,7 @@ for (const end of ["duplicate", "EOF", "report", "hang"] as const) {
 		t.after(() => {
 			process.env.PATH = oldPath;
 		});
-		const task = new TaskEnv("demo", { name: "demo", folder: tmp, repo: tmp }, tmp);
+		const task = new TaskEnv("demo", "demo", tmp);
 		fs.mkdirSync(task.dir, { recursive: true });
 		writeJson(task.composeFile, { services: { runner: {} } });
 		const pidFile = join(tmp, "restart.pid");
@@ -1751,6 +1752,7 @@ else if (has('config')) {
 		const target = readyIds.find(
 			(id) => read(join(app, "state/runs", id, "session", `${id}.sqlite`)) === "task-one",
 		)!;
+		fs.renameSync(join(app, "projects/demo"), join(tmp, "moved-demo"));
 		assert.match(ok(["kill", target]), /Killed run/);
 		assert.match(ok(["runs", "--all"]), new RegExp(`${target}  interrupted`));
 		assert.ok(!Object.hasOwn(JSON.parse(read(join(app, "state/runs", target, "run.json"))), "usage"));

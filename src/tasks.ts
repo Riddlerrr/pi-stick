@@ -131,7 +131,6 @@ export function composeKey(project: string, id: string) {
 
 export class TaskEnv {
 	readonly id: string;
-	readonly project: ProjectInfo;
 	readonly key: string;
 	readonly dir: string;
 	readonly workspace: string;
@@ -143,10 +142,9 @@ export class TaskEnv {
 	private servicesCache?: string[];
 	private networkCache?: string;
 
-	constructor(id: string, project: ProjectInfo, stateDir = STATE) {
+	constructor(id: string, projectName: string, stateDir = STATE) {
 		this.id = id;
-		this.project = project;
-		this.key = composeKey(project.name, id);
+		this.key = composeKey(projectName, id);
 		this.dir = join(stateDir, "runs", id);
 		this.workspace = join(this.dir, "workspace");
 		this.repo = join(this.workspace, "repo");
@@ -156,19 +154,15 @@ export class TaskEnv {
 		this.compose = ["docker", "compose", "-p", this.key, "-f", this.composeFile];
 	}
 
-	validateBase() {
-		return validateCompose(this.project.folder, this.key);
-	}
-
-	prepareWorkspace(ref?: string): { baseHead: string } {
+	prepareWorkspace(project: ProjectInfo, ref?: string): { baseHead: string } {
 		if (ref !== undefined && (!ref.length || ref.startsWith("-") || ref.includes("\0")))
 			throw Error("Invalid Git ref");
 		fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
 		fs.mkdirSync(this.workspace, { recursive: true, mode: 0o700 });
 		fs.mkdirSync(this.scratch, { recursive: true, mode: 0o700 });
 		fs.mkdirSync(this.context, { recursive: true, mode: 0o700 });
-		const source = projectSource(this.project.folder);
-		if (!fs.existsSync(this.project.repo)) throw Error(`Project repository not found at ${this.project.repo}`);
+		const source = projectSource(project.folder);
+		if (!fs.existsSync(project.repo)) throw Error(`Project repository not found at ${project.repo}`);
 		// Checkout is replayable until the worker checkpoints prepare.
 		fs.rmSync(this.repo, { recursive: true, force: true });
 		run(
@@ -180,7 +174,7 @@ export class TaskEnv {
 				"--no-local",
 				"--no-hardlinks",
 				"--",
-				this.project.repo,
+				project.repo,
 				this.repo,
 			],
 			{ env: { ...process.env, GIT_ALLOW_PROTOCOL: "file:https:ssh" } },
@@ -222,8 +216,8 @@ export class TaskEnv {
 		return { baseHead };
 	}
 
-	materializeCompose(): { network: string; services: string[] } {
-		const conf = this.validateBase();
+	materializeCompose(projectFolder: string): { network: string; services: string[] } {
+		const conf = validateCompose(projectFolder, this.key);
 		let sourceStillUsed = false;
 		for (const [name, svc] of Object.entries(conf.services)) {
 			let usesWorkspace = false;

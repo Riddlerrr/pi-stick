@@ -128,8 +128,10 @@ docker rm "$standin" >/dev/null
 # If EOF did not suffice, both paths must reap only this run's leftover agent.
 leftover() { docker run -d --name "$name" --label "pi-stick.run=$id" "$PI_STICK_IMAGE" sleep infinity; }
 standin=$(leftover)
+mv "$project" "$project.moved"
 "$cli" containers stop "$id"
 assert_stopped
+mv "$project.moved" "$project"
 standin=$(leftover)
 timeout 90 "$cli" resume "$id"
 [[ $(<"$run/report.md") == 'continued report' ]]

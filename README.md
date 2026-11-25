@@ -185,6 +185,8 @@ Each run mounts only `state/runs/<id>/session/` at `/sessions`; the orchestrator
 
 `kill RUN_ID` targets only the active attempt. It forcibly terminates its detached worker process group (including ordinary host hooks), removes the run-owned agent, and stops the project stack even with `--keep-up`. The run remains interrupted: inspect partial changes with `diff` before `resume`. Killing a run does not roll back hook side effects, recall requests already accepted by a model provider, or stop processes a hook deliberately detached.
 
+`diff`, `kill`, and `containers stop` use the saved run, not the current project directory. You can still inspect changes or stop the run’s containers after moving or deleting the project.
+
 `containers stop` is not cancellation: it refuses while the worker holds the run lock. If the worker dies during a model request, the agent exits on stdin EOF. As a fallback, `containers stop` and `resume` remove a leftover `pi-stick-agent-RUN_ID` container only after verifying its `pi-stick.run` label under the lock. Unrelated containers are left alone.
 
 For new runs, `resume` reuses completed static stages and their outputs, and reconnects to the same Pi Durable submissions in an interrupted stage. Resuming a follow-up never starts the initial stages. Runs created before stage checkpointing have no saved stage results.
