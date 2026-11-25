@@ -12,6 +12,7 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import {
 	AssistantEntry,
 	configure,
+	type Conversation,
 	type ConversationId,
 	createRegistry,
 	defineDoc,
@@ -24,6 +25,7 @@ import {
 	LiveDoc,
 	type LiveState,
 	type Submission,
+	type SubmissionDraft,
 	ROOT_CONVERSATION_ID,
 	section,
 	type TaskId,
@@ -336,6 +338,37 @@ async function waitForAnswer(sub: Submission, id: ConversationId, label: string,
 	}
 }
 
+const reportPrompt = "Write the final report now, using the work already done.";
+
+async function answerText(
+	conv: Conversation,
+	label: string,
+	context: Context,
+	initial: SubmissionDraft,
+	reminder?: SubmissionDraft,
+): Promise<string | RunFailure> {
+	for (const draft of [initial, reminder]) {
+		if (!draft) return "";
+		if (draft === reminder) emitProgress("Empty report; requesting final text", label);
+		const sub = await conv.submit(draft, context);
+		const settled = await waitForAnswer(sub, conv.id, label, context);
+		if (settled.status !== "done" || settled.type === "write")
+			return new RunFailure(
+				`${label} submission did not complete: ${settled.reason ? safeReason(settled.reason) : settled.status}`,
+			);
+		const entry = await conv.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
+		const message = entry?.model?.[0];
+		if (message?.role !== "assistant") return new RunFailure(`${label} returned no assistant answer`);
+		const text = message.content
+			.filter((b) => b.type === "text")
+			.map((b) => b.text)
+			.join("\n")
+			.trim();
+		if (text) return text;
+	}
+	return new RunFailure(`${label} returned an empty report after one reminder`);
+}
+
 async function runSubagent(
 	{ spec, prompt, requireReport }: Batch[number],
 	id: ConversationId,
@@ -347,25 +380,17 @@ async function runSubagent(
 	if (!conv) throw Error(`Missing subagent conversation: ${id}`);
 	const label = `agent:${spec.name}`;
 	emitProgress("started", label);
-	const sub = await conv.submit({ type: "input", content: prompt, requestId: "work" }, context);
-	const settled = await waitForAnswer(sub, id, label, context);
-	const failed = (msg: string) => {
-		emitProgress(msg, label);
-		return { agent: spec.name, ok: false, output: msg };
-	};
-	if (settled.status !== "done" || settled.type !== "input")
-		return failed(
-			`Subagent '${spec.name}' did not complete (${settled.status}${settled.reason ? `: ${safeReason(settled.reason)}` : ""})`,
-		);
-	const entry = await conv.commit((tx) => tx.entry(AssistantEntry, settled.answer), context);
-	const message = entry?.model?.[0];
-	if (message?.role !== "assistant") return failed(`Subagent '${spec.name}' returned no assistant answer`);
-	const text = message.content
-		.filter((b) => b.type === "text")
-		.map((b) => b.text)
-		.join("\n")
-		.trim();
-	if (requireReport && !text) return failed(`Final agent ${spec.name} returned an empty report`);
+	const text = await answerText(
+		conv,
+		label,
+		context,
+		{ type: "input", content: prompt, requestId: "work" },
+		requireReport ? { type: "input", content: reportPrompt, requestId: "work:report" } : undefined,
+	);
+	if (text instanceof RunFailure) {
+		emitProgress(text.message, label);
+		return { agent: spec.name, ok: false, output: text.message };
+	}
 	emitProgress("completed", label);
 	return { agent: spec.name, ok: true, output: text || "(empty output)" };
 }
@@ -575,16 +600,22 @@ function selectToolsAndExtensions(toolNames: string[]) {
 
 const storage = await openNodeSqliteStorage(`${SESSIONS_DIR}/${job.id}.sqlite`);
 const turnKey = job.requestId ?? job.id;
-let rootRequestId = turnKey;
-let continueRoot = false;
 // Inspect before opening the harness: only retry failures that predate this launch.
-for (let attempt = 1; ; attempt++) {
-	const prior = await storage.submissionByRequest(ROOT_CONVERSATION_ID, rootRequestId, BACKGROUND_CONTEXT);
-	if (prior?.status !== "unanswered") break;
-	emitProgress(`Root attempt ${attempt} was unanswered: ${safeReason(prior.reason)}`, "orchestrator");
-	continueRoot = prior.type === "continue" || prior.entry !== undefined;
-	rootRequestId = `${turnKey}:retry:${attempt}`;
+async function rootRequest(key: string) {
+	let requestId = key;
+	let resume = false;
+	for (let attempt = 1; ; attempt++) {
+		const prior = await storage.submissionByRequest(ROOT_CONVERSATION_ID, requestId, BACKGROUND_CONTEXT);
+		if (prior?.status !== "unanswered") break;
+		emitProgress(`Root attempt ${attempt} was unanswered: ${safeReason(prior.reason)}`, "orchestrator");
+		resume = prior.type === "continue" || prior.entry !== undefined;
+		requestId = `${key}:retry:${attempt}`;
+	}
+	return (content: string): SubmissionDraft =>
+		resume ? { type: "continue", requestId } : { type: "input", content, requestId };
 }
+const rootInput = await rootRequest(turnKey);
+const rootReminder = (await rootRequest(`${turnKey}:report`))(reportPrompt);
 const h = await Harness.open(
 	storage,
 	{
@@ -720,26 +751,8 @@ async function runAction(): Promise<string> {
 			...(spec.maxTurns ? { maxTurns: spec.maxTurns } : {}),
 		},
 	});
-	const sub = await root.submit(
-		continueRoot
-			? { type: "continue", requestId: rootRequestId }
-			: { type: "input", content: finalPrompt, requestId: rootRequestId },
-		ctx,
-	);
-	const settled = await waitForAnswer(sub, root.id, "orchestrator", ctx);
-	if (settled.status !== "done" || settled.type === "write")
-		throw new RunFailure(
-			`Orchestrator submission did not complete: ${settled.reason ? safeReason(settled.reason) : settled.status}`,
-		);
-	const entry = await root.commit((tx) => tx.entry(AssistantEntry, settled.answer), ctx);
-	const message = entry?.model?.[0];
-	if (message?.role !== "assistant") throw new RunFailure("Orchestrator returned no assistant answer");
-	const report = message.content
-		.filter((b) => b.type === "text")
-		.map((b) => b.text)
-		.join("\n")
-		.trim();
-	if (!report) throw new RunFailure("Orchestrator returned an empty report");
+	const report = await answerText(root, "orchestrator", ctx, rootInput(finalPrompt), rootReminder);
+	if (report instanceof RunFailure) throw report;
 	const delegates = (await h.snapshot(workflow, ctx))?.delegates;
 	if (delegates?.requestId === turnKey) {
 		for (const id of delegates.tasks) {

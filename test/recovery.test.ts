@@ -13,7 +13,13 @@ import { closed, runId } from "../src/platform.ts";
 
 function stageFixture(
 	t: TestContext,
-	failure: "interrupt-stage" | "interrupt-third" | "empty-final" | "fail-stage" | "fail-root" = "interrupt-stage",
+	failure:
+		| "interrupt-stage"
+		| "interrupt-third"
+		| "empty-final"
+		| "empty-root"
+		| "fail-stage"
+		| "fail-root" = "interrupt-stage",
 ) {
 	const dir = fs.mkdtempSync(join(tmpdir(), "pi-stick-recovery-"));
 	t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -24,11 +30,13 @@ function stageFixture(
 		globalThis.fetch = async (_url, init) => {
 			const { messages, reasoning_effort } = JSON.parse(init.body);
 			if (reasoning_effort) fs.appendFileSync('effort', reasoning_effort + '\\n');
-			const task = messages.at(-1).content;
+			const reminder = messages.at(-1).content.startsWith('Write the final report');
+			const task = reminder ? messages.find(m => m.role === 'user').content : messages.at(-1).content;
 			const stage = messages.some(m => m.role === 'system' && m.content.includes('Sibling instructions')) ? 'sibling' : task.startsWith('first') ? 'A' : task.startsWith('second') ? 'B' : task.startsWith('third') ? 'C' : 'root';
 			fs.writeFileSync(stage + '-prompt', task);
 			const seen = fs.existsSync('requests') ? fs.readFileSync('requests', 'utf8') : '';
-			fs.appendFileSync('requests', stage + '\\n');
+			fs.appendFileSync('requests', stage + (reminder ? ':reminder' : '') + '\\n');
+			if (${failure === "empty-final"} && reminder && !seen.includes(':reminder')) process.kill(process.pid, 'SIGKILL');
 			if (${failure === "fail-stage"} && stage === 'A' && !seen.includes('A')) return new Response('invalid request', {status: 400});
 			if (${failure === "interrupt-third"} && stage === 'C' && !seen.includes('C')) process.kill(process.pid, 'SIGKILL');
 			if (${failure === "interrupt-stage"} && stage === 'B' && !seen.includes('B')) process.kill(process.pid, 'SIGKILL');
@@ -38,7 +46,7 @@ function stageFixture(
 				if (calls < 2) return new Response('invalid request', {status: 400});
 				if (calls === 2) process.kill(process.pid, 'SIGKILL');
 			}
-			const data = { usage: {prompt_tokens:10,completion_tokens:2,total_tokens:12}, choices: [{index:0, delta:{role:'assistant',content:${failure === "empty-final"} && stage === 'B' && !seen.includes('B') ? '   ' : 'answer-' + stage}, finish_reason:'stop'}] };
+			const data = { usage: {prompt_tokens:10,completion_tokens:2,total_tokens:12}, choices: [{index:0, delta:{role:'assistant',content:${failure === "empty-root"} || ${failure === "empty-final"} && stage === 'B' && !seen.includes('B') ? '   ' : 'answer-' + stage}, finish_reason:'stop'}] };
 			return new Response('data: ' + JSON.stringify(data) + '\\n\\ndata: [DONE]\\n\\n', {headers:{'content-type':'text/event-stream'}});
 		};`,
 	);
@@ -470,14 +478,10 @@ for (const stageContext of [undefined, "all"] as const) {
 test("a final-stage report retries an empty answer, then restores without synthesis", async (t) => {
 	const { job, dir, run } = stageFixture(t, "empty-final");
 	const payload = { ...job, orchestrator: undefined };
-	const failed = await run(payload);
-	assert.equal(failed.status, 1);
-	assert.match(failed.stdout, /returned an empty report/);
+	const interrupted = await run(payload);
+	assert.equal(interrupted.signal, "SIGKILL", interrupted.stderr);
 	const { provider, modelId } = job.agents.worker.model;
 	const model = `${provider}/${modelId}`;
-	const partial = JSON.parse(failed.stdout.trim().split("\n").at(-1)!).data;
-	assert.equal(partial.report, undefined);
-	assert.equal(partial.usage.models[model].totalTokens, 24);
 	for (let i = 0; i < 2; i++) {
 		const result = await run(payload);
 		assert.equal(result.status, 0, result.stderr);
@@ -488,7 +492,34 @@ test("a final-stage report retries an empty answer, then restores without synthe
 		assert.equal(report, "answer-B");
 		assert.equal(outputs.worker, "answer-A\n\n---\n\nanswer-B");
 	}
-	assert.equal(fs.readFileSync(join(dir, "requests"), "utf8"), "A\nB\nB\n");
+	assert.equal(fs.readFileSync(join(dir, "requests"), "utf8"), "A\nB\nB:reminder\nB:reminder\n");
+	const storage = await openNodeSqliteStorage(join(dir, `${job.id}.sqlite`));
+	try {
+		const conversations = await storage.scanConversations({}, 10, undefined, BACKGROUND_CONTEXT);
+		let reminders = 0;
+		for (const { id } of conversations.items) {
+			const entries = await storage.scanEntries({ conversationId: id }, 100, undefined, BACKGROUND_CONTEXT);
+			reminders += entries.items
+				.flatMap((e) => e.model ?? [])
+				.filter(
+					(m) =>
+						m.role === "user" && typeof m.content === "string" && m.content.startsWith("Write the final report"),
+				).length;
+		}
+		assert.equal(reminders, 1);
+	} finally {
+		await storage.close(BACKGROUND_CONTEXT);
+	}
+});
+
+test("only mandatory reports get a reminder; a second empty answer fails without another request", async (t) => {
+	const { dir, run } = stageFixture(t, "empty-root");
+	for (let i = 0; i < 2; i++) {
+		const failed = await run();
+		assert.equal(failed.status, 1);
+		assert.match(failed.stdout, /orchestrator returned an empty report after one reminder/);
+	}
+	assert.equal(fs.readFileSync(join(dir, "requests"), "utf8"), "A\nB\nroot\nroot:reminder\n");
 });
 
 test("resume retries an unanswered root once and reattaches after interruption without replaying stages", async (t) => {
@@ -498,7 +529,7 @@ test("resume retries an unanswered root once and reattaches after interruption w
 		assert.equal(failed.status, 1);
 		assert.equal(
 			JSON.parse(failed.stdout.trim().split("\n").at(-1)!).error,
-			"Orchestrator submission did not complete: model_error",
+			"orchestrator submission did not complete: model_error",
 		);
 	}
 	assert.equal((await run()).signal, "SIGKILL");
@@ -597,7 +628,7 @@ test("a failed required agent blocks downstream work; resume retries only the fa
 	const first = await run();
 	assert.equal(first.status, 1, first.stdout + first.stderr);
 	assert.equal(JSON.parse(first.stdout.trim().split("\n").at(-1)!).error, "Stage 'first' failed: worker");
-	assert.match(first.stdout, /unanswered: model_error/);
+	assert.match(first.stdout, /submission did not complete: model_error/);
 	const requests = () => fs.readFileSync(join(dir, "requests"), "utf8").trim().split("\n");
 	assert.deepEqual(requests().sort(), ["A", "sibling"]);
 	const resumed = await run();
