@@ -1870,18 +1870,25 @@ test("install-dev.sh prepares dev folder, suggests Pi default model, supports fr
 	assert.ok(!fs.existsSync(join(tmp, ".local/bin")), "should not install launcher into ~/.local/bin");
 	assert.match(read(dockerLog), /^image inspect [^\n]+\n$/);
 
-	// 2. Keep mode preserves existing state and allows overriding default_model
+	// 2. Keep mode preserves unrelated settings and repairs permissions on replacement.
+	writeJson(join(devDir, "settings.json"), { projects_dir: "/somewhere" });
+	fs.chmodSync(join(devDir, "settings.json"), 0o644);
 	fs.writeFileSync(join(devDir, "projects/keep-marker"), "present");
 	const keep = runScript([], "\nn\nanthropic/claude-sonnet-4-5\nn\n");
 	assert.equal(keep.status, 0, keep.stderr);
 	assert.equal(read(join(devDir, "projects/keep-marker")), "present");
-	assert.deepEqual(JSON.parse(read(join(devDir, "settings.json"))), { default_model: "anthropic/claude-sonnet-4-5" });
+	assert.deepEqual(JSON.parse(read(join(devDir, "settings.json"))), {
+		projects_dir: "/somewhere",
+		default_model: "anthropic/claude-sonnet-4-5",
+	});
+	assert.equal(fs.statSync(join(devDir, "settings.json")).mode & 0o777, 0o600);
 
 	// 3. Active run lock blocks --fresh wipe
 	const activeId = "a".repeat(32);
 	const activeRunDir = join(devDir, "state/runs", activeId);
 	fs.mkdirSync(activeRunDir, { recursive: true });
-	writeJson(join(activeRunDir, "run.json"), { id: activeId, project: "demo" });
+	const checkpoint = { id: activeId, version: 1, project: "demo", phase: "stop", mode: "run" };
+	writeJson(join(activeRunDir, "meta.json"), checkpoint);
 	fs.writeFileSync(join(activeRunDir, "compose.yaml"), "services: {}\n");
 	const fd = fs.openSync(join(activeRunDir, "lock"), "a");
 	try {
@@ -1895,6 +1902,17 @@ test("install-dev.sh prepares dev folder, suggests Pi default model, supports fr
 	}
 
 	// 4. Unlocked --fresh tears down Compose stack, removes old files, and recreates fresh dev dir with Pi suggestion
+	const linked = join(tmp, "linked-dev");
+	fs.symlinkSync(devDir, linked);
+	const linkedRes = runScript(["--dir", linked, "--fresh", "--yes", "--no-build"]);
+	assert.equal(linkedRes.status, 1);
+	assert.match(linkedRes.stderr, /symlink/);
+	const unknown = runScript(["--fresh", "--yes", "--no-build"]);
+	assert.equal(unknown.status, 1);
+	assert.match(unknown.stderr, /Missing run.json/);
+	assert.equal(read(join(devDir, "projects/keep-marker")), "present");
+	assert.doesNotMatch(read(dockerLog), /down --volumes/);
+	writeJson(join(activeRunDir, "run.json"), checkpoint);
 	const freshRes = runScript(["--fresh", "--yes", "--no-build"]);
 	assert.equal(freshRes.status, 0, freshRes.stderr);
 	assert.ok(!fs.existsSync(join(devDir, "projects/keep-marker")), "old marker should be removed on fresh install");

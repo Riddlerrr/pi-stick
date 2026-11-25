@@ -28,6 +28,7 @@
 			"src/**/*.ts",
 			"test/**/*.ts",
 			"scripts/**/*.mjs",
+			"scripts/**/*.ts",
 			"test/**/*.mjs",
 			"runtime/**/*.ts",
 			"!!**/node_modules"
