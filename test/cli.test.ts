@@ -572,7 +572,7 @@ test("run prefixes must identify one real run directory", (t) => {
 	const { app, fail } = fixture(t);
 	const runs = join(app, "state/runs");
 	const a = "a".repeat(32),
-		b = "aaaaaaaa" + "b".repeat(24);
+		b = `aaaaaaaa${"b".repeat(24)}`;
 	for (const id of [a, b]) fs.mkdirSync(join(runs, id), { recursive: true });
 	fail(["kill", "aaaaaaaa"], new RegExp(`Ambiguous run ID.*${a}.*${b}`));
 	fail(["kill", "aaaabbbb"], /Unknown run/);
@@ -1312,6 +1312,11 @@ if (has('git') && a[0] === 'run') {
 	fs.unlinkSync(join(tmp, "bin/mkfifo"));
 	const failStart = join(tmp, "fail-start");
 	fs.writeFileSync(failStart, "");
+	assert.match(ok(["projects"]), /demo {2}.*projects\/demo/);
+	assert.match(
+		ok(["show", id.slice(0, 8)]),
+		/Status: interrupted\nTurn: 2\nPhase: agent[\s\S]*Session usage: .*totalTokens[\s\S]*Report \(turn 1\):\nInitial report/,
+	);
 	const beforeStart = read(dockerLog);
 	assert.equal(invoke(["resume", id]).status, 1);
 	assert.match(read(dockerLog).slice(beforeStart.length), /^compose [^\n]+ start\ncompose [^\n]+ stop\n$/);

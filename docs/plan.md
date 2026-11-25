@@ -114,6 +114,8 @@ pistick actions [--project PROJECT]
 
 # Running & managing tasks
 pistick run PROJECT ACTION [--ref REF] [--input KEY=VALUE]... [--keep-up] [PROMPT]
+pistick projects
+pistick show RUN_ID
 pistick runs [--all]
 pistick follow RUN_ID
 pistick kill RUN_ID

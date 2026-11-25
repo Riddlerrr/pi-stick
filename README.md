@@ -160,6 +160,8 @@ Each action directory contains `action.json` (validated against `action.schema.j
 
 ```sh
 pistick run my-app my-action [--ref BRANCH_OR_SHA] [--input KEY=VALUE]... [--keep-up] ["Prompt"]
+pistick projects
+pistick show RUN_ID
 pistick runs [--all]                    # list active (or all) runs
 pistick follow RUN_ID                   # stream progress (Ctrl-C detaches)
 pistick continue RUN_ID "Follow-up"     # after success, start another turn in the same session & workspace

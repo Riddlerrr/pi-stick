@@ -50,9 +50,8 @@ export function activeRunIds(): string[] {
 	return active;
 }
 
-export function status(dir: string, msg: string, agent?: string) {
-	const prefix = agent ? `[${agent}] ` : "";
-	const safe = `${prefix}${msg}`.replace(/[\p{C}\p{Z}]/gu, (c) => {
+function printable(text: string) {
+	return text.replace(/[\p{C}\p{Z}]/gu, (c) => {
 		if (" \t\n".includes(c)) return c;
 		if (c === "\r") return "\\r";
 		const n = c.codePointAt(0)!;
@@ -60,7 +59,11 @@ export function status(dir: string, msg: string, agent?: string) {
 			(n < 256 ? "\\x" : n <= 65535 ? "\\u" : "\\U") + n.toString(16).padStart(n < 256 ? 2 : n <= 65535 ? 4 : 8, "0")
 		);
 	});
-	fs.appendFileSync(join(dir, "progress"), `${safe}\n`);
+}
+
+export function status(dir: string, msg: string, agent?: string) {
+	const prefix = agent ? `[${agent}] ` : "";
+	fs.appendFileSync(join(dir, "progress"), `${printable(prefix + msg)}\n`);
 }
 
 function listContextFiles(root: string): string[] {
@@ -550,6 +553,28 @@ export async function follow(id: string) {
 	}
 }
 
+function runStatus(dir: string, meta: ReturnType<typeof tryReadState>) {
+	if (isLocked(join(dir, "lock"))) return "running";
+	if (!meta) return "unsupported";
+	return meta.exitCode === 0 ? "done" : meta.exitCode === 1 ? "failed" : "interrupted";
+}
+
+export function showRun(id: string) {
+	const dir = runDir(id);
+	const state = readState(dir);
+	console.log(
+		`Run: ${id}\nProject: ${state.project}\nAction: ${state.action}\nStatus: ${runStatus(dir, state)}\nTurn: ${state.turn}\nPhase: ${state.phase}`,
+	);
+	console.log("Session usage:", state.usage ? JSON.stringify(state.usage) : "not recorded");
+	const latest = join(dir, "latest");
+	if (!fs.lstatSync(latest, { throwIfNoEntry: false })) return console.log("No published report.");
+	const target = fs.readlinkSync(latest);
+	const match = /^turns\/([1-9][0-9]*)$/.exec(target);
+	if (!match) throw Error("Invalid published turn");
+	console.log(`Report (turn ${match[1]}):`);
+	process.stdout.write(printable(read(join(dir, target, "report.md"))));
+}
+
 export function listRuns(all: boolean) {
 	const runsDir = join(STATE, "runs");
 	if (!fs.existsSync(runsDir)) {
@@ -561,17 +586,8 @@ export function listRuns(all: boolean) {
 		if (!entry.isDirectory() || !VALID_ID.test(entry.name)) continue;
 		const id = entry.name;
 		const dir = join(runsDir, id);
-		const active = isLocked(join(dir, "lock"));
 		const meta = tryReadState(dir);
-		const state = active
-			? "running"
-			: !meta
-				? "unsupported"
-				: meta.exitCode === 0
-					? "done"
-					: meta.exitCode === 1
-						? "failed"
-						: "interrupted";
+		const state = runStatus(dir, meta);
 		if (!all && state !== "running") continue;
 		rows.push({
 			id,

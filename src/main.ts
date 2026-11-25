@@ -16,6 +16,7 @@ import {
 	listRuns,
 	resolveRunId,
 	runLock,
+	showRun,
 	stopRun,
 	worker,
 } from "./runs.ts";
@@ -24,6 +25,8 @@ import { createProject, getProject, listProjects } from "./workspace.ts";
 
 const usage = {
 	create: "create (project NAME [--repo URL] | action NAME [--project PROJECT])",
+	projects: "projects",
+	show: "show RUN_ID",
 	actions: "actions [--project PROJECT]",
 	run: "run PROJECT ACTION [--ref REF] [--input KEY=VALUE]... [--keep-up] [PROMPT]",
 	runs: "runs [--all]",
@@ -59,13 +62,13 @@ type Command =
 			prompt: string;
 	  }
 	| { cmd: "runs"; all: boolean }
-	| { cmd: "follow" | "kill"; id: string }
+	| { cmd: "follow" | "kill" | "show"; id: string }
 	| { cmd: "resume"; id: string; retryHook: boolean }
 	| { cmd: "continue"; id: string; prompt: string; keepUp?: boolean }
 	| { cmd: "stop"; id: string }
 	| { cmd: "diff"; id: string }
 	| { cmd: "cleanup"; days: number; dry: boolean }
-	| { cmd: "doctor" }
+	| { cmd: "doctor" | "projects" }
 	| { cmd: "build" | "image-status" };
 
 function promptFlags<const T extends Record<string, { type: "string" | "boolean"; multiple?: boolean }>>(
@@ -147,6 +150,7 @@ function parse(cmd: string, args: string[]): Command {
 			if (!p.length) return { cmd: "runs", all: v.all === true };
 			break;
 		}
+		case "show":
 		case "kill":
 		case "follow": {
 			const { positionals: p } = flags({});
@@ -198,6 +202,7 @@ function parse(cmd: string, args: string[]): Command {
 			if (!p.length) return { cmd: "cleanup", days: Number(days), dry: v["dry-run"] === true };
 			break;
 		}
+		case "projects":
 		case "doctor":
 			if (!args.length) return { cmd };
 			break;
@@ -265,6 +270,15 @@ export async function main(rawArgs: string[]) {
 		}
 		case "runs":
 			listRuns(action.all);
+			return 0;
+		case "projects": {
+			const projects = listProjects();
+			if (!projects.length) console.log("No projects configured.");
+			for (const project of projects) console.log(`${project.name}  ${project.folder}`);
+			return 0;
+		}
+		case "show":
+			showRun(action.id);
 			return 0;
 		case "follow":
 			return follow(action.id);
