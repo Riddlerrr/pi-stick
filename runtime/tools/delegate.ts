@@ -1,6 +1,14 @@
 import { defineTool, ROOT_CONVERSATION_ID, type Task } from "@earendil-works/pi-durable";
+import { arr, obj, type Static, str } from "@earendil-works/pi-schema";
 
-export type DelegateTasks = Array<{ agent: string; prompt: string }>;
+const delegateTasks = arr(
+	obj({
+		agent: str({ description: "Configured subagent name." }),
+		prompt: str({ description: "Specific task or question for this subagent." }),
+	}),
+	{ minItems: 1, maxItems: 16 },
+);
+export type DelegateTasks = Static<typeof delegateTasks>;
 
 export type BatchResult = {
 	results: Array<{ agent: string; ok: boolean; output: string }>;
@@ -16,36 +24,15 @@ export function createDelegateTool<S extends { phase: string }>(
 		replay: "safe",
 		description:
 			"Run one or more configured subagents in parallel and collect their results. Each agent may appear only once per call. Multiple read-only subagents may run concurrently; read-write subagents must run one at a time.",
-		parameters: {
-			type: "object",
-			properties: {
-				tasks: {
-					type: "array",
-					minItems: 1,
-					maxItems: 16,
-					items: {
-						type: "object",
-						properties: {
-							agent: { type: "string", description: "Configured subagent name." },
-							prompt: { type: "string", description: "Specific task or question for this subagent." },
-						},
-						required: ["agent", "prompt"],
-						additionalProperties: false,
-					},
-				},
-			},
-			required: ["tasks"],
-			additionalProperties: false,
-		},
+		parameters: obj({ tasks: delegateTasks }),
 		callers: ["model"],
-		execute: async (args, api, ctx) => {
+		execute: async ({ tasks }, api, ctx) => {
 			if (api.conversationId !== ROOT_CONVERSATION_ID) {
 				return {
 					output: [{ type: "text" as const, text: "Only the orchestrator may call delegate." }],
 					isError: true,
 				};
 			}
-			const { tasks } = args as { tasks: DelegateTasks };
 			try {
 				const id = await api.createTask(
 					delegateBatch,

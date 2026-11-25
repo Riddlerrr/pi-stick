@@ -30,13 +30,15 @@ export async function selfCheck(
 		model: fauxModel,
 		instructions: "Offline read-only probe subagent B",
 		mode: "read-only",
-		tools: ["read", "write", "find", "codemode"],
+		tools: ["read", "write", "grep", "find", "codemode"],
 	};
 
 	for (const [path, data] of Object.entries({
 		"probe.txt": "probe-workspace",
 		"probe-edit.txt": "before",
 		".gitignore": "/probe-src/vendor/\n",
+		"probe-lines.txt": `${"x".repeat(300)}\n`.repeat(120),
+		"probe-paths/a\nb.txt": "",
 		"probe-src/000.txt": "-probeXmarker\n",
 		"probe-src/z/.visible.ts": "first line\n-probe.marker\n",
 		"probe-src/vendor/ignored.ts": "-probe.marker\n",
@@ -81,8 +83,19 @@ export async function selfCheck(
 			if (last?.role === "user") {
 				return fauxAssistantMessage(
 					[
-						fauxToolCall("find", { path: "probe-src", query: "**/*.ts", maxResults: 1 }),
+						fauxToolCall("find", { path: "probe-src", query: ".ts", maxResults: 1 }),
 						fauxToolCall("find", { path: "probe-src", maxResults: 1 }),
+						fauxToolCall("codemode", {
+							code: `const found = await tools.find({path: "probe-paths"});
+							const limited = await tools.find({path: "probe-src", maxResults: 1});
+							const grep = await tools.grep({path: "probe-lines.txt", pattern: "x"});
+							if (found.truncated || found.files.length !== 1 || found.files[0] !== "a\\nb.txt") throw Error("find path");
+							if (!limited.truncated || limited.files.join() !== "000.txt") throw Error("find limit");
+							if (!grep.truncated || !grep.matches.length || grep.matches.join("\\n").length > 32000 ||
+								!grep.matches.every((m, i) => m === "probe-lines.txt:" + (i + 1) + ":" + "x".repeat(300)))
+								throw Error("grep limit");
+							return "search-ok";`,
+						}),
 						// PNG signature only: passes Codemode's MIME check, but cannot be decoded.
 						fauxToolCall("codemode", {
 							code: `text("image-probe"); image("data:image/png;base64,iVBORw0KGgo=");`,
@@ -113,7 +126,9 @@ export async function selfCheck(
 				results.includes("z/.visible.ts") && results.includes("000.txt\n[More files omitted; narrow the search.]");
 			return fauxAssistantMessage([
 				fauxText(
-					find && results.some((r) => r.includes("[Full output: /scratch/checker-b/pi-codemode-"))
+					find &&
+						results.some((r) => r.endsWith("search-ok")) &&
+						results.some((r) => r.includes("[Full output: /scratch/checker-b/pi-codemode-"))
 						? "subagent-b-ok"
 						: "subagent-b-fail",
 				),

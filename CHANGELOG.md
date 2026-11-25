@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Codemode gets structured results from `find` and `grep`; direct model calls still get text. `find.query` is a literal path substring and `grep` no longer takes an offset. Narrow truncated searches instead of paging.
+
 - `pistick resume` now resumes interrupted delegations instead of abandoning the batch. Completed subagents keep their answers. Rebuild the agent image and start new runs; existing sessions are not migrated.
 
 ## 0.3.0 — 2026-11-25

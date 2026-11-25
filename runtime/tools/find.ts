@@ -1,91 +1,44 @@
 import { stat } from "node:fs/promises";
 import { defineTool } from "@earendil-works/pi-durable";
+import { arr, bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { agentEnv } from "./agent-execution-env.ts";
 import { MAX_SEARCH_CHARS, scanRipgrep } from "./ripgrep.ts";
-
-const MAX_FIND_RESULTS = 500;
-
-function globToRegExp(pattern: string): RegExp {
-	let re = "";
-	for (let i = 0; i < pattern.length; i++) {
-		const ch = pattern[i];
-		if (ch === "*" && pattern[i + 1] === "*") {
-			re += ".*";
-			i++;
-			if (pattern[i + 1] === "/") i++;
-		} else if (ch === "*") {
-			re += "[^/]*";
-		} else if (ch === "?") {
-			re += "[^/]";
-		} else if ("\\^$+?.()|[]{}".includes(ch)) {
-			re += `\\${ch}`;
-		} else {
-			re += ch;
-		}
-	}
-	return new RegExp(`^${re}$`);
-}
 
 export function createFindTool(repoDir: string) {
 	return defineTool({
 		name: "find",
-		description: `List files under a directory (defaults to ${repoDir}), optionally matching a glob or substring. Respects .gitignore and skips .git and node_modules.`,
-		parameters: {
-			type: "object",
-			properties: {
-				path: { type: "string", description: `Directory to search (defaults to ${repoDir}).` },
-				query: { type: "string", description: "Optional glob pattern (e.g. '**/*.ts') or substring filter." },
-				maxResults: {
-					type: "integer",
-					minimum: 1,
-					maximum: 2000,
-					description: "Max files to return (default 500).",
-				},
-			},
-			additionalProperties: false,
-		},
+		description:
+			"List relative file paths under a directory. Respects .gitignore and skips .git and node_modules. Narrow the search if truncated.",
+		parameters: obj({
+			path: opt(str({ description: `Directory to search (defaults to ${repoDir}).` })),
+			query: opt(str({ description: "Literal substring of the relative path." })),
+			maxResults: opt(int({ minimum: 1, maximum: 2000, description: "Max files to return (default 500)." })),
+		}),
+		structuredOutputSchema: obj({ files: arr(str()), truncated: bool() }),
 		replay: "safe",
-		execute: async (args, api, context) => {
-			const {
-				path = repoDir,
-				query,
-				maxResults = MAX_FIND_RESULTS,
-			} = args as {
-				path?: string;
-				query?: string;
-				maxResults?: number;
-			};
-			try {
-				const resolved = agentEnv(api).resolve(path, false);
-				if (!(await stat(resolved)).isDirectory())
-					return { output: [{ type: "text" as const, text: "(no files)" }] };
-				const glob = query && /[*?]/.test(query) ? globToRegExp(query) : null;
-				const files: string[] = [];
-				let length = 0;
-				const truncated = await scanRipgrep(
+		execute: async ({ path = repoDir, query = "", maxResults = 500 }, api, context) => {
+			const resolved = agentEnv(api).resolve(path, false);
+			const files: string[] = [];
+			let listing = "";
+			const truncated =
+				(await stat(resolved)).isDirectory() &&
+				(await scanRipgrep(
 					resolved,
 					["--files", "--null", "--", "."],
 					"\0",
 					(entry) => {
 						const file = entry.replace(/^\.\//, "");
-						// Positive ripgrep globs override .gitignore, so filter after discovery.
-						if (query && !(glob ? glob.test(file) : file.includes(query))) return true;
-						const display = file.replaceAll("\n", "\\n").replaceAll("\r", "\\r");
-						length += display.length + (files.length ? 1 : 0);
-						if (files.length === maxResults || length > MAX_SEARCH_CHARS) return false;
-						files.push(display);
+						if (!file.includes(query)) return true;
+						const line = (files.length ? "\n" : "") + file.replaceAll("\n", "\\n").replaceAll("\r", "\\r");
+						if (files.length === maxResults || listing.length + line.length > MAX_SEARCH_CHARS) return false;
+						listing += line;
+						files.push(file);
 						return true;
 					},
 					context.abortSignal,
-				);
-				const suffix = truncated ? "\n[More files omitted; narrow the search.]" : "";
-				return { output: [{ type: "text" as const, text: (files.join("\n") || "(no files)") + suffix }] };
-			} catch (err) {
-				return {
-					output: [{ type: "text" as const, text: err instanceof Error ? err.message : String(err) }],
-					isError: true,
-				};
-			}
+				));
+			const text = (listing || "(no files)") + (truncated ? "\n[More files omitted; narrow the search.]" : "");
+			return { output: [{ type: "text", text }], structuredOutput: { files, truncated } };
 		},
 	});
 }
