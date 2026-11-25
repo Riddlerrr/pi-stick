@@ -173,6 +173,8 @@ pistick containers status               # compare installed build inputs with th
 pistick containers build                # (re)build the configured agent image from the shipped lockfile
 ```
 
+Public commands accepting `RUN_ID` also accept a unique prefix of at least eight lowercase hex digits. Ambiguous prefixes never select a run.
+
 For `run` and `continue`, `-h` and `--help` show usage before the first prompt word and are literal text after it. Use `--` to end option parsing when the prompt itself starts with a flag: `pistick run my-app my-action -- --help`.
 
 A new task clones the local project checkout and points its `origin` at `project.json`’s `source` before running the `prepare` hook. Use a credential helper or SSH key; source URLs with embedded credentials, a query string, or a fragment are rejected. `--ref` uses a locally available commit or branch first; only a missing ref triggers a fetch from `origin`. It does not refresh existing branches or update the shared project checkout. For manually configured projects without `project.json`, `origin` remains the local project checkout.

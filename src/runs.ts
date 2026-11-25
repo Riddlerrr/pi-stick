@@ -17,6 +17,19 @@ import { getProject, type ProjectInfo } from "./workspace.ts";
 
 export const VALID_ID = /^[0-9a-f]{32}$/;
 
+export function resolveRunId(prefix: string) {
+	if (!/^[0-9a-f]{8,32}$/.test(prefix)) throw Error("Invalid run ID: expected 8–32 lowercase hex digits");
+	const dir = join(STATE, "runs");
+	const ids = fs
+		.readdirSync(dir, { withFileTypes: true })
+		.filter((e) => e.isDirectory() && VALID_ID.test(e.name) && e.name.startsWith(prefix))
+		.map((e) => e.name)
+		.sort();
+	if (!ids.length) throw Error(`Unknown run: ${prefix}`);
+	if (ids.length > 1) throw Error(`Ambiguous run ID ${prefix}: ${ids.join(", ")}`);
+	return ids[0];
+}
+
 export function runDir(id: string) {
 	if (!VALID_ID.test(id)) throw Error("Invalid run ID");
 	return join(STATE, "runs", id);

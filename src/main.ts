@@ -14,6 +14,7 @@ import {
 	launchResume,
 	launchRun,
 	listRuns,
+	resolveRunId,
 	runLock,
 	stopRun,
 	worker,
@@ -229,6 +230,7 @@ export async function main(rawArgs: string[]) {
 		return 0;
 	}
 	fs.mkdirSync(join(STATE, "runs"), { recursive: true, mode: 0o700 });
+	if ("id" in action) action.id = resolveRunId(action.id);
 	switch (action.cmd) {
 		case "create-project":
 			console.log("Created:", await createProject(action.name, action.repo));

@@ -566,6 +566,17 @@ test("per-run locks allow concurrent runs, follow, diff, and selective cleanup",
 	fail(["follow", idA], /Worker interrupted/);
 });
 
+test("run prefixes must identify one real run directory", (t) => {
+	const { app, fail } = fixture(t);
+	const runs = join(app, "state/runs");
+	const a = "a".repeat(32),
+		b = "aaaaaaaa" + "b".repeat(24);
+	for (const id of [a, b]) fs.mkdirSync(join(runs, id), { recursive: true });
+	fail(["kill", "aaaaaaaa"], new RegExp(`Ambiguous run ID.*${a}.*${b}`));
+	fail(["kill", "aaaabbbb"], /Unknown run/);
+	fail(["kill", "aaaaaaa"], /Invalid run ID/);
+});
+
 test("cleanup includes old interrupted runs but preserves recent ones", (t) => {
 	const { app, ok, stub } = fixture(t);
 	stub("docker", "process.exit(process.argv[2] === 'ps' ? 0 : 1)");
@@ -1230,7 +1241,7 @@ if (has('git') && a[0] === 'run') {
 	const usedTokens = () => JSON.parse(read(join(runPath, "run.json"))).usage.models["test/model"].totalTokens;
 	assert.equal(usedTokens(), 12);
 	const patch = read(join(runPath, "changes.patch"));
-	assert.match(ok(["diff", id]), /\+created/);
+	assert.match(ok(["diff", id.slice(0, 8)]), /\+created/);
 	execFileSync(realGit, ["-C", source, "apply", "-"], { input: patch });
 	assert.equal(read(join(source, "new [test].txt")), "created\n");
 	assert.ok(!fs.existsSync(join(source, "ignored.txt")));
