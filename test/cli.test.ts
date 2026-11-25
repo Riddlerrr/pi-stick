@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { TestContext } from "node:test";
 import test from "node:test";
-import { loadActionFromDir } from "../src/actions.ts";
+import { loadActionFromDir, resolveInputs } from "../src/actions.ts";
 import { executeAgentContainer } from "../src/agent-rpc.ts";
 import { closed, read, runId, tryLock, writeJson } from "../src/platform.ts";
 import { status } from "../src/runs.ts";
@@ -778,6 +778,8 @@ test("action validation reports the invalid field before creating a run", (t) =>
 		[{ inputs: { ticket: { require: true } } }, /inputs\.ticket\.require: unknown field/],
 		[{ inputs: { ticket: { required: "false" } } }, /inputs\.ticket\.required: expected boolean/],
 		[{ inputs: { ticket: null } }, /inputs\.ticket: expected object/],
+		[{ inputs: { "a=b": {} } }, /inputs\.a=b: invalid name/],
+		[{ inputs: { "issue id": {} } }, /inputs\.issue id: invalid name/],
 		[{ stages: [{ ...stage, promp: "x" }] }, /stages\[0\]\.promp: unknown field/],
 		[{ stages: [{ ...stage, parallel: ["audit", "audit"] }] }, /Stage 'pass' repeats agent 'audit'/],
 		[{ stageContext: "latest" }, /stageContext: expected one of previous, all/],
@@ -794,7 +796,9 @@ test("action validation reports the invalid field before creating a run", (t) =>
 		writeJson(file, { model: base.model, agents: base.agents, stages });
 		fail(["run", "demo", "check"], /without an orchestrator requires a final stage with exactly one agent/);
 	}
-	writeJson(file, { ...base, inputs: { ticket: { default: "none" } } });
+	writeJson(file, { ...base, inputs: { Ticket_ID: { required: true } } });
+	const action = loadActionFromDir("check", dirname(file), "global");
+	assert.equal(resolveInputs(action, ["Ticket_ID=a=b"]).Ticket_ID, "a=b");
 	fail(["run", "demo", "check", "--input", "typo=1"], /Unknown --input 'typo'/);
 	assert.deepEqual(fs.readdirSync(join(app, "state/runs")), []);
 });
