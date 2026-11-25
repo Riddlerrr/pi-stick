@@ -2,14 +2,8 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { UsageState } from "@earendil-works/pi-durable";
-import type { AccessLease } from "../runtime-auth.ts";
-import {
-	type ActionJob,
-	type HostMessage,
-	type RpcResponse,
-	RunFailure,
-	readRuntime,
-} from "../runtime-tools/protocol.ts";
+import type { AccessLease } from "../runtime/protocol.ts";
+import { type ActionJob, type HostMessage, type RpcResponse, RunFailure, readRuntime } from "../runtime/protocol.ts";
 import { closed } from "./platform.ts";
 import { ephemeralArgs } from "./system.ts";
 import type { RpcPolicy, TaskEnv } from "./tasks.ts";

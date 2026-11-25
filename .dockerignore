@@ -1,8 +1,6 @@
 *
 !package.json
 !package-lock.json
-!agent-runtime.ts
-!runtime-auth.ts
-!runtime-tools/
-!runtime-tools/*.ts
+!runtime/
+!runtime/**
 !Dockerfile

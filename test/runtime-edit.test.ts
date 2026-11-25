@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { createEditTool } from "../runtime-tools/edit.ts";
+import { createEditTool } from "../runtime/tools/edit.ts";
 
 test("edit applies the conversation's path policy before opening the file", async (t) => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-stick-edit-"));

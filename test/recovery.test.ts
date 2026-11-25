@@ -68,7 +68,7 @@ function stageFixture(
 		})),
 	};
 	const run = async (payload: unknown = job, workspace = dir, corruptAfter?: RegExp) => {
-		const child = spawn(process.execPath, ["--import", stub, join(import.meta.dirname, "../agent-runtime.ts")], {
+		const child = spawn(process.execPath, ["--import", stub, join(import.meta.dirname, "../runtime/main.ts")], {
 			cwd: dir,
 			env: {
 				...process.env,
@@ -404,8 +404,8 @@ test("unexpected action exceptions log only a safe category and runtime location
 	const msg = JSON.parse(failed.stdout.trim().split("\n").at(-1)!);
 	assert.equal(msg.success, false);
 	assert.equal(msg.error, "Action failed");
-	assert.match(failed.stderr, /^Unexpected TypeError at agent-runtime\.ts:\d+:\d+$/m);
-	assert.doesNotMatch(failed.stdout, /Unexpected TypeError|agent-runtime\.ts/);
+	assert.match(failed.stderr, /^Unexpected TypeError at runtime\/main\.ts:\d+:\d+$/m);
+	assert.doesNotMatch(failed.stdout, /Unexpected TypeError|runtime\/main\.ts/);
 	assert.doesNotMatch(failed.stderr + failed.stdout, /private-fixture/);
 });
 

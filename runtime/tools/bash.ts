@@ -5,7 +5,7 @@ import { type ConversationId, defineTool } from "@earendil-works/pi-durable";
 import { ExecutionError } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createBashTool as createDurableBash } from "@earendil-works/pi-durable/tools";
-import type { RpcCall, RpcData } from "./protocol.ts";
+import type { RpcCall, RpcData } from "../protocol.ts";
 
 const bash = createDurableBash();
 const SPILL_BYTES = 32 * 1024 * 1024;

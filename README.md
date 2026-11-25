@@ -32,13 +32,13 @@ Requires Linux, Git, util-linux `flock`, Docker with Compose/Buildx, and Pi (`pi
 
 Run `./scripts/install.sh` as your normal user (no sudo). It downloads the Linux archive for your architecture and installs both its CLI and its runtime files (including `package-lock.json`) into `~/pi-stick` or `$PI_STICK_HOME`; it does not take runtime files from a local checkout. The launcher is `~/.local/bin/pistick`.
 
-On upgrade, accept all listed release changes or cancel. Local edits inside release-owned directories (`runtime-tools/`, `project-template/`) are replaced; `projects/`, `actions/`, and `state/` are preserved. If the image already matches the installed build inputs, no rebuild is offered. Otherwise image rebuild is a separate prompt: accept to run `pistick containers build` and `pistick doctor`, or skip to keep the previous image.
+On upgrade, accept all listed release changes or cancel. Local edits inside release-owned directories (`runtime/`, `project-template/`) are replaced; `projects/`, `actions/`, and `state/` are preserved. If the image already matches the installed build inputs, no rebuild is offered. Otherwise image rebuild is a separate prompt: accept to run `pistick containers build` and `pistick doctor`, or skip to keep the previous image.
 
 ### Source install (Node.js 24.12+)
 
 The host and agent image use a private, versioned protocol. After a protocol change, run `pistick containers build` before starting or resuming an agent; there is no compatibility mode for older images.
 
-The host CLI runs directly from TypeScript using Node built-ins only (no host npm runtime dependencies). Dependencies for `agent-runtime.ts` (`@earendil-works/*`) live inside the Docker image:
+The host CLI runs directly from TypeScript using Node built-ins only (no host npm runtime dependencies). Dependencies for `runtime/main.ts` (`@earendil-works/*`) live inside the Docker image:
 
 ```sh
 ln -s "$PWD/pistick" ~/.local/bin/pistick

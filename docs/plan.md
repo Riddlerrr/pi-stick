@@ -147,7 +147,7 @@ pistick version
 1. Define the `action.json` manifest specification and JSON Schema (inputs, defaults, hooks, agent definitions, permissions).
 2. Implement two-tier action discovery (`projects/<project>/actions/` overriding `$PI_STICK_HOME/actions/`), `pistick actions`, and `pistick create action`.
 3. Implement trusted host hooks (`prepare` with `/context:ro` output and `after` post-processing).
-4. Build the generic container entrypoint (`agent-runtime.ts`) with native file tools (`read`, `write`, `edit`, `grep`, `find`), Codemode, and host-brokered tools.
+4. Build the generic container entrypoint (`runtime/main.ts`) with native file tools (`read`, `write`, `edit`, `grep`, `find`), Codemode, and host-brokered tools.
 5. Implement `run`, `runs`, `follow`, `resume`, `continue`, `containers stop`, and `diff`, plus automatic `changes.patch` and `report.md` artifact generation.
 
 ### Phase 3: Multi-Agent Orchestration & Permission Enforcement

@@ -37,9 +37,7 @@ function fixture(t: TestContext, copyRelease = false) {
 			"package-lock.json",
 			".dockerignore",
 			"project-template",
-			"agent-runtime.ts",
-			"runtime-auth.ts",
-			"runtime-tools",
+			"runtime",
 			"Dockerfile",
 			"action.schema.json",
 		])
@@ -145,6 +143,9 @@ test("container-only commands require the containers namespace", (t) => {
 
 test("containers build passes the installed lockfile to Docker without sending run state", (t) => {
 	const { app, assets, ok, fail, stub, tmp } = fixture(t, true);
+	const nested = join(assets, "runtime/tools/nested");
+	fs.mkdirSync(nested);
+	fs.writeFileSync(join(nested, "example.ts"), "first");
 	const labelFile = join(tmp, "image-label");
 	const lock = read(join(assets, "package-lock.json"));
 	stub(
@@ -157,6 +158,9 @@ test("containers build passes the installed lockfile to Docker without sending r
 		fs.writeFileSync(${JSON.stringify(labelFile)}, label.split('=')[1]);
 		assert.deepEqual([cmd, flag, image], ['build', '-t', ${JSON.stringify(process.env.PI_STICK_IMAGE || "pi-stick:current")}]);
 		assert.equal(fs.readFileSync(context + '/package-lock.json', 'utf8'), fs.readFileSync(${JSON.stringify(join(assets, "package-lock.json"))}, 'utf8'));
+		assert.deepEqual(fs.readdirSync(context + '/runtime/tools/nested'), fs.readdirSync(${JSON.stringify(nested)}));
+		const name = fs.readdirSync(${JSON.stringify(nested)})[0];
+		assert.equal(fs.readFileSync(context + '/runtime/tools/nested/' + name, 'utf8'), fs.readFileSync(${JSON.stringify(nested)} + '/' + name, 'utf8'));
 		assert.ok(!fs.existsSync(context + '/state'));
 		console.log('built');`,
 	);
@@ -168,11 +172,17 @@ test("containers build passes the installed lockfile to Docker without sending r
 	fail(["containers", "status"], /does not match.*containers build/);
 	ok(["containers", "build"]);
 	ok(["containers", "status"]);
+	fs.writeFileSync(join(nested, "example.ts"), "second");
+	fail(["containers", "status"], /does not match/);
+	ok(["containers", "build"]);
+	fs.renameSync(join(nested, "example.ts"), join(nested, "renamed.ts"));
+	fail(["containers", "status"], /does not match/);
 	fs.writeFileSync(labelFile, "");
 	fail(["containers", "status"], /no build fingerprint/);
 	fs.unlinkSync(labelFile);
 	fail(["containers", "status"], /Cannot inspect/);
-	fs.symlinkSync(join(app, "state/irrelevant"), join(assets, "runtime-tools/linked.ts"));
+	fs.rmSync(nested, { recursive: true });
+	fs.symlinkSync(join(app, "state"), nested);
 	fail(["containers", "build"], /Expected a regular build input/);
 });
 
@@ -686,7 +696,7 @@ test("agent-runtime offline self-check exercises canonical paths, scratch, concu
 		})().catch((err) => { console.error(err); process.exit(2); });`,
 		{ mode: 0o700 },
 	);
-	const runtime = join(import.meta.dirname, "..", "agent-runtime.ts");
+	const runtime = join(import.meta.dirname, "..", "runtime/main.ts");
 	// Simulate a dependency that logs during module initialization.
 	const preload = join(tmp, "noisy-dependency.mjs");
 	fs.writeFileSync(
@@ -694,7 +704,7 @@ test("agent-runtime offline self-check exercises canonical paths, scratch, concu
 		`import { registerHooks } from "node:module";
 		registerHooks({ load(url, context, next) {
 			const loaded = next(url, context);
-			if (!url.endsWith("/runtime-auth.ts")) return loaded;
+			if (!url.endsWith("/runtime/auth.ts")) return loaded;
 			return { ...loaded, source: String(loaded.source) + '\\nconsole.log("import console marker"); process.stdout.write("import stdout marker\\\\n");' };
 		} });`,
 	);
@@ -765,7 +775,7 @@ test("doctor checks Git in the selected image independently of its bundled runti
 		if (a[0] === 'build') require('fs').writeFileSync(${JSON.stringify(join(tmp, "label"))}, a[a.indexOf('--label')+1].split('=')[1]);
 		if (a[0] === 'image') console.log(require('fs').readFileSync(${JSON.stringify(join(tmp, "label"))},'utf8'));
 		if (a[0] !== 'run') process.exit(0);
-		if (a.includes('/app/agent-runtime.ts')) require('node:readline').createInterface({input:process.stdin}).once('line', line => console.log(JSON.stringify({type:'response', command:'run', id:JSON.parse(line).id, success:true, data:{ready:true}})));
+		if (a.includes('/app/runtime/main.ts')) require('node:readline').createInterface({input:process.stdin}).once('line', line => console.log(JSON.stringify({type:'response', command:'run', id:JSON.parse(line).id, success:true, data:{ready:true}})));
 		else if (a.slice(-3).join(' ') === 'pi-stick:current git --version' && a[a.indexOf('--network')+1] === 'none' && !a.includes('-v')) {
 			if (!require('node:fs').existsSync(${JSON.stringify(installed)})) process.exit(127);
 			console.log('git version 2.39.5');
@@ -964,7 +974,7 @@ test("resume may initialize a session only before the first agent launch attempt
 		if (args.includes('config')) console.log(JSON.stringify({services:{runner: {networks: {default: null}, volumes:[{type:'volume',source:'source',target:'/workspace'}]}}}));
 		if (args.includes('--no-optional-locks')) process.stdout.write('0'.repeat(16));
 		for (const cmd of ['up', 'start']) if (args.includes(cmd)) fs.appendFileSync(${JSON.stringify(starts)}, cmd + '\\n');
-		if (args[0] === 'run' && args.includes('/app/agent-runtime.ts')) {
+		if (args[0] === 'run' && args.includes('/app/runtime/main.ts')) {
 			const session = args.find(a => a.endsWith(':/sessions')).slice(0, -':/sessions'.length);
 			const config = JSON.parse(fs.readFileSync(session + '/../run.json'));
 			if (config.phase !== "agent-started") process.exit(2);
@@ -1127,7 +1137,7 @@ if (has('git') && a[0] === 'run') {
   console.log('service-log-line');
 } else if (a[0] === 'compose' && has('ps')) {
   console.log('[{"Service":"runner","State":"running"}]');
-} else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
+} else if (a[0] === 'run' && has('/app/runtime/main.ts')) {
   const workspaceMount = a.find(x => x.endsWith(':/workspace'));
   const repoMount = workspaceMount.slice(0, -':/workspace'.length) + '/repo';
   const usage = input => ({ models: { 'test/model': { input, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: input+2,
@@ -1440,7 +1450,7 @@ else if (has('config')) {
   process.exit(a[a.indexOf('--') + 1] === 'web' && !has('-w') ? 0 : 1);
 } else if (has('exec') && has('runner') && has('sh') && has('-c')) {
   console.log('ran:' + a.at(-1));
-} else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
+} else if (a[0] === 'run' && has('/app/runtime/main.ts')) {
   const rl = require('node:readline').createInterface({ input: process.stdin });
   const send = x => process.stdout.write(JSON.stringify(x) + '\\n');
   let got = 0;
@@ -1630,7 +1640,7 @@ else if (has('config')) {
     volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },
     networks: { default: { name: a[a.indexOf('-p') + 1] + '_default' } }
   }));
-} else if (a[0] === 'run' && has('/app/agent-runtime.ts')) {
+} else if (a[0] === 'run' && has('/app/runtime/main.ts')) {
   const repoMount = a.find(x => x.endsWith(':/workspace')).slice(0, -':/workspace'.length) + '/repo';
   const rl = require('node:readline').createInterface({ input: process.stdin });
   rl.once('line', line => {
@@ -1710,9 +1720,9 @@ test("stage-release.sh packages updated runtime files and excludes removed legac
 	});
 	assert.equal(r.status, 0, r.stderr);
 	for (const rel of [
-		"share/agent-runtime.ts",
-		"share/runtime-auth.ts",
-		"share/runtime-tools/read.ts",
+		"share/runtime/main.ts",
+		"share/runtime/auth.ts",
+		"share/runtime/tools/read.ts",
 		"share/action.schema.json",
 		"share/Dockerfile",
 		"share/.dockerignore",

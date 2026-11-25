@@ -5,8 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { createEditTool } from "../runtime-tools/edit.ts";
-import { createWriteTool } from "../runtime-tools/write.ts";
+import { createEditTool } from "../runtime/tools/edit.ts";
+import { createWriteTool } from "../runtime/tools/write.ts";
 
 test("write creates parents and shares edit's queue, including when creating the file", async (t) => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-stick-write-"));

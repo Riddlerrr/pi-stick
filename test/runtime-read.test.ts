@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { createReadTool } from "../runtime-tools/read.ts";
+import { createReadTool } from "../runtime/tools/read.ts";
 
 test("read uses Pi line ranges, bounded output and image results inside the agent's path policy", async (t) => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-stick-read-"));

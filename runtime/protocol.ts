@@ -1,6 +1,14 @@
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { UsageState } from "@earendil-works/pi-durable";
-import type { AccessLease, CredentialPayload } from "../runtime-auth.ts";
+
+export interface AccessLease {
+	token: string;
+	validUntil: number;
+}
+
+export interface CredentialPayload extends AccessLease {
+	authType?: "oauth" | "api_key";
+}
 
 export const RUN = "run.v1";
 // Only operator-safe summaries belong in a run failure, never raw provider or tool errors.

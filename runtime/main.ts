@@ -1,5 +1,5 @@
 // biome-ignore assist/source/organizeImports: Reserve stdout before dependencies run their initialization code.
-import { writeProtocol } from "./runtime-tools/protocol-stdout.ts";
+import { writeProtocol } from "./tools/protocol-stdout.ts";
 
 import * as fs from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -28,6 +28,7 @@ import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 
 import {
+	type AccessLease,
 	type Job,
 	type AgentRuntimeSpec,
 	type Method,
@@ -39,19 +40,19 @@ import {
 	RunFailure,
 	readJob,
 	readReply,
-} from "./runtime-tools/protocol.ts";
-import { type AccessLease, runtimeCredentials } from "./runtime-auth.ts";
-import { createBashTool } from "./runtime-tools/bash.ts";
-import { type BatchResult, createDelegateTool, type DelegateTasks } from "./runtime-tools/delegate.ts";
-import { createEditTool } from "./runtime-tools/edit.ts";
-import { createFindTool } from "./runtime-tools/find.ts";
-import { createGrepTool } from "./runtime-tools/grep.ts";
-import { createLogsTool } from "./runtime-tools/logs.ts";
-import { createPsTool } from "./runtime-tools/ps.ts";
-import { createReadTool } from "./runtime-tools/read.ts";
-import { createRestartTool } from "./runtime-tools/restart.ts";
-import type { AgentRpc } from "./runtime-tools/rpc.ts";
-import { createWriteTool } from "./runtime-tools/write.ts";
+} from "./protocol.ts";
+import { runtimeCredentials } from "./auth.ts";
+import { createBashTool } from "./tools/bash.ts";
+import { type BatchResult, createDelegateTool, type DelegateTasks } from "./tools/delegate.ts";
+import { createEditTool } from "./tools/edit.ts";
+import { createFindTool } from "./tools/find.ts";
+import { createGrepTool } from "./tools/grep.ts";
+import { createLogsTool } from "./tools/logs.ts";
+import { createPsTool } from "./tools/ps.ts";
+import { createReadTool } from "./tools/read.ts";
+import { createRestartTool } from "./tools/restart.ts";
+import type { AgentRpc } from "./tools/rpc.ts";
+import { createWriteTool } from "./tools/write.ts";
 
 const SESSIONS_DIR = process.env.PI_STICK_SESSIONS_DIR ?? "/sessions";
 const CONTAINER_REPO_DIR = "/workspace/repo";
@@ -779,7 +780,7 @@ function unexpectedActionDiagnostic(err: unknown): string {
 		if (typeof stack === "string") {
 			// Only emit coordinates in this module, never arbitrary stack or message text.
 			for (const frame of stack.matchAll(/^ {4}at (?:[^\n]* \()?([^\s()]+):(\d{1,6}):(\d{1,6})\)?$/gm)) {
-				if (frame[1] === import.meta.url) return `${summary} at agent-runtime.ts:${frame[2]}:${frame[3]}`;
+				if (frame[1] === import.meta.url) return `${summary} at runtime/main.ts:${frame[2]}:${frame[3]}`;
 			}
 		}
 	} catch {

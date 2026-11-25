@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import { runtimeCredentials } from "../runtime-auth.ts";
+import { runtimeCredentials } from "../runtime/auth.ts";
 
 test("parallel model requests renew an OAuth bearer once and reuse it until the next lease", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: 100_000 });

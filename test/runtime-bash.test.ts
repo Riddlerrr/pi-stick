@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { createBashTool } from "../runtime-tools/bash.ts";
+import { createBashTool } from "../runtime/tools/bash.ts";
 
 test("bash routes service, timeout and cancellation to the broker and streams split UTF-8", async () => {
 	const signal = new AbortController().signal;

@@ -5,8 +5,8 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
-import type { CredentialPayload } from "../runtime-auth.ts";
-import { type HostMessage, isRequest, type Job, RUN, readRuntime } from "../runtime-tools/protocol.ts";
+import type { CredentialPayload } from "../runtime/protocol.ts";
+import { type HostMessage, isRequest, type Job, RUN, readRuntime } from "../runtime/protocol.ts";
 import { agentName, IMAGE, isolatedRun } from "./container.ts";
 import {
 	ASSETS,
@@ -159,7 +159,7 @@ export function ephemeralArgs(opts: EphemeralContainerOptions): string[] {
 		if (opts.context) args.push("-v", `${opts.context}:/context:ro`);
 		if (opts.sessions) args.push("-v", `${opts.sessions}:/sessions`);
 	}
-	args.push(opts.image ?? IMAGE, "node", "/app/agent-runtime.ts");
+	args.push(opts.image ?? IMAGE, "node", "/app/runtime/main.ts");
 	return args;
 }
 
@@ -286,28 +286,22 @@ const inputLabel = "io.pi-stick.build-inputs.sha256";
 
 export function imageFingerprint(stage?: string, assets = ASSETS) {
 	const hash = createHash("sha256");
-	if (!fs.lstatSync(join(assets, "runtime-tools")).isDirectory())
-		throw Error("Expected a real runtime-tools directory");
-	const tools = fs
-		.readdirSync(join(assets, "runtime-tools"))
-		.filter((name) => name.endsWith(".ts"))
-		.sort();
-	if (stage) fs.mkdirSync(join(stage, "runtime-tools"));
-	for (const name of [
-		"Dockerfile",
-		".dockerignore",
-		"package.json",
-		"package-lock.json",
-		"agent-runtime.ts",
-		"runtime-auth.ts",
-		...tools.map((name) => `runtime-tools/${name}`),
-	]) {
+	function visit(name: string) {
 		const file = join(assets, name);
-		if (!fs.lstatSync(file).isFile()) throw Error(`Expected a regular build input: ${file}`);
+		const stat = fs.lstatSync(file);
+		if (name === "runtime" && !stat.isDirectory()) throw Error("Expected a real runtime directory");
+		if (stat.isDirectory() && (name === "runtime" || name.startsWith("runtime/"))) {
+			hash.update(`directory\0${name}\0`);
+			if (stage) fs.mkdirSync(join(stage, name));
+			for (const entry of fs.readdirSync(file).sort()) visit(join(name, entry));
+			return;
+		}
+		if (!stat.isFile()) throw Error(`Expected a regular build input: ${file}`);
 		const bytes = fs.readFileSync(file);
 		hash.update(`${name}\0${bytes.length}\0`).update(bytes);
 		if (stage) fs.writeFileSync(join(stage, name), bytes);
 	}
+	for (const name of ["Dockerfile", ".dockerignore", "package.json", "package-lock.json", "runtime"]) visit(name);
 	return hash.digest("hex");
 }
 

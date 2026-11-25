@@ -1,14 +1,7 @@
 import type { Credential } from "@earendil-works/pi-ai";
 import type { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 
-export interface AccessLease {
-	token: string;
-	validUntil: number;
-}
-
-export interface CredentialPayload extends AccessLease {
-	authType?: "oauth" | "api_key";
-}
+import type { AccessLease, CredentialPayload } from "./protocol.ts";
 
 export function runtimeCredentials(
 	payloads: Record<string, CredentialPayload>,

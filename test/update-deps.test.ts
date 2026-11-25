@@ -13,8 +13,8 @@ test("maintainer update preserves Node line, requests only runtime deps and publ
 	const script = join(scripts, "update-deps.mjs");
 	fs.copyFileSync(join(import.meta.dirname, "../scripts/update-deps.mjs"), script);
 	fs.symlinkSync(join(import.meta.dirname, "../src"), join(root, "src"));
-	fs.mkdirSync(join(root, "runtime-tools"));
-	for (const name of [".dockerignore", "agent-runtime.ts", "runtime-auth.ts"]) fs.writeFileSync(join(root, name), "");
+	fs.mkdirSync(join(root, "runtime"));
+	fs.writeFileSync(join(root, ".dockerignore"), "");
 	const original = `FROM node:24-bookworm-slim@sha256:${"a".repeat(64)}\nARG NPM_VERSION=10.0.0\n`;
 	const pkg = JSON.stringify({ dependencies: { runtime: "1.0.0" }, devDependencies: { dev: "1.0.0" } });
 	const read = (name: string) => fs.readFileSync(join(root, name), "utf8");

@@ -27,12 +27,12 @@ grep -F 'Installed files are unchanged.' "$tmp/log"
 printf 'release v2\n' >> "$tmp/pi-stick/share/Dockerfile"
 printf '{"version":"v2"}\n' > "$tmp/pi-stick/share/package-lock.json"
 sed -i s/v1/v2/ "$tmp/pi-stick/pistick"
-touch "$app/runtime-tools/obsolete.ts"
+touch "$app/runtime/obsolete.ts"
 pack
 install_with '\nn\n'
 grep -F 'Installation unchanged.' "$tmp/log"
 grep -F 'v1' "$app/pistick"
-test -e "$app/runtime-tools/obsolete.ts"
+test -e "$app/runtime/obsolete.ts"
 if cmp -s "$app/package-lock.json" "$tmp/pi-stick/share/package-lock.json"; then exit 1; fi
 mkdir "$app/state/runs/active"
 flock "$app/state/runs/active/lock" bash -c 'if printf "\n\ny\n" | "$1"; then exit 1; fi' _ "$tmp/install.sh"
@@ -40,7 +40,7 @@ install_with '\n\ny\n'
 cmp "$app/pistick" "$tmp/pi-stick/pistick"
 cmp "$app/Dockerfile" "$tmp/pi-stick/share/Dockerfile"
 cmp "$app/package-lock.json" "$tmp/pi-stick/share/package-lock.json"
-test ! -e "$app/runtime-tools/obsolete.ts"
+test ! -e "$app/runtime/obsolete.ts"
 for dir in state actions projects; do test -f "$app/$dir/keep"; done
 diff -u <(printf 'v2 containers build\nv2 doctor\n') "$HOME/cli.log"
 touch "$HOME/current"

@@ -51,14 +51,14 @@ files="$tmp/pi-stick/share"
 binary="$tmp/pi-stick/pistick"
 [[ -f $binary && -x $binary && ! -L $binary ]] || die "Missing release binary."
 # Only install release-owned paths; never copy the archive over operator data.
-managed=(Dockerfile .dockerignore package.json package-lock.json agent-runtime.ts runtime-auth.ts action.schema.json)
+managed=(Dockerfile .dockerignore package.json package-lock.json action.schema.json)
 for name in "${managed[@]}"; do
   [[ -f $files/$name && ! -L $files/$name ]] || die "Missing release file: $name"
 done
-for name in project-template runtime-tools; do
+for name in project-template runtime; do
   [[ -d $files/$name && ! -L $files/$name ]] || die "Missing release directory: $name"
 done
-managed+=(project-template runtime-tools pistick)
+managed+=(project-template runtime pistick)
 mv -T -- "$binary" "$files/pistick"
 printf 'CLI and runtime: %s\n' "$asset"
 

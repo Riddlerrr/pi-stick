@@ -13,12 +13,12 @@
   - `src/runs.ts` — Per-run locks, concurrent detached workers, `run`/`runs`/`follow`/`resume`/`continue`/`containers stop`/`diff`/`cleanup`.
   - `src/agent-rpc.ts` — Host-side JSONL RPC bridge to the ephemeral agent container.
   - `src/system.ts` — Ephemeral container args, multi-provider Pi model/token resolution, offline runtime probe, `doctor`, and `containers build`.
-- `agent-runtime.ts`, `Dockerfile`, `.dockerignore` — Ephemeral containerized agent runtime (runs inside Docker with `@earendil-works/*` dependencies, native file tools, Codemode, static stages, and dynamic parallel `delegate`).
-- `runtime-tools/` — Container tool implementations; `agent-runtime.ts` supplies runtime policies and registers tools.
+- `runtime/main.ts`, `Dockerfile`, `.dockerignore` — Ephemeral containerized agent runtime (runs inside Docker with `@earendil-works/*` dependencies, native file tools, Codemode, static stages, and dynamic parallel `delegate`).
+- `runtime/tools/` — Container tool implementations; `runtime/main.ts` supplies runtime policies and registers tools.
 - `action.schema.json` — JSON Schema for user-authored `action.json` manifests.
 - `project-template/` — Scaffold copied verbatim into new project workspaces.
 - `scripts/` — Release staging (`stage-release.sh`), Linux binary/npm packaging (`build-linux.sh`, `pack-npm.sh`), interactive installers (`install.sh`, `install-dev.sh`), and Biome plugins.
-- `test/cli.test.ts` — CLI and offline `agent-runtime.ts` test suite (`PI_STICK_TEST_BINARY` overrides the binary under test).
+- `test/cli.test.ts` — CLI and offline `runtime/main.ts` test suite (`PI_STICK_TEST_BINARY` overrides the binary under test).
 - `docs/plan.md` — High-level architecture and roadmap.
 
 ## Verification

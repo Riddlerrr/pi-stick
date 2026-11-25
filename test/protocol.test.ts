@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { type ActionJob, RUN, readJob, readReply, readRuntime } from "../runtime-tools/protocol.ts";
+import { type ActionJob, RUN, readJob, readReply, readRuntime } from "../runtime/protocol.ts";
 
 test("initial revision, probe and action fields are checked without echoing the job", () => {
 	const envelope = {
