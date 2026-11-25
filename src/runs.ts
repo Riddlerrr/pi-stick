@@ -25,7 +25,7 @@ import {
 } from "./platform.ts";
 import { needsSession, type Phase, pendingEffect, readState, saveState, tryReadState } from "./run-state.ts";
 import { exportAccessLease, parseModelSpec, resolveModels } from "./system.ts";
-import { CONTAINER_REPO_DIR, type RpcPolicy, TaskEnv } from "./tasks.ts";
+import { CONTAINER_REPO_DIR, composeKey, type RpcPolicy, TaskEnv } from "./tasks.ts";
 import { getProject, type ProjectInfo } from "./workspace.ts";
 
 export const VALID_ID = /^[0-9a-f]{32}$/;
@@ -698,7 +698,7 @@ export async function cleanup(days: number, dry: boolean) {
 		const lastUsed = eligibleLastUsed(dir, interrupted);
 		if (lastUsed === undefined) continue;
 		const project = state.project;
-		const key = `pi-stick-${project}-${id.slice(0, 12)}`;
+		const key = composeKey(project, id);
 		items.push({ id, key, lastUsed, interrupted });
 		console.log(
 			`${id} (${project ?? "unknown"}${interrupted ? ", interrupted" : ""}): workspace, scratch stack/volumes, reports and session`,

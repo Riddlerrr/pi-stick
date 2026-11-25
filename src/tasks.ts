@@ -125,6 +125,10 @@ export function validateCompose(folder: string, key: string): ComposeConfig {
 	return conf;
 }
 
+export function composeKey(project: string, id: string) {
+	return `pi-stick-${project}-${id.slice(0, 12)}`;
+}
+
 export class TaskEnv {
 	readonly id: string;
 	readonly project: ProjectInfo;
@@ -142,7 +146,7 @@ export class TaskEnv {
 	constructor(id: string, project: ProjectInfo, stateDir = STATE) {
 		this.id = id;
 		this.project = project;
-		this.key = `pi-stick-${project.name}-${id.slice(0, 12)}`;
+		this.key = composeKey(project.name, id);
 		this.dir = join(stateDir, "runs", id);
 		this.workspace = join(this.dir, "workspace");
 		this.repo = join(this.workspace, "repo");
