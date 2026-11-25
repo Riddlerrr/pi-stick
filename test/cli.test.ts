@@ -754,7 +754,7 @@ test("agent-runtime offline self-check exercises canonical paths, scratch, concu
 	const seenMethods: string[] = [];
 	let ready = false;
 	const id = runId();
-	child.stdin.write(`${JSON.stringify({ type: "run.v1", id, check: true, models: {}, credentials: {} })}\n`);
+	child.stdin.write(`${JSON.stringify({ type: "run.v2", id, check: true, models: {}, credentials: {} })}\n`);
 	for await (const line of lines) {
 		const msg = JSON.parse(line);
 		if (typeof msg.id === "string" && ["ps", "logs", "exec", "check_clean", "restart"].includes(msg.type)) {
@@ -1184,13 +1184,13 @@ if (has('git') && a[0] === 'run') {
   rl.on('line', line => {
     const m = JSON.parse(line);
     if (!job) {
-      if (m.type !== 'run.v1') process.exit(12);
+      if (m.type !== 'run.v2') process.exit(12);
       job = m;
       if (job.credentials['openai-codex'].token !== (job.continueRun ? 'fresh-token' : 'secret-fixture-token')) process.exit(3);
-      if (job.orchestrator.thinkingLevel !== 'high' || job.orchestrator.model.modelId !== 'gpt-6.2-sol' || !job.orchestrator.instructions.includes('PINNED PROJECT NOTES') || !job.orchestrator.instructions.includes('PINNED INSTRUCTIONS') || job.orchestrator.tools.includes('restart')) process.exit(10);
-      if (job.continueRun && !job.orchestrator.instructions.includes('files in /context: reports/updated-context.md, ticket.txt.')) process.exit(11);
+      if (job.orchestrator.thinkingLevel !== 'high' || job.orchestrator.model.modelId !== 'gpt-6.2-sol' || job.projectNotes !== 'PINNED PROJECT NOTES' || job.orchestrator.instructions !== 'PINNED INSTRUCTIONS' || job.orchestrator.tools.includes('restart')) process.exit(10);
+      if (job.continueRun && job.contextFiles.join(',') !== 'reports/updated-context.md,ticket.txt') process.exit(11);
       if (workspaceMount !== ${JSON.stringify(join(app, "state/runs"))} + '/' + job.id + '/workspace:/workspace') process.exit(15);
-      if (!job.orchestrator.instructions.includes('Repository workspace: /workspace/repo')) process.exit(12);
+      if (job.project !== 'demo' || !job.services.includes('runner')) process.exit(12);
       if (!fs.readFileSync(ctxMount + '/ticket.txt', 'utf8').includes('ISSUE-42')) process.exit(4);
       const session = a.find(x => x.endsWith(':/sessions')).slice(0, -':/sessions'.length);
       const db = session + '/' + job.id + '.sqlite';
@@ -1523,7 +1523,7 @@ else if (has('config')) {
   rl.on('line', line => {
     const m = JSON.parse(line);
     if (!job) {
-      if (m.type !== 'run.v1') process.exit(12);
+      if (m.type !== 'run.v2') process.exit(12);
       job = m;
       if (job.credentials['openai-codex'].token !== 'codex-token-fixture') process.exit(3);
       if (job.credentials['openai-codex'].authType !== 'oauth') process.exit(4);
@@ -1534,7 +1534,7 @@ else if (has('config')) {
         rl.close();
         return;
       }
-      if (job.agents.sec.thinkingLevel !== 'medium' || !job.orchestrator.instructions.includes('Security specialist')) process.exit(7);
+      if (job.agents.sec.thinkingLevel !== 'medium' || job.agents.sec.description !== 'Security specialist') process.exit(7);
       if (job.stageContext !== 'all' || job.stages.length !== 1 || job.stages[0].parallel.join(',') !== 'sec,perf') process.exit(8);
       serviceCases.forEach(([agent, method, params], i) => send({ id: String(10+i), agent, type: method, ...params }));
       send({ id: '7', type: 'exec', service: 'web', command: 'echo web', agent: 'sec' });
@@ -1640,7 +1640,11 @@ for (const end of ["duplicate", "EOF", "report", "hang"] as const) {
 		const result = executeAgentContainer(
 			task,
 			{
-				type: "run.v1",
+				type: "run.v2",
+				project: "demo",
+				projectNotes: null,
+				services: [],
+				contextFiles: [],
 				id: task.id,
 				models: {},
 				credentials: {},

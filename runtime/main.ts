@@ -22,6 +22,7 @@ import {
 	Harness,
 	hook,
 	ROOT_CONVERSATION_ID,
+	section,
 	type TaskId,
 	type ToolRegistration,
 	ToolTask,
@@ -432,6 +433,39 @@ const mainExtension = defineExtension({
 	tasks: [delegateBatch],
 	wraps: [wrapTool(readTool, withReadDiagnostics), wrapTool(editTool, withEditHandle)],
 	name: "pi-stick",
+	sections: job.check
+		? []
+		: [
+				section("workspace", async ({ conversationId, read }, context) => {
+					const { name, mode } = await getAgentCtx(conversationId, read, context);
+					return (
+						`You are agent '${name}' in project '${job.project}'. Repository: ${CONTAINER_REPO_DIR} (${mode}), shared with the runner. Your writable scratch directory is /scratch/${name}.` +
+						(mode === "read-only"
+							? " Do not modify repository files; put temporary work in your scratch directory."
+							: "")
+					);
+				}),
+				section("project-notes", () =>
+					job.projectNotes?.trim() ? `Project AGENTS.md:\n${job.projectNotes.trim()}` : undefined,
+				),
+				section("services", () =>
+					job.services.length ? `Compose services on your network: ${job.services.join(", ")}.` : undefined,
+				),
+				section("context-files", () =>
+					job.contextFiles.length ? `Read-only files in /context: ${job.contextFiles.join(", ")}.` : undefined,
+				),
+				section("subagents", ({ conversationId }) => {
+					if (conversationId !== ROOT_CONVERSATION_ID || !job.orchestrator?.tools.includes("delegate")) return;
+					return (
+						Object.values(job.agents)
+							.map(
+								(a) =>
+									`- ${a.name} (${a.mode}, ${a.model.provider}/${a.model.modelId})${a.description ? `: ${a.description}` : ""}`,
+							)
+							.join("\n") || undefined
+					);
+				}),
+			],
 	hooks: [
 		hook(GenerationTask, {
 			async afterResponse(message, api, context) {
@@ -624,7 +658,6 @@ async function runAction(): Promise<string> {
 			...(spec.maxTurns ? { maxTurns: spec.maxTurns } : {}),
 		},
 	});
-	if (job.continueRun) await root.configure({ instructions: spec.instructions }, ctx);
 	const sub = await root.submit(
 		continueRoot
 			? { type: "continue", requestId: rootRequestId }

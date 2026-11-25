@@ -7,7 +7,7 @@ import { createInterface } from "node:readline";
 import test, { type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { createRegistry, Harness, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { closed, runId } from "../src/platform.ts";
 
@@ -50,7 +50,11 @@ function stageFixture(
 	};
 	const id = runId();
 	const job = {
-		type: "run.v1",
+		type: "run.v2",
+		project: "demo",
+		projectNotes: "Pinned project notes",
+		services: ["runner"],
+		contextFiles: ["ticket.txt"],
 		id,
 		models: {},
 		requestId: id,
@@ -83,9 +87,9 @@ function stageFixture(
 		if (!corruptAfter) {
 			createInterface({ input: child.stdout }).on("line", (line) => {
 				const m = JSON.parse(line);
-				if (m.type === "ps")
+				if (m.type === "ps" || m.type === "check_clean")
 					child.stdin.write(
-						`${JSON.stringify({ type: "response", id: m.id, command: "ps", success: true, data: { text: m.agent } })}\n`,
+						`${JSON.stringify({ type: "response", id: m.id, command: m.type, success: true, data: { text: m.agent ?? "" } })}\n`,
 					);
 			});
 		}
@@ -114,9 +118,57 @@ function stageFixture(
 
 test("runtime rejects an unsupported revision before starting a session", async (t) => {
 	const { job, run } = stageFixture(t);
-	const result = await run({ ...job, type: "run.v2" });
+	const result = await run({ ...job, type: "run.v1" });
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /run revision/);
+});
+
+test("continue appends only changed prompt sections and keeps agent-specific context", async (t) => {
+	const { job, run, dir } = stageFixture(t);
+	job.stages = [{ name: "first", prompt: "first", parallel: ["sibling"] }];
+	job.orchestrator.tools = ["delegate"];
+	const followUp = { ...job, continueRun: true, prompt: "follow-up" };
+	for (const payload of [
+		job,
+		{ ...followUp, requestId: runId() },
+		{ ...followUp, requestId: runId(), contextFiles: ["ticket.txt", "new.md"] },
+	]) {
+		const result = await run(payload);
+		assert.equal(result.status, 0, result.stdout + result.stderr);
+	}
+	const storage = await openNodeSqliteStorage(join(dir, `${job.id}.sqlite`));
+	try {
+		const { items: conversations } = await storage.scanConversations({}, 10, undefined, BACKGROUND_CONTEXT);
+		assert.equal(conversations.length, 2);
+		for (const { id } of conversations) {
+			const { items } = await storage.scanEntries(
+				{ conversationId: id, order: "ascending" },
+				40,
+				undefined,
+				BACKGROUND_CONTEXT,
+			);
+			const patches = items
+				.flatMap((e) => e.model ?? [])
+				.flatMap((m) => (m.role === "system" && m.sections ? [m.sections] : []));
+			const [initial, ...updates] = patches;
+			assert.match(initial["context-files"]!, /ticket\.txt/);
+			assert.match(initial["project-notes"]!, /Pinned project notes/);
+			assert.match(initial.services!, /runner/);
+			if (id === ROOT_CONVERSATION_ID) {
+				assert.match(initial.workspace!, /\/scratch\/orchestrator/);
+				assert.match(initial.subagents!, /sibling/);
+				assert.match(initial.instructions!, /Respond briefly/);
+				assert.deepEqual(updates.map(Object.keys), [["context-files"]]);
+				assert.match(updates[0]["context-files"]!, /new\.md/);
+			} else {
+				assert.match(initial.workspace!, /read-only.*\/scratch\/sibling/);
+				assert.equal(initial.subagents, undefined);
+				assert.match(initial.instructions!, /Sibling instructions/);
+			}
+		}
+	} finally {
+		await storage.close(BACKGROUND_CONTEXT);
+	}
 });
 
 for (const pending of [true, false]) {

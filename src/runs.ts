@@ -12,8 +12,8 @@ import { removeOrphanAgent } from "./container.ts";
 import { command, compiled, devMode, isLocked, prompt, read, run, runId, STATE, touch, tryLock } from "./platform.ts";
 import { needsSession, type Phase, pendingEffect, readState, saveState, tryReadState } from "./run-state.ts";
 import { exportAccessLease, parseModelSpec, resolveModels } from "./system.ts";
-import { CONTAINER_REPO_DIR, composeKey, type RpcPolicy, TaskEnv, validateCompose } from "./tasks.ts";
-import { getProject, type ProjectInfo } from "./workspace.ts";
+import { composeKey, type RpcPolicy, TaskEnv, validateCompose } from "./tasks.ts";
+import { getProject } from "./workspace.ts";
 
 export const VALID_ID = /^[0-9a-f]{32}$/;
 
@@ -78,47 +78,6 @@ function listContextFiles(root: string): string[] {
 	}
 	if (fs.lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) visit("");
 	return files.sort();
-}
-
-function composeInstructions(
-	agent: ResolvedAgentSpec,
-	project: ProjectInfo,
-	projectNotes: string | null,
-	services: string[],
-	contextFiles: string[],
-	availableSubagents?: Record<string, ResolvedAgentSpec>,
-): string {
-	const parts: string[] = [
-		`You are agent '${agent.name}' running inside an isolated Docker container for project '${project.name}'.`,
-		`Repository workspace: ${CONTAINER_REPO_DIR} in the agent container and runner (mode: ${agent.mode}).`,
-		`Your writable scratch directory: /scratch/${agent.name} (shared with project runner at /scratch/${agent.name}).`,
-	];
-	if (agent.mode === "read-only") {
-		parts.push(
-			`Read-only workspace policy: do not modify repository files in ${CONTAINER_REPO_DIR}. Put temporary scripts, tests, or experiments in your scratch directory.`,
-		);
-	}
-	if (services.length) {
-		parts.push(
-			`Running project Compose services on your Docker network: ${services.join(", ")}. You can reach them directly over the network or use bash/logs/ps/restart as permitted.`,
-		);
-	}
-	if (contextFiles.length) {
-		parts.push(`Read-only prepared context files in /context: ${contextFiles.join(", ")}.`);
-	}
-	if (availableSubagents && Object.keys(availableSubagents).length && agent.tools.includes("delegate")) {
-		const lines = Object.values(availableSubagents).map(
-			(a) => `- ${a.name} (mode: ${a.mode}, model: ${a.model})${a.description ? `: ${a.description}` : ""}`,
-		);
-		parts.push(
-			`Configured subagents you can invoke in parallel via the 'delegate' tool:\n${lines.join("\n")}\nNote: parallel batches may include multiple read-only subagents, while read-write subagents must run one at a time.`,
-		);
-	}
-	if (projectNotes?.trim()) parts.push(`Project notes (AGENTS.md):\n${projectNotes.trim()}`);
-	if (agent.instructions.trim()) {
-		parts.push(`Action instructions:\n${agent.instructions.trim()}`);
-	}
-	return parts.join("\n\n");
 }
 
 function buildInitialPrompt(action: LoadedAction, userPrompt: string, inputs: Record<string, string>): string {
@@ -355,10 +314,8 @@ export async function worker(id: string, freshContinue: boolean): Promise<number
 			}
 			advance("setup");
 		}
-		let services: string[] = [];
 		if (cfg.phase !== "stop") {
 			if (cfg.phase === "setup" || !fs.existsSync(task.composeFile)) task.materializeCompose(project.folder);
-			services = task.services();
 			stackStartAttempted = true;
 			if (cfg.phase === "setup" || cfg.phase === "setting-up") task.up();
 			else {
@@ -380,7 +337,6 @@ export async function worker(id: string, freshContinue: boolean): Promise<number
 		const outputsDir = join(dir, "outputs");
 		const patchFile = join(dir, "changes.patch");
 		if (cfg.phase === "agent" || cfg.phase === "agent-started") {
-			const contextFiles = listContextFiles(task.context);
 			const modelSpecs = Object.values(action.agents).map((a) => a.model);
 			if (action.orchestrator) modelSpecs.unshift(action.orchestrator.model);
 			const auth = await resolveModels(modelSpecs);
@@ -394,14 +350,7 @@ export async function worker(id: string, freshContinue: boolean): Promise<number
 					name: spec.name,
 					description: spec.description,
 					model: { provider, modelId },
-					instructions: composeInstructions(
-						spec,
-						project,
-						action.projectNotes,
-						services,
-						contextFiles,
-						spec === action.orchestrator ? action.agents : undefined,
-					),
+					instructions: spec.instructions,
 					mode: spec.mode,
 					tools: spec.tools,
 					thinkingLevel: spec.thinkingLevel,
@@ -414,6 +363,10 @@ export async function worker(id: string, freshContinue: boolean): Promise<number
 				id,
 				models: auth.models,
 				credentials: auth.credentials,
+				project: project.name,
+				projectNotes: action.projectNotes,
+				services: task.services(),
+				contextFiles: listContextFiles(task.context),
 				orchestrator: action.orchestrator && payload(action.orchestrator),
 				agents: Object.fromEntries(Object.entries(action.agents).map(([name, spec]) => [name, payload(spec)])),
 				stageContext: action.stageContext,
