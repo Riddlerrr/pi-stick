@@ -48,7 +48,8 @@ const dataRoot = devMode
 	? (explicitDevHome ?? join(homedir(), "pi-stick-dev"))
 	: (explicitHome ?? join(homedir(), "pi-stick"));
 
-export function canonicalPath(path: string): string {
+export function canonicalPath(input: string): string {
+	const path = resolve(input);
 	if (lstatSync(path, { throwIfNoEntry: false })) return realpathSync(path);
 	return join(canonicalPath(dirname(path)), basename(path));
 }

@@ -239,7 +239,7 @@ test("first launch through a symlinked home keeps projects outside run state", (
 	const home = join(tmp, "home-link");
 	fs.symlinkSync(tmp, home);
 	env.HOME = home;
-	env.PI_STICK_HOME = join(home, "first-install");
+	env.PI_STICK_HOME = `${tmp}/missing/../home-link/first-install`;
 	const conf = join(tmp, ".config/pi-stick/settings.json");
 	fs.mkdirSync(dirname(conf), { recursive: true });
 	writeJson(conf, { projects_dir: "~/first-install/state/runs" });

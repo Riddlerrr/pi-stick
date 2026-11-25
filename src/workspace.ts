@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { ASSETS, canonicalPath, json, prompt, ROOT, read, run, STATE, userSettings, writeJson } from "./platform.ts";
 
 export const NAME = "[a-z0-9][a-z0-9-]{0,62}";
@@ -18,7 +18,7 @@ export function projectsDir() {
 	const path = "projects_dir" in config ? config.projects_dir : join(ROOT, "projects");
 	if (typeof path !== "string" || !(isAbsolute(path) || path.startsWith("~/")))
 		throw Error("projects_dir must be an absolute path (or start with ~/)");
-	const dir = canonicalPath(resolve(path.startsWith("~/") ? join(homedir(), path.slice(2)) : path));
+	const dir = canonicalPath(path.startsWith("~/") ? join(homedir(), path.slice(2)) : path);
 	if (
 		within(ROOT, dir) ||
 		within(ASSETS, dir) ||
