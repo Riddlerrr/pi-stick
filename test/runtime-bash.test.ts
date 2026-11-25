@@ -34,6 +34,45 @@ test("bash routes service, timeout and cancellation to the broker and streams sp
 	assert.deepEqual(result.structuredOutput, { output: "до", exitCode: 7, truncated: false });
 });
 
+for (const brokerFailed of [false, true]) {
+	test(`bash spills raw bytes when a final UTF-8 replacement crosses the limit (brokerFailed=${brokerFailed})`, async (t) => {
+		const dir = await mkdtemp(join(tmpdir(), "pi-stick-bash-"));
+		t.after(() => rm(dir, { recursive: true, force: true }));
+		const bytes = Buffer.alloc(50 * 1024, "a");
+		bytes[bytes.length - 1] = 0xc2;
+		const tool = createBashTool(
+			async (_args, _id, emit) => {
+				emit(bytes);
+				if (brokerFailed) throw Error("broker disconnected");
+				return { text: "", exitCode: 0 };
+			},
+			() => dir,
+		);
+		let text = "";
+		const diagnostics: string[] = [];
+		const api = {
+			conversationId: ROOT_CONVERSATION_ID,
+			output(s: string) {
+				text += s;
+			},
+			retainedOutput: () => ({ text: text.slice(-1), truncated: Buffer.byteLength(text) > 50 * 1024 }),
+			diagnostic(d: { message: string }) {
+				diagnostics.push(d.message);
+			},
+		} as Parameters<typeof tool.execute>[1];
+		const call = tool.execute({ command: "example" }, api, BACKGROUND_CONTEXT);
+		const result = brokerFailed ? await assert.rejects(call, /broker disconnected/) : await call;
+		const [name] = await readdir(dir);
+		assert.ok(name, "expected a scratch log");
+		const path = join(dir, name);
+		assert.ok(diagnostics.some((message) => message.includes(path)));
+		if (result)
+			assert.deepEqual(result.structuredOutput, { output: "�", truncated: true, exitCode: 0, fullOutputPath: path });
+		assert.ok(text.endsWith("�"));
+		assert.deepEqual(await readFile(path), bytes);
+	});
+}
+
 for (const [name, chunks, capped] of [
 	["line spill", [Buffer.from("row\n".repeat(2000)), Buffer.from("last")], false],
 	["32 MiB spill", Array<Buffer>(32).fill(Buffer.alloc(1024 * 1024, "a")), false],

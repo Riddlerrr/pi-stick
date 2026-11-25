@@ -44,6 +44,23 @@ export function createBashTool(run: RunCommand, scratch: (id: ConversationId) =>
 				const emit = (s: string) => {
 					if (s) options?.onOutput?.(s, ctx, { stream: "stdout" });
 				};
+				const startSpill = () => {
+					path = join(scratch(api.conversationId), `pi-bash-${randomUUID()}.log`);
+					fd = fs.openSync(path, "wx", 0o600);
+					fs.writeFileSync(fd, Buffer.concat(pending));
+					pending.length = 0;
+					return fd;
+				};
+				const flush = () => {
+					const tail = decoder.decode();
+					if (!tail) return;
+					emit(tail);
+					// A final replacement character can exceed the decoded limit while all raw bytes still fit.
+					if (pending.length && fd === undefined && api.retainedOutput().truncated) {
+						startSpill();
+						fullOutputPath = path;
+					}
+				};
 				try {
 					const result = await run(
 						{ command, service, timeout: options?.timeout },
@@ -66,10 +83,7 @@ export function createBashTool(run: RunCommand, scratch: (id: ConversationId) =>
 									pending.push(chunk);
 									return;
 								}
-								path = join(scratch(api.conversationId), `pi-bash-${randomUUID()}.log`);
-								fd = fs.openSync(path, "wx", 0o600);
-								fs.writeFileSync(fd, Buffer.concat(pending));
-								pending.length = 0;
+								fd = startSpill();
 							}
 							if (offset < SPILL_BYTES) fs.writeFileSync(fd, chunk.subarray(0, SPILL_BYTES - offset));
 							if (size <= SPILL_BYTES) fullOutputPath = path;
@@ -83,11 +97,18 @@ export function createBashTool(run: RunCommand, scratch: (id: ConversationId) =>
 						ctx.abortSignal,
 					);
 					if (result.error || result.exitCode === undefined) throw Error(result.text || "Missing bash exit code");
+					flush();
 					return {
 						ok: true,
 						value: { exitCode: result.exitCode, spillPath: fullOutputPath },
 					};
 				} catch (cause) {
+					try {
+						flush();
+					} catch {
+						// A failed final flush must not replace the broker's error or advertise an incomplete log.
+						fullOutputPath = undefined;
+					}
 					const error = new ExecutionError(
 						ctx.abortSignal?.aborted ? "aborted" : "unknown",
 						cause instanceof Error ? cause.message : String(cause),
@@ -96,7 +117,6 @@ export function createBashTool(run: RunCommand, scratch: (id: ConversationId) =>
 					return { ok: false, error };
 				} finally {
 					if (fd !== undefined) fs.closeSync(fd);
-					emit(decoder.decode());
 				}
 			};
 			return bash.execute(input, { ...api, env }, context);
