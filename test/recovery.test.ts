@@ -42,7 +42,7 @@ function stageFixture(
 		};`,
 	);
 	const agent = {
-		model: { provider: "groq", modelId: "llama-3.1-8b-instant" },
+		model: { provider: "groq", modelId: "openai/gpt-oss-20b" },
 		instructions: "Respond briefly.",
 		mode: "read-write",
 		tools: [] as string[],
@@ -352,7 +352,8 @@ test("a final-stage report retries an empty answer, then restores without synthe
 	const failed = await run(payload);
 	assert.equal(failed.status, 1);
 	assert.match(failed.stdout, /returned an empty report/);
-	const model = "groq/llama-3.1-8b-instant";
+	const { provider, modelId } = job.agents.worker.model;
+	const model = `${provider}/${modelId}`;
 	const partial = JSON.parse(failed.stdout.trim().split("\n").at(-1)!).data;
 	assert.equal(partial.report, undefined);
 	assert.equal(partial.usage.models[model].totalTokens, 24);

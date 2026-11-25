@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Updated `pi-durable` and its companion Pi runtime packages to `1.6.1`. Rebuild the agent image with `pistick containers build` to use the upgrade.
+
 - The Linux installer now takes the CLI and runtime from the same release archive. Upgrades no longer mix release files with the local checkout or allow per-file selection.
 
 - Run recovery now uses one versioned `run.json` checkpoint. A follow-up is accepted atomically, and a failed final Compose stop can be retried without restarting the stack. Start a new run for tasks created with the previous format; their files are not migrated or deleted.
