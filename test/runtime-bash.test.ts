@@ -1,102 +1,82 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { createBashTool } from "../runtime-tools/bash.ts";
 
-for (const [label, text, spill, truncated] of [
-	["line limit", "é\n".repeat(2000), false, false],
-	["extra line", "é\n".repeat(2000) + "a", true, false],
-	["byte limit", "é".repeat(25600), false, false],
-	["extra byte", "é".repeat(25600) + "a", true, false],
-	["codemode limit", "é".repeat(600000), true, true],
+test("bash routes service, timeout and cancellation to the broker and streams split UTF-8", async () => {
+	const signal = new AbortController().signal;
+	const args = { command: "example", service: "web", timeout: 3 };
+	const tool = createBashTool(
+		async (request, id, chunk, cancel) => {
+			assert.deepEqual(request, args);
+			assert.equal(id, ROOT_CONVERSATION_ID);
+			assert.equal(cancel, signal);
+			const bytes = Buffer.from("до");
+			chunk(bytes.subarray(0, 1));
+			chunk(bytes.subarray(1));
+			return { text: "", exitCode: 7 };
+		},
+		() => assert.fail("short output should not spill"),
+	);
+	let text = "";
+	const api = {
+		conversationId: ROOT_CONVERSATION_ID,
+		output(s: string) {
+			text += s;
+		},
+		retainedOutput: () => ({ text, truncated: false }),
+	} as Parameters<typeof tool.execute>[1];
+	const result = await tool.execute(args, api, withAbortSignal(signal, BACKGROUND_CONTEXT));
+	assert.deepEqual(result.structuredOutput, { output: "до", exitCode: 7, truncated: false });
+});
+
+for (const [name, chunks, capped] of [
+	["line spill", [Buffer.from("row\n".repeat(2000)), Buffer.from("last")], false],
+	["32 MiB spill", Array<Buffer>(32).fill(Buffer.alloc(1024 * 1024, "a")), false],
+	["overflow", [...Array<Buffer>(32).fill(Buffer.alloc(1024 * 1024, "a")), Buffer.from("last")], true],
 ] as const) {
-	test(`bash streams UTF-8 and preserves full output: ${label}`, async (t) => {
+	test(`bash scratch log: ${name}`, async (t) => {
 		const dir = await mkdtemp(join(tmpdir(), "pi-stick-bash-"));
 		t.after(() => rm(dir, { recursive: true, force: true }));
 		const tool = createBashTool(
-			async (_args, _id, chunk) => {
-				const bytes = Buffer.from(text);
-				chunk(bytes.subarray(0, 1));
-				chunk(bytes.subarray(1));
-				return { text: "", exitCode: 7 };
+			async (_args, _id, emit) => {
+				for (const chunk of chunks) emit(chunk);
+				return { text: "", exitCode: 0 };
 			},
-			() => dir,
+			(id) => {
+				assert.equal(id, ROOT_CONVERSATION_ID);
+				return dir;
+			},
 		);
-		let streamed = "";
-		const diagnostics: string[] = [];
+		const warnings: string[] = [];
+		let tail = "";
 		const api = {
 			conversationId: ROOT_CONVERSATION_ID,
 			output(s: string) {
-				streamed += s;
+				tail = s.slice(-4);
 			},
-			retainedOutput: () => ({ text: "", truncated: false }),
-			diagnostic(d: { message: string }) {
-				diagnostics.push(d.message);
-			},
-		} as Parameters<typeof tool.execute>[1];
-		const res = await tool.execute({ command: "example" }, api, BACKGROUND_CONTEXT);
-		assert.equal(streamed, text);
-		assert.ok("isError" in res && res.isError);
-		const out = res.structuredOutput as {
-			output: string;
-			truncated: boolean;
-			full_output_path?: string;
-			exit_code: number;
-		};
-		assert.equal(out.exit_code, 7);
-		assert.equal(out.truncated, truncated);
-		if (truncated) assert.match(out.output, /bytes omitted/);
-		else assert.equal(out.output, text);
-		const files = await readdir(dir);
-		assert.equal(files.length, Number(spill));
-		if (spill) {
-			const path = join(dir, files[0]);
-			assert.equal(await readFile(path, "utf8"), text);
-			assert.ok(diagnostics.includes(`Output log (up to 32 MiB): ${path}`));
-			if (truncated) assert.equal(out.full_output_path, path);
-		}
-	});
-}
-
-for (const extra of [0, 1, 600_000]) {
-	test(`bash caps its spill at 32 MiB with ${extra} excess bytes`, async (t) => {
-		const dir = await mkdtemp(join(tmpdir(), "pi-stick-bash-"));
-		t.after(() => rm(dir, { recursive: true, force: true }));
-		const block = Buffer.alloc(1024 * 1024, "a");
-		const tool = createBashTool(
-			async (_args, _id, chunk) => {
-				for (let i = 0; i < 31; i++) chunk(block);
-				chunk(block.subarray(1));
-				chunk(Buffer.from(extra ? "bc" : "b"));
-				if (extra > 1) chunk(Buffer.alloc(extra - 1, "d"));
-				return { text: "", exitCode: 0 };
-			},
-			() => dir,
-		);
-		const warnings: string[] = [];
-		const api = {
-			conversationId: ROOT_CONVERSATION_ID,
-			output(_text: string) {},
-			retainedOutput: () => ({ text: "", truncated: false }),
+			retainedOutput: () => ({ text: tail, truncated: true }),
 			diagnostic(d: { severity: string; message: string }) {
 				if (d.severity === "warn") warnings.push(d.message);
 			},
 		} as Parameters<typeof tool.execute>[1];
-		const res = await tool.execute({ command: "example" }, api, BACKGROUND_CONTEXT);
-		const out = res.structuredOutput as { output: string; full_output_path?: string; exit_code: number };
-		const path = join(dir, (await readdir(dir))[0]);
-		const saved = await readFile(path);
-		assert.equal(saved.length, 32 * block.length);
-		assert.equal(saved.at(-1), 98); // 'b', the final byte before the cap
-		assert.equal(out.exit_code, 0);
-		assert.equal(out.full_output_path, extra ? undefined : path);
-		assert.equal(warnings.length, Number(extra > 0));
-		const tail =
-			extra > 1 ? "d".repeat(block.length / 2) : `${"a".repeat(block.length / 2 - 1 - extra)}b${extra ? "c" : ""}`;
-		assert.ok(out.output.endsWith(tail));
+		const result = await tool.execute({ command: "example" }, api, BACKGROUND_CONTEXT);
+		const files = await readdir(dir);
+		assert.equal(files.length, 1);
+		const path = join(dir, files[0]);
+		assert.deepEqual(result.structuredOutput, {
+			output: tail,
+			exitCode: 0,
+			truncated: true,
+			...(capped ? {} : { fullOutputPath: path }),
+		});
+		if (name === "line spill") assert.deepEqual(await readFile(path), Buffer.concat(chunks));
+		else assert.equal((await stat(path)).size, 32 * 1024 * 1024);
+		if (capped) assert.equal(tail, "last");
+		assert.deepEqual(warnings, capped ? [`Log limited to the first 32 MiB: ${path}`] : []);
 	});
 }

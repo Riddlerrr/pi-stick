@@ -2,152 +2,104 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { type ConversationId, defineTool } from "@earendil-works/pi-durable";
+import { ExecutionError } from "@earendil-works/pi-durable/env";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { createBashTool as createDurableBash } from "@earendil-works/pi-durable/tools";
+import type { RpcCall, RpcData } from "./protocol.ts";
 
-const MAX_BYTES = 50 * 1024;
-const MAX_LINES = 2000;
-const PROGRAM_BYTES = 1024 * 1024;
+const bash = createDurableBash();
 const SPILL_BYTES = 32 * 1024 * 1024;
 
-import type { RpcCall } from "./protocol.ts";
-
-type BashArgs = Omit<Extract<RpcCall, { type: "exec" }>, "type">;
+type BashArgs = Omit<Extract<RpcCall, { type: "exec" }>, "type" | "agent">;
 type RunCommand = (
 	args: BashArgs,
 	id: ConversationId,
 	onChunk: (chunk: Buffer) => void,
 	signal?: AbortSignal,
-) => Promise<{ text: string; error?: boolean; exitCode?: number }>;
+) => Promise<RpcData>;
 
 export function createBashTool(run: RunCommand, scratch: (id: ConversationId) => string) {
 	return defineTool({
-		name: "bash",
-		description:
-			"Execute a Bash command in runner (/workspace/repo) or in the working directory of an allowed Compose service. Returns combined stdout and stderr. Output is truncated to the last 2000 lines or 50 KiB; when truncated, the first 32 MiB are saved to a temporary file.",
+		...bash,
+		description: `${bash.description} Runs in runner (/workspace/repo) or an allowed Compose service's working directory. Logs in agent scratch are limited to the first 32 MiB.`,
 		parameters: {
-			type: "object",
+			...bash.parameters,
 			properties: {
-				command: { type: "string" },
+				...(bash.parameters.properties as object),
 				service: { type: "string", description: "Target Compose service (default: runner)." },
-				timeout: { type: "number", description: "Timeout in seconds (optional, no default timeout)." },
 			},
-			required: ["command"],
-			additionalProperties: false,
 		},
-		callers: ["model", "tools"],
-		outputLimits: { retain: "tail", maxBytes: MAX_BYTES, maxLines: MAX_LINES },
-		structuredOutputSchema: {
-			type: "object",
-			properties: {
-				output: { type: "string" },
-				truncated: { type: "boolean" },
-				full_output_path: { type: "string" },
-				exit_code: { type: "number" },
-				wall_time_seconds: { type: "number" },
-			},
-			required: ["output", "truncated", "exit_code", "wall_time_seconds"],
-		},
-		execute: async (args, api, ctx) => {
-			const start = performance.now();
-			const decoder = new TextDecoder();
-			const pending: Buffer[] = [];
-			let size = 0;
-			let lines = 0;
-			let fd: number | undefined;
-			let path: string | undefined;
-			let overflowTail: Buffer | undefined;
-			let tailStart = 0;
-			const read = (offset: number, length: number) => {
-				const buf = Buffer.alloc(length);
-				let done = 0;
-				while (done < length && fd !== undefined) {
-					const n = fs.readSync(fd, buf, done, length - done, offset + done);
-					if (!n) throw Error("Incomplete bash log");
-					done += n;
-				}
-				return buf;
-			};
-			try {
-				const result = await run(
-					args as BashArgs,
-					api.conversationId,
-					(chunk) => {
-						size += chunk.length;
-						api.output(decoder.decode(chunk, { stream: true }));
-						if (fd === undefined) {
-							for (const byte of chunk) if (byte === 10) lines++;
-							if (
-								size <= MAX_BYTES &&
-								lines + Number(chunk.at(-1) !== 10) <= MAX_LINES &&
-								!api.retainedOutput().truncated
-							) {
-								pending.push(chunk);
-								return;
+		async execute(input, api, context) {
+			const { service } = input as BashArgs;
+			const env = new NodeExecutionEnv({ cwd: "/workspace/repo" });
+			env.exec = async (command, options, ctx) => {
+				if (typeof command !== "string") throw Error("Compose bash requires a command string");
+				const decoder = new TextDecoder();
+				const pending: Buffer[] = [];
+				let size = 0;
+				let lines = 0;
+				let fd: number | undefined;
+				let path: string | undefined;
+				let fullOutputPath: string | undefined;
+				const emit = (s: string) => {
+					if (s) options?.onOutput?.(s, ctx, { stream: "stdout" });
+				};
+				try {
+					const result = await run(
+						{ command, service, timeout: options?.timeout },
+						api.conversationId,
+						(chunk) => {
+							if (!chunk.length) return;
+							fullOutputPath = undefined;
+							emit(decoder.decode(chunk, { stream: true }));
+							const spill = options?.spill;
+							if (!spill) return;
+							const offset = size;
+							size += chunk.length;
+							if (fd === undefined) {
+								for (const byte of chunk) if (byte === 10) lines++;
+								if (
+									size <= spill.afterBytes &&
+									lines + Number(chunk.at(-1) !== 10) <= spill.afterLines &&
+									!api.retainedOutput().truncated
+								) {
+									pending.push(chunk);
+									return;
+								}
+								path = join(scratch(api.conversationId), `pi-bash-${randomUUID()}.log`);
+								fd = fs.openSync(path, "wx", 0o600);
+								fs.writeFileSync(fd, Buffer.concat(pending));
+								pending.length = 0;
 							}
-							path = join(scratch(api.conversationId), `pi-bash-${randomUUID()}.log`);
-							fd = fs.openSync(path, "wx+", 0o600);
-							fs.writeFileSync(fd, Buffer.concat(pending));
-							pending.length = 0;
-							api.diagnostic({
-								severity: "info",
-								code: "output_file",
-								message: `Output log (up to 32 MiB): ${path}`,
-							});
-						}
-						const writable = Math.min(chunk.length, Math.max(0, SPILL_BYTES - (size - chunk.length)));
-						if (writable) fs.writeFileSync(fd, chunk.subarray(0, writable));
-						if (writable < chunk.length) {
-							if (!overflowTail) {
+							if (offset < SPILL_BYTES) fs.writeFileSync(fd, chunk.subarray(0, SPILL_BYTES - offset));
+							if (size <= SPILL_BYTES) fullOutputPath = path;
+							else if (offset <= SPILL_BYTES)
 								api.diagnostic({
 									severity: "warn",
 									code: "spill_limit",
 									message: `Log limited to the first 32 MiB: ${path}`,
 								});
-								overflowTail = read(SPILL_BYTES - PROGRAM_BYTES / 2, PROGRAM_BYTES / 2);
-							}
-							// The ring retains the real tail after the file stops growing.
-							const extra = chunk.subarray(Math.max(writable, chunk.length - overflowTail.length));
-							const n = extra.copy(overflowTail, tailStart);
-							extra.copy(overflowTail, 0, n);
-							tailStart = (tailStart + extra.length) % overflowTail.length;
-						}
-					},
-					ctx.abortSignal,
-				);
-				api.output(decoder.decode());
-				if (result.error || result.exitCode === undefined) throw Error(result.text || "Missing bash exit code");
-
-				let output: string;
-				const truncated = size > PROGRAM_BYTES;
-				if (!truncated) output = (fd === undefined ? Buffer.concat(pending) : read(0, size)).toString("utf8");
-				else {
-					const half = PROGRAM_BYTES / 2;
-					const tail = overflowTail
-						? Buffer.concat([overflowTail.subarray(tailStart), overflowTail.subarray(0, tailStart)])
-						: read(size - half, half);
-					let i = 0;
-					while ((tail[i] & 0xc0) === 0x80) i++;
-					output = `${new TextDecoder().decode(read(0, half), { stream: true })}\n\n[... ${size - PROGRAM_BYTES} bytes omitted ...]\n\n${tail.subarray(i).toString("utf8")}`;
+						},
+						ctx.abortSignal,
+					);
+					if (result.error || result.exitCode === undefined) throw Error(result.text || "Missing bash exit code");
+					return {
+						ok: true,
+						value: { exitCode: result.exitCode, spillPath: fullOutputPath },
+					};
+				} catch (cause) {
+					const error = new ExecutionError(
+						ctx.abortSignal?.aborted ? "aborted" : "unknown",
+						cause instanceof Error ? cause.message : String(cause),
+					);
+					error.spillPath = fullOutputPath;
+					return { ok: false, error };
+				} finally {
+					if (fd !== undefined) fs.closeSync(fd);
+					emit(decoder.decode());
 				}
-				if (!size) api.output("(no output)");
-				if (result.exitCode !== 0)
-					api.diagnostic({
-						severity: "error",
-						code: "exit_code",
-						message: `Command exited with code ${result.exitCode}`,
-					});
-				return {
-					structuredOutput: {
-						output,
-						truncated,
-						...(truncated && path && !overflowTail ? { full_output_path: path } : {}),
-						exit_code: result.exitCode,
-						wall_time_seconds: Math.round((performance.now() - start) / 100) / 10,
-					},
-					isError: result.exitCode !== 0,
-				};
-			} finally {
-				if (fd !== undefined) fs.closeSync(fd);
-			}
+			};
+			return bash.execute(input, { ...api, env }, context);
 		},
 	});
 }
