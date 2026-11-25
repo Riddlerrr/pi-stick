@@ -397,11 +397,7 @@ export function createAction(name: string, project?: ProjectInfo): string {
 		$schema: schemaRel,
 		name,
 		description: "Custom pi-stick action",
-		orchestrator: {
-			instructions: "instructions.md",
-			mode: "read-write",
-			tools: DEFAULT_RW_TOOLS,
-		},
+		orchestrator: { instructions: "instructions.md" },
 	};
 	writeJson(join(dest, "action.json"), manifest);
 	fs.writeFileSync(

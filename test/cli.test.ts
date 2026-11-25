@@ -96,16 +96,19 @@ function fixture(t: TestContext, copyRelease = false) {
 	};
 }
 
-test("native search tools are opt-in per role, including scaffolded actions", (t) => {
+test("scaffolded actions inherit delegate with subagents and keep search tools opt-in", (t) => {
 	const { app, ok } = fixture(t);
 	ok(["create", "action", "search"]);
 	const dir = join(app, "actions/search");
 	const load = () => loadActionFromDir("search", dir, "global", false);
 	const scaffold = load();
-	writeJson(join(dir, "action.json"), {
-		orchestrator: {},
-		agents: { reader: {}, grepper: { tools: ["grep"] }, finder: { tools: ["find"] } },
-	});
+	assert.equal(scaffold.orchestrator!.mode, "read-write");
+	assert.ok(!scaffold.orchestrator!.tools.includes("delegate"));
+	const path = join(dir, "action.json");
+	const manifest = JSON.parse(read(path));
+	assert.equal(manifest.orchestrator.mode, undefined);
+	manifest.agents = { reader: {}, grepper: { tools: ["grep"] }, finder: { tools: ["find"] } };
+	writeJson(path, manifest);
 	const { orchestrator, agents } = load();
 	for (const role of [scaffold.orchestrator!, orchestrator!, agents.reader]) {
 		assert.ok(role.tools.includes("bash"));
@@ -113,6 +116,10 @@ test("native search tools are opt-in per role, including scaffolded actions", (t
 	}
 	assert.deepEqual(agents.grepper.tools, ["grep"]);
 	assert.deepEqual(agents.finder.tools, ["find"]);
+	assert.ok(orchestrator!.tools.includes("delegate"));
+	manifest.orchestrator.tools = ["read"];
+	writeJson(path, manifest);
+	assert.deepEqual(load().orchestrator!.tools, ["read"]);
 });
 
 test("version reports the CLI package version without creating state", (t) => {
