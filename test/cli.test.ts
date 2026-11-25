@@ -965,7 +965,8 @@ test("resume may initialize a session only before the first agent launch attempt
 });
 
 test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async (t) => {
-	const { app, tmp, source, ok, fail, stub, invoke } = fixture(t);
+	const { app, tmp, source, ok, fail, stub, invoke, env } = fixture(t);
+	Object.assign(env, { PI_STICK_OUTPUTS_DIR: "stale-parent-value" });
 	ok(["create", "project", "demo", "--repo", source]);
 	ok(["create", "action", "fix"]);
 
@@ -986,7 +987,7 @@ test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async
 	);
 	fs.writeFileSync(
 		afterScript,
-		`#!/usr/bin/env bash\nset -euo pipefail\n[[ "$PI_STICK_ACTION_DIR" == ${JSON.stringify(actionDir)} && "$PI_STICK_HOOK_SOURCE_DIR" == ${JSON.stringify(hooksDir)} && "$0" == "$PI_STICK_RUN_DIR/action-snapshot/after" && "$PWD" == "$PI_STICK_REPO" ]]\n[[ ! -e ${JSON.stringify(failHook)} ]]\nprintf '{"code":%s,"report":"%s","patch":"%s"}\n' "$PI_STICK_EXIT_CODE" "$PI_STICK_REPORT_FILE" "\${PI_STICK_PATCH_FILE:-}" > ${JSON.stringify(afterMarker)}\n`,
+		`#!/usr/bin/env bash\nset -euo pipefail\n[[ "$PI_STICK_ACTION_DIR" == ${JSON.stringify(actionDir)} && "$PI_STICK_HOOK_SOURCE_DIR" == ${JSON.stringify(hooksDir)} && "$0" == "$PI_STICK_RUN_DIR/action-snapshot/after" && "$PWD" == "$PI_STICK_REPO" ]]\n[[ ! -e ${JSON.stringify(failHook)} ]]\nif [[ -d "$PI_STICK_RUN_DIR/outputs" ]]; then [[ "$PI_STICK_OUTPUTS_DIR" == "$PI_STICK_RUN_DIR/outputs" ]]; else [[ ! -v PI_STICK_OUTPUTS_DIR ]]; fi\nprintf '{"code":%s,"report":"%s","patch":"%s"}\n' "$PI_STICK_EXIT_CODE" "$PI_STICK_REPORT_FILE" "\${PI_STICK_PATCH_FILE:-}" > ${JSON.stringify(afterMarker)}\n`,
 		{ mode: 0o700 },
 	);
 
@@ -1104,13 +1105,14 @@ if (has('git') && a[0] === 'run') {
       const db = session + '/' + job.id + '.sqlite';
       if (job.continueRun) {
         if (fs.readFileSync(db, 'utf8') !== job.id) process.exit(6);
+        if (job.prompt === 'No subagents') { send({type:'response', command:'run', id:job.id, success:true, data:{report:'No subagents'}}); rl.close(); return; }
         if (!fs.existsSync(repoMount + '/followup-started')) { fs.writeFileSync(repoMount + '/followup-started', job.requestId); send({type:'response',command:'run',id:job.id,success:false,error:"Stage 'review' failed: worker",data:{usage:usage(15)}}); rl.close(); process.exitCode=7; return; }
         if (fs.readFileSync(repoMount + '/followup-started', 'utf8') !== job.requestId) process.exit(8);
         if (fs.existsSync(repoMount + '/no-response')) process.exit(7);
         if (fs.existsSync(repoMount + '/invalid-usage')) { send({type:'response',command:'run',id:job.id,success:false,error:'failed',data:{usage:{models:{bad:'not counters'},tools:{}}}}); rl.close(); return; }
         fs.appendFileSync(repoMount + '/example.txt', 'followup\\n');
         send({ type: 'progress', message: 'Applying follow-up', agent: 'orchestrator' });
-        send({ type: 'response', command: 'run', id: job.id, success: true, data: { report: 'Follow-up complete', usage: usage(20) } });
+        send({ type: 'response', command: 'run', id: job.id, success: true, data: { report: 'Follow-up complete', outputs: {b:'updated'}, usage: usage(20) } });
         rl.close();
         return;
       }
@@ -1142,7 +1144,7 @@ if (has('git') && a[0] === 'run') {
     else process.exit(5);
     if (got === 63) {
       send({ type: 'progress', message: 'All checks passed', agent: 'orchestrator' });
-      send({ type: 'response', command: 'run', id: job.id, success: true, data: { report: 'Initial report', usage: usage(10) } });
+      send({ type: 'response', command: 'run', id: job.id, success: true, data: { report: 'Initial report', outputs: {a:'first', b:'second'}, usage: usage(10) } });
       rl.close();
     }
   });
@@ -1227,6 +1229,8 @@ if (has('git') && a[0] === 'run') {
 	assert.match(failedAction.stdout, /Failed: Stage 'review' failed: worker/);
 	assert.equal(JSON.parse(read(cfgPath)).requestId, accepted.requestId);
 	assert.equal(usedTokens(), 17);
+	const outputs = join(runPath, "outputs");
+	assert.deepEqual(fs.readdirSync(outputs).sort(), ["a.md", "b.md"]);
 	const failedState = snapshot();
 	const resumeFirst = new RegExp(`pistick resume ${id}`);
 	fail(["continue", id, "do not replace failed follow-up"], resumeFirst);
@@ -1289,6 +1293,10 @@ if (has('git') && a[0] === 'run') {
 
 	// A completed follow-up cannot be resumed again.
 	fail(["resume", id], /already completed/);
+	assert.deepEqual(fs.readdirSync(outputs), ["b.md"]);
+	assert.equal(read(join(outputs, "b.md")), "updated\n");
+	ok(["continue", id, "No subagents"]);
+	assert.ok(!fs.existsSync(outputs));
 });
 
 test("multi-agent action validates stages, resolves multi-provider auth, enforces per-agent RPC policies, and saves per-agent outputs", (t) => {

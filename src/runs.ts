@@ -422,13 +422,11 @@ export async function worker(id: string, freshContinue: boolean): Promise<number
 			);
 
 			fs.writeFileSync(reportFile, `${result.report}\n`);
-			if (result.outputs && Object.keys(result.outputs).length) {
+			fs.rmSync(outputsDir, { recursive: true, force: true });
+			for (const [name, content] of Object.entries(result.outputs ?? {})) {
+				if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) continue;
 				fs.mkdirSync(outputsDir, { recursive: true, mode: 0o700 });
-				for (const [name, content] of Object.entries(result.outputs)) {
-					if (/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) {
-						fs.writeFileSync(join(outputsDir, `${name}.md`), `${content}\n`);
-					}
-				}
+				fs.writeFileSync(join(outputsDir, `${name}.md`), `${content}\n`);
 			}
 
 			const { patchFile, untracked } = task.captureDiff(cfg.baseHead);
