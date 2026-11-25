@@ -244,6 +244,7 @@ const workflow = defineDoc<{
 	agents: Record<string, { name: string; mode: "read-only" | "read-write" }>;
 	stages: Record<string, StageBatch>;
 	delegates?: { requestId: string; tasks: TaskId<BatchResult>[] };
+	rootCheck?: { turn: string; baseline: RpcData };
 }>({
 	kind: "pi-stick.workflow",
 	version: 2,
@@ -410,13 +411,7 @@ async function prepareBatch(batch: Batch, batchLabel: string): Promise<Pick<Prep
 	return rwCount ? {} : { baseline: await callHostRpc({ type: "check_clean" }) };
 }
 
-async function runParallelBatch(
-	batch: Batch,
-	batchLabel: string,
-	{ conversations, baseline }: PreparedBatch,
-	context: Context,
-): Promise<BatchResult> {
-	const results = await Promise.all(batch.map((item, i) => runSubagent(item, conversations[i], context)));
+async function checkCleanliness(baseline: RpcData | undefined, batchLabel: string) {
 	let cleanlinessWarning: string | undefined;
 	if (baseline) {
 		const after = baseline.error ? baseline : await callHostRpc({ type: "check_clean" });
@@ -426,6 +421,17 @@ async function runParallelBatch(
 			cleanlinessWarning = `WARNING: Tracked repository files changed during read-only round '${batchLabel}':\n${after.text.trim()}`;
 	}
 	if (cleanlinessWarning) emitProgress(cleanlinessWarning, stageProgressLabel);
+	return cleanlinessWarning;
+}
+
+async function runParallelBatch(
+	batch: Batch,
+	batchLabel: string,
+	{ conversations, baseline }: PreparedBatch,
+	context: Context,
+): Promise<BatchResult> {
+	const results = await Promise.all(batch.map((item, i) => runSubagent(item, conversations[i], context)));
+	const cleanlinessWarning = await checkCleanliness(baseline, batchLabel);
 	return { results, ...(cleanlinessWarning ? { cleanlinessWarning } : {}) };
 }
 
@@ -751,7 +757,25 @@ async function runAction(): Promise<string> {
 			...(spec.maxTurns ? { maxTurns: spec.maxTurns } : {}),
 		},
 	});
-	const report = await answerText(root, "orchestrator", ctx, rootInput(finalPrompt), rootReminder);
+	let baseline: RpcData | undefined;
+	if (spec.mode === "read-only" && !spec.tools.includes("delegate")) {
+		const saved = (await h.snapshot(workflow, ctx))?.rootCheck;
+		if (saved?.turn === turnKey) baseline = saved.baseline;
+		else {
+			// Keep the original baseline if the worker dies during the submission.
+			const check = { turn: turnKey, baseline: await callHostRpc({ type: "check_clean" }) };
+			await h.commit(async (tx) => {
+				(await tx.doc(workflow)).rootCheck = check;
+			}, ctx);
+			baseline = check.baseline;
+		}
+	}
+	let report: string | RunFailure;
+	try {
+		report = await answerText(root, "orchestrator", ctx, rootInput(finalPrompt), rootReminder);
+	} finally {
+		await checkCleanliness(baseline, "orchestrator");
+	}
 	if (report instanceof RunFailure) throw report;
 	const delegates = (await h.snapshot(workflow, ctx))?.delegates;
 	if (delegates?.requestId === turnKey) {

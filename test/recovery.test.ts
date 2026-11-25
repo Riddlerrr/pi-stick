@@ -95,10 +95,14 @@ function stageFixture(
 		if (!corruptAfter) {
 			createInterface({ input: child.stdout }).on("line", (line) => {
 				const m = JSON.parse(line);
-				if (m.type === "ps" || m.type === "check_clean")
+				if (m.type === "ps" || m.type === "check_clean") {
+					const status = join(dir, "tracked-status");
+					const text =
+						m.type === "check_clean" && fs.existsSync(status) ? fs.readFileSync(status, "utf8") : (m.agent ?? "");
 					child.stdin.write(
-						`${JSON.stringify({ type: "response", id: m.id, command: m.type, success: true, data: { text: m.agent ?? "" } })}\n`,
+						`${JSON.stringify({ type: "response", id: m.id, command: m.type, success: true, data: { text } })}\n`,
 					);
+				}
 			});
 		}
 		let stdout = "",
@@ -571,6 +575,37 @@ test("follow reports retry and compaction transitions once per conversation with
 		assert.equal(lines.filter((line) => line === "Compacting context").length, 1);
 	}
 	assert.doesNotMatch(result.stdout + result.stderr, /private-fixture/);
+});
+
+test("read-only root keeps its tracked baseline across interruption and starts fresh on continue", async (t) => {
+	const { job, run, stub } = stageFixture(t);
+	job.stages = [];
+	job.orchestrator.mode = "read-only";
+	fs.appendFileSync(
+		stub,
+		`
+		const respond = globalThis.fetch;
+		globalThis.fetch = (...args) => {
+			if (!fs.existsSync('tracked-status')) {
+				fs.writeFileSync('tracked-status', ' M tracked.txt');
+				process.kill(process.pid, 'SIGKILL');
+			}
+			return respond(...args);
+		};`,
+	);
+	assert.equal((await run()).signal, "SIGKILL");
+	const resumed = await run();
+	assert.equal(resumed.status, 0, resumed.stderr);
+	assert.equal(resumed.stdout.match(/"type":"check_clean"/g)?.length, 1);
+	assert.match(resumed.stdout, /Tracked repository files changed during read-only round 'orchestrator'/);
+	const continued = await run({ ...job, continueRun: true, requestId: runId() });
+	assert.equal(continued.status, 0, continued.stderr);
+	assert.equal(continued.stdout.match(/"type":"check_clean"/g)?.length, 2);
+	assert.doesNotMatch(continued.stdout, /WARNING:/);
+	job.orchestrator.tools = ["delegate"];
+	const delegated = await run({ ...job, continueRun: true, requestId: runId() });
+	assert.equal(delegated.status, 0, delegated.stderr);
+	assert.doesNotMatch(delegated.stdout, /"type":"check_clean"/);
 });
 
 test("unexpected action exceptions log only a safe category and runtime location", async (t) => {
