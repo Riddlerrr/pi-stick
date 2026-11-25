@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-11-25
+
+- Use `pistick projects` to list workspaces and `pistick show RUN_ID` to inspect the current phase, session usage and latest published report. Public run commands accept an unambiguous prefix of at least eight lowercase hex digits.
+
+- Each `continue` preserves earlier reports and subagent outputs in `turns/<n>/`; `resume` stays in the same turn. The top-level `report.md` and `outputs/` point to the latest published result.
+
+- Runs pin the entire action directory. Hooks can use sibling scripts and templates even after the original action is changed or removed. Symlinks and special files in actions are rejected. Nested prepared context files are listed by relative path.
+
+- Actions can pass all earlier stage results with `stageContext: all`, configure per-agent thinking levels, or use a single final-stage agent's answer as the report without an orchestrator.
+
+- The agent-facing `exec` tool is now `bash`: update explicit tool lists and prompts. Bash can target permitted Compose services, supports timeouts, and spills long output to scratch. `grep` and `find` are opt-in.
+
+- Dev installs use atomic, owner-only settings files. `--fresh` refuses to wipe unknown task stacks rather than guessing their Compose project names.
 
 - Updated `pi-durable` and its companion Pi runtime packages to `1.6.1`. Rebuild the agent image with `pistick containers build` to use the upgrade.
 
