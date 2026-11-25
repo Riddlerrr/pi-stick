@@ -1,21 +1,16 @@
-import { type ConversationId, defineTool } from "@earendil-works/pi-durable";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
-import { createReadTool as createPiReadTool } from "@earendil-works/pi-durable/tools";
+import { createReadTool } from "@earendil-works/pi-durable/tools";
+import { CONTAINER_REPO_DIR } from "../paths.ts";
 
-import { AgentExecutionEnv } from "./agent-execution-env.ts";
+export const readTool = createReadTool({ images: await createNodePhotonImages() });
 
-const piRead = createPiReadTool({ images: await createNodePhotonImages() });
-
-export function createReadTool(repoDir: string, resolvePath: (path: string, conversationId: ConversationId) => string) {
-	return defineTool({
-		...piRead,
-		description: `${piRead.description} Use bash or find for directories. Relative paths start at ${repoDir}; /scratch/... and /context/... are also readable.`,
+export function withReadDiagnostics(read: typeof readTool): typeof readTool {
+	return {
+		...read,
+		description: `${read.description} Use bash or find for directories. Relative paths start at ${CONTAINER_REPO_DIR}; /scratch/... and /context/... are also readable.`,
 		replay: "safe",
-		execute: async (args, api, context) => {
-			const resolve = (path: string) => resolvePath(path, api.conversationId);
-			context.abortSignal?.throwIfAborted();
-			const env = new AgentExecutionEnv(resolve);
-			const result = await piRead.execute(args, { ...api, env }, context);
+		async execute(args, api, context) {
+			const result = await read.execute(args, api, context);
 			if (!("structuredOutput" in result)) return result;
 			const value = result.structuredOutput;
 			const note = result.diagnostics?.map((d) => d.message).join("\n");
@@ -24,5 +19,5 @@ export function createReadTool(repoDir: string, resolvePath: (path: string, conv
 				return { ...result, structuredOutput: { ...value, note: note ?? "" } };
 			return result;
 		},
-	});
+	};
 }

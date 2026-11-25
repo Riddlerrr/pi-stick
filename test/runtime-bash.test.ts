@@ -4,32 +4,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { AgentExecutionEnv } from "../runtime/tools/agent-execution-env.ts";
 import { createBashTool } from "../runtime/tools/bash.ts";
 
 test("bash routes service, timeout and cancellation to the broker and streams split UTF-8", async () => {
 	const signal = new AbortController().signal;
 	const args = { command: "example", service: "web", timeout: 3 };
-	const tool = createBashTool(
-		async (request, id, chunk, cancel) => {
-			assert.deepEqual(request, args);
-			assert.equal(id, ROOT_CONVERSATION_ID);
-			assert.equal(cancel, signal);
-			const bytes = Buffer.from("до");
-			chunk(bytes.subarray(0, 1));
-			chunk(bytes.subarray(1));
-			return { text: "", exitCode: 7 };
-		},
-		() => assert.fail("short output should not spill"),
-	);
+	const tool = createBashTool(async (request, agent, chunk, cancel) => {
+		assert.deepEqual(request, args);
+		assert.equal(agent, "worker");
+		assert.equal(cancel, signal);
+		const bytes = Buffer.from("до");
+		chunk(bytes.subarray(0, 1));
+		chunk(bytes.subarray(1));
+		return { text: "", exitCode: 7 };
+	});
 	let text = "";
 	const api = {
-		conversationId: ROOT_CONVERSATION_ID,
+		env: new AgentExecutionEnv("worker", () => assert.fail("short output should not spill")),
 		output(s: string) {
 			text += s;
 		},
 		retainedOutput: () => ({ text, truncated: false }),
-	} as Parameters<typeof tool.execute>[1];
+	} as unknown as Parameters<typeof tool.execute>[1];
 	const result = await tool.execute(args, api, withAbortSignal(signal, BACKGROUND_CONTEXT));
 	assert.deepEqual(result.structuredOutput, { output: "до", exitCode: 7, truncated: false });
 });
@@ -40,18 +37,15 @@ for (const brokerFailed of [false, true]) {
 		t.after(() => rm(dir, { recursive: true, force: true }));
 		const bytes = Buffer.alloc(50 * 1024, "a");
 		bytes[bytes.length - 1] = 0xc2;
-		const tool = createBashTool(
-			async (_args, _id, emit) => {
-				emit(bytes);
-				if (brokerFailed) throw Error("broker disconnected");
-				return { text: "", exitCode: 0 };
-			},
-			() => dir,
-		);
+		const tool = createBashTool(async (_args, _id, emit) => {
+			emit(bytes);
+			if (brokerFailed) throw Error("broker disconnected");
+			return { text: "", exitCode: 0 };
+		});
 		let text = "";
 		const diagnostics: string[] = [];
 		const api = {
-			conversationId: ROOT_CONVERSATION_ID,
+			env: new AgentExecutionEnv("worker", () => dir),
 			output(s: string) {
 				text += s;
 			},
@@ -59,7 +53,7 @@ for (const brokerFailed of [false, true]) {
 			diagnostic(d: { message: string }) {
 				diagnostics.push(d.message);
 			},
-		} as Parameters<typeof tool.execute>[1];
+		} as unknown as Parameters<typeof tool.execute>[1];
 		const call = tool.execute({ command: "example" }, api, BACKGROUND_CONTEXT);
 		const result = brokerFailed ? await assert.rejects(call, /broker disconnected/) : await call;
 		const [name] = await readdir(dir);
@@ -81,20 +75,18 @@ for (const [name, chunks, capped] of [
 	test(`bash scratch log: ${name}`, async (t) => {
 		const dir = await mkdtemp(join(tmpdir(), "pi-stick-bash-"));
 		t.after(() => rm(dir, { recursive: true, force: true }));
-		const tool = createBashTool(
-			async (_args, _id, emit) => {
-				for (const chunk of chunks) emit(chunk);
-				return { text: "", exitCode: 0 };
-			},
-			(id) => {
-				assert.equal(id, ROOT_CONVERSATION_ID);
-				return dir;
-			},
-		);
+		const tool = createBashTool(async (_args, _id, emit) => {
+			for (const chunk of chunks) emit(chunk);
+			return { text: "", exitCode: 0 };
+		});
 		const warnings: string[] = [];
 		let tail = "";
 		const api = {
-			conversationId: ROOT_CONVERSATION_ID,
+			env: new AgentExecutionEnv("worker", (path, write) => {
+				assert.equal(path, "/scratch/worker");
+				assert.equal(write, true);
+				return dir;
+			}),
 			output(s: string) {
 				tail = s.slice(-4);
 			},
@@ -102,7 +94,7 @@ for (const [name, chunks, capped] of [
 			diagnostic(d: { severity: string; message: string }) {
 				if (d.severity === "warn") warnings.push(d.message);
 			},
-		} as Parameters<typeof tool.execute>[1];
+		} as unknown as Parameters<typeof tool.execute>[1];
 		const result = await tool.execute({ command: "example" }, api, BACKGROUND_CONTEXT);
 		const files = await readdir(dir);
 		assert.equal(files.length, 1);

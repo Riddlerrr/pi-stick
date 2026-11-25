@@ -1,4 +1,5 @@
 import { defineTool } from "@earendil-works/pi-durable";
+import { agentEnv } from "./agent-execution-env.ts";
 import type { AgentRpc } from "./rpc.ts";
 
 export function createPsTool(call: AgentRpc) {
@@ -12,7 +13,7 @@ export function createPsTool(call: AgentRpc) {
 		},
 		replay: "safe",
 		execute: async (_args, api) => {
-			const res = await call({ type: "ps" }, api.conversationId);
+			const res = await call({ type: "ps" }, agentEnv(api).name);
 			return { output: [{ type: "text" as const, text: res.text }], isError: !!res.error };
 		},
 	});

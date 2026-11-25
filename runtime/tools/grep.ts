@@ -1,11 +1,12 @@
 import { stat } from "node:fs/promises";
 import { basename, dirname } from "node:path";
-import { type ConversationId, defineTool } from "@earendil-works/pi-durable";
+import { defineTool } from "@earendil-works/pi-durable";
+import { agentEnv } from "./agent-execution-env.ts";
 import { MAX_SEARCH_CHARS, scanRipgrep } from "./ripgrep.ts";
 
 const MAX_GREP_MATCHES = 2000;
 
-export function createGrepTool(repoDir: string, resolvePath: (path: string, conversationId: ConversationId) => string) {
+export function createGrepTool(repoDir: string) {
 	return defineTool({
 		name: "grep",
 		description:
@@ -35,7 +36,7 @@ export function createGrepTool(repoDir: string, resolvePath: (path: string, conv
 				offset?: number;
 			};
 			try {
-				const resolved = resolvePath(path, api.conversationId);
+				const resolved = agentEnv(api).resolve(path, false);
 				const info = await stat(resolved);
 				const directory = info.isDirectory();
 				if (!directory && !info.isFile()) throw Error("Search path must be a regular file or directory.");

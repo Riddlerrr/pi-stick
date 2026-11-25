@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { join } from "node:path";
-import { type ConversationId, defineTool } from "@earendil-works/pi-durable";
+import { defineTool } from "@earendil-works/pi-durable";
 import { ExecutionError } from "@earendil-works/pi-durable/env";
-import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createBashTool as createDurableBash } from "@earendil-works/pi-durable/tools";
 import type { RpcCall, RpcData } from "../protocol.ts";
+import { agentEnv } from "./agent-execution-env.ts";
 
 const bash = createDurableBash();
 const SPILL_BYTES = 32 * 1024 * 1024;
@@ -13,12 +13,12 @@ const SPILL_BYTES = 32 * 1024 * 1024;
 type BashArgs = Omit<Extract<RpcCall, { type: "exec" }>, "type" | "agent">;
 type RunCommand = (
 	args: BashArgs,
-	id: ConversationId,
+	agent: string,
 	onChunk: (chunk: Buffer) => void,
 	signal?: AbortSignal,
 ) => Promise<RpcData>;
 
-export function createBashTool(run: RunCommand, scratch: (id: ConversationId) => string) {
+export function createBashTool(run: RunCommand) {
 	return defineTool({
 		...bash,
 		description: `${bash.description} Runs in runner (/workspace/repo) or an allowed Compose service's working directory. Logs in agent scratch are limited to the first 32 MiB.`,
@@ -31,7 +31,7 @@ export function createBashTool(run: RunCommand, scratch: (id: ConversationId) =>
 		},
 		async execute(input, api, context) {
 			const { service } = input as BashArgs;
-			const env = new NodeExecutionEnv({ cwd: "/workspace/repo" });
+			const env = agentEnv(api);
 			env.exec = async (command, options, ctx) => {
 				if (typeof command !== "string") throw Error("Compose bash requires a command string");
 				const decoder = new TextDecoder();
@@ -45,7 +45,7 @@ export function createBashTool(run: RunCommand, scratch: (id: ConversationId) =>
 					if (s) options?.onOutput?.(s, ctx, { stream: "stdout" });
 				};
 				const startSpill = () => {
-					path = join(scratch(api.conversationId), `pi-bash-${randomUUID()}.log`);
+					path = join(env.resolve(`/scratch/${env.name}`, true), `pi-bash-${randomUUID()}.log`);
 					fd = fs.openSync(path, "wx", 0o600);
 					fs.writeFileSync(fd, Buffer.concat(pending));
 					pending.length = 0;
@@ -64,7 +64,7 @@ export function createBashTool(run: RunCommand, scratch: (id: ConversationId) =>
 				try {
 					const result = await run(
 						{ command, service, timeout: options?.timeout },
-						api.conversationId,
+						env.name,
 						(chunk) => {
 							if (!chunk.length) return;
 							fullOutputPath = undefined;
@@ -119,7 +119,7 @@ export function createBashTool(run: RunCommand, scratch: (id: ConversationId) =>
 					if (fd !== undefined) fs.closeSync(fd);
 				}
 			};
-			return bash.execute(input, { ...api, env }, context);
+			return bash.execute(input, api, context);
 		},
 	});
 }

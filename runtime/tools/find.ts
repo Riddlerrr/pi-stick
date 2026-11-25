@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
-import { type ConversationId, defineTool } from "@earendil-works/pi-durable";
+import { defineTool } from "@earendil-works/pi-durable";
+import { agentEnv } from "./agent-execution-env.ts";
 import { MAX_SEARCH_CHARS, scanRipgrep } from "./ripgrep.ts";
 
 const MAX_FIND_RESULTS = 500;
@@ -25,7 +26,7 @@ function globToRegExp(pattern: string): RegExp {
 	return new RegExp(`^${re}$`);
 }
 
-export function createFindTool(repoDir: string, resolvePath: (path: string, conversationId: ConversationId) => string) {
+export function createFindTool(repoDir: string) {
 	return defineTool({
 		name: "find",
 		description: `List files under a directory (defaults to ${repoDir}), optionally matching a glob or substring. Respects .gitignore and skips .git and node_modules.`,
@@ -55,7 +56,7 @@ export function createFindTool(repoDir: string, resolvePath: (path: string, conv
 				maxResults?: number;
 			};
 			try {
-				const resolved = resolvePath(path, api.conversationId);
+				const resolved = agentEnv(api).resolve(path, false);
 				if (!(await stat(resolved)).isDirectory())
 					return { output: [{ type: "text" as const, text: "(no files)" }] };
 				const glob = query && /[*?]/.test(query) ? globToRegExp(query) : null;

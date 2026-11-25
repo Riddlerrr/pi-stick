@@ -1,4 +1,4 @@
-import { type ConversationId, defineTool, type Task } from "@earendil-works/pi-durable";
+import { defineTool, ROOT_CONVERSATION_ID, type Task } from "@earendil-works/pi-durable";
 
 export type DelegateTasks = Array<{ agent: string; prompt: string }>;
 
@@ -9,7 +9,6 @@ export type BatchResult = {
 
 export function createDelegateTool<S extends { phase: string }>(
 	delegateBatch: Task<DelegateTasks, S, BatchResult, object>,
-	isOrchestrator: (id: ConversationId) => boolean,
 ) {
 	return defineTool({
 		name: "delegate",
@@ -40,7 +39,7 @@ export function createDelegateTool<S extends { phase: string }>(
 		},
 		callers: ["model"],
 		execute: async (args, api, ctx) => {
-			if (!isOrchestrator(api.conversationId)) {
+			if (api.conversationId !== ROOT_CONVERSATION_ID) {
 				return {
 					output: [{ type: "text" as const, text: "Only the orchestrator may call delegate." }],
 					isError: true,

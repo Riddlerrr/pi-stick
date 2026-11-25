@@ -793,6 +793,8 @@ test("agent-runtime offline self-check exercises canonical paths, scratch, concu
 	assert.ok(!fs.existsSync(join(workspace, "should-fail.txt")));
 	assert.equal(read(join(scratch, "checker-a/note.txt")), "ok-a");
 	assert.equal(read(join(scratch, "checker-b/note.txt")), "ok-b");
+	const [spill] = fs.globSync("checker-b/pi-codemode-*/output.txt", { cwd: scratch });
+	assert.match(read(join(scratch, spill)), /Successfully wrote to \/scratch\/checker-b\/note.txt/);
 });
 
 test("doctor checks Git in the selected image independently of its bundled runtime", (t) => {

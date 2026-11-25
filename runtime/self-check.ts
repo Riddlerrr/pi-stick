@@ -84,7 +84,7 @@ export async function selfCheck(
 						fauxToolCall("find", { path: "probe-src", query: "**/*.ts", maxResults: 1 }),
 						fauxToolCall("find", { path: "probe-src", maxResults: 1 }),
 						fauxToolCall("codemode", {
-							code: `
+							code: `// @options: {"max_output_tokens": 4}
 							const own = await tools.write({path: "/scratch/checker-b/note.txt", content: "ok-b"});
 							for (const path of ["should-fail.txt", "/scratch/checker-a/forbidden.txt", "/context/forbidden.txt"]) {
 								const [attempt] = await Promise.allSettled([tools.write({path, content: "nope"})]);
@@ -101,7 +101,7 @@ export async function selfCheck(
 				results.includes("z/.visible.ts") && results.includes("000.txt\n[More files omitted; narrow the search.]");
 			return fauxAssistantMessage([
 				fauxText(
-					find && results.some((r) => r.includes("Successfully wrote to /scratch/checker-b/note.txt"))
+					find && results.some((r) => r.includes("[Full output: /scratch/checker-b/pi-codemode-"))
 						? "subagent-b-ok"
 						: "subagent-b-fail",
 				),

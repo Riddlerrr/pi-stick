@@ -4,19 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { createEditTool } from "../runtime/tools/edit.ts";
+import { AgentExecutionEnv } from "../runtime/tools/agent-execution-env.ts";
+import { editTool, withEditHandle } from "../runtime/tools/edit.ts";
 
 test("edit applies the conversation's path policy before opening the file", async (t) => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-stick-edit-"));
 	t.after(() => rm(dir, { recursive: true, force: true }));
 	const file = join(dir, "note");
-	const tool = createEditTool((path, id) => {
-		assert.equal(id, ROOT_CONVERSATION_ID);
-		if (path !== "/scratch/worker/note") throw Error("read-only");
+	const tool = withEditHandle(editTool);
+	const env = new AgentExecutionEnv("worker", (path, write) => {
+		if (write && path !== "/scratch/worker/note") throw Error("read-only");
 		return file;
 	});
-	const api = { conversationId: ROOT_CONVERSATION_ID } as Parameters<typeof tool.execute>[1];
+	const api = { env } as unknown as Parameters<typeof tool.execute>[1];
 	const edit = (path: string) =>
 		tool.execute({ path, edits: [{ oldText: "before", newText: "after" }] }, api, BACKGROUND_CONTEXT);
 	await writeFile(file, "before");

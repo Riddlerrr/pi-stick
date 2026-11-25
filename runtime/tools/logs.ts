@@ -1,4 +1,5 @@
 import { defineTool } from "@earendil-works/pi-durable";
+import { agentEnv } from "./agent-execution-env.ts";
 import type { AgentRpc } from "./rpc.ts";
 
 export function createLogsTool(call: AgentRpc) {
@@ -18,7 +19,7 @@ export function createLogsTool(call: AgentRpc) {
 		},
 		replay: "safe",
 		execute: async (args, api) => {
-			const res = await call({ ...(args as { service?: string; tail?: number }), type: "logs" }, api.conversationId);
+			const res = await call({ ...(args as { service?: string; tail?: number }), type: "logs" }, agentEnv(api).name);
 			return { output: [{ type: "text" as const, text: res.text }], isError: !!res.error };
 		},
 	});

@@ -1,4 +1,5 @@
 import { defineTool } from "@earendil-works/pi-durable";
+import { agentEnv } from "./agent-execution-env.ts";
 import type { AgentRpc } from "./rpc.ts";
 
 export function createRestartTool(call: AgentRpc) {
@@ -15,7 +16,7 @@ export function createRestartTool(call: AgentRpc) {
 		},
 		callers: ["model"],
 		execute: async (args, api) => {
-			const res = await call({ ...(args as { service: string }), type: "restart" }, api.conversationId);
+			const res = await call({ ...(args as { service: string }), type: "restart" }, agentEnv(api).name);
 			return { output: [{ type: "text" as const, text: res.text }], isError: !!res.error };
 		},
 	});

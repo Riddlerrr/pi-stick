@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import test, { type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
@@ -79,6 +80,15 @@ function stageFixture(
 			timeout: 15000,
 		});
 		const exit = closed(child);
+		if (!corruptAfter) {
+			createInterface({ input: child.stdout }).on("line", (line) => {
+				const m = JSON.parse(line);
+				if (m.type === "ps")
+					child.stdin.write(
+						`${JSON.stringify({ type: "response", id: m.id, command: "ps", success: true, data: { text: m.agent } })}\n`,
+					);
+			});
+		}
 		let stdout = "",
 			stderr = "";
 		const corrupt = (output: string) => {
@@ -186,15 +196,15 @@ test("resume reuses an unparked delegate batch, then restores three settled work
 	job.orchestrator.model.modelId = "openai/gpt-oss-120b";
 	Object.assign(job.orchestrator, { thinkingLevel: "high" });
 	const names = ["worker", "sibling", "third", "fourth"];
+	const agents: Record<string, typeof job.agents.worker> = job.agents;
 	for (const name of names)
-		Object.assign(job.agents, {
-			[name]: {
-				...job.agents.sibling,
-				name,
-				model: job.orchestrator.model,
-				mode: name === "worker" ? "read-write" : "read-only",
-			},
-		});
+		agents[name] = {
+			...job.agents.sibling,
+			name,
+			model: job.orchestrator.model,
+			mode: name === "worker" ? "read-write" : "read-only",
+			tools: name === "fourth" ? ["write", "ps"] : [],
+		};
 	fs.writeFileSync(
 		stub,
 		`import fs from 'node:fs';
@@ -226,9 +236,16 @@ test("resume reuses an unparked delegate batch, then restores three settled work
 			if (reasoning_effort !== (prompt === 'task' ? 'high' : undefined)) throw Error('Unexpected inherited thinking level');
 			let delta = {role:'assistant', content:prompt};
 			if (prompt !== 'task') {
-				fs.appendFileSync('workers', prompt + '\\n');
+				const results = messages.filter(m => m.role === 'tool');
+				if (!results.length) fs.appendFileSync('workers', prompt + '\\n');
 				if (prompt === 'fourth' && !fs.existsSync('partial')) {
 					fourthPending = true; interruptFourth(); await new Promise(() => {});
+				}
+				if (prompt === 'fourth' && !results.length) {
+					const calls = [['write', {path:'blocked', content:'no'}], ['write', {path:'/scratch/fourth/note', content:'ok'}], ['ps', {}]];
+					delta = {role:'assistant', tool_calls:calls.map(([name,args],index) => ({index,id:'call'+index,type:'function',function:{name,arguments:JSON.stringify(args)}}))};
+				} else if (prompt === 'fourth' && (!results.some(r => r.content.includes('read-only')) || !results.some(r => r.content === 'fourth'))) {
+					throw Error('Recovered worker used the wrong policy or RPC identity');
 				}
 			} else if (!messages.some(m => m.role === 'tool')) {
 				const tasks = ${JSON.stringify(names)}.map(agent => ({agent, prompt:agent}));
@@ -243,8 +260,12 @@ test("resume reuses an unparked delegate batch, then restores three settled work
 		assert.equal(killed.signal, "SIGKILL", killed.stderr + killed.stdout);
 		assert.ok(fs.existsSync(join(dir, marker)));
 	}
+	// Recovery must use the committed worker mode, not a fresh copy of the job spec.
+	agents.fourth.mode = "read-write";
 	const resumed = await run();
 	assert.equal(resumed.status, 0, resumed.stderr + resumed.stdout);
+	assert.equal(fs.existsSync(join(dir, "blocked")), false);
+	assert.equal(fs.readFileSync(join(dir, "fourth/note"), "utf8"), "ok");
 	const { report, outputs } = JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).data;
 	assert.equal(report, names.map((name) => `### Agent: ${name} (ok)\n\n${name}`).join("\n\n"));
 	assert.deepEqual(outputs, Object.fromEntries(names.map((name) => [name, name])));

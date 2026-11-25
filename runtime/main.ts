@@ -17,6 +17,7 @@ import {
 	defineDoc,
 	defineExtension,
 	defineTask,
+	type DocumentReader,
 	GenerationTask,
 	Harness,
 	hook,
@@ -25,6 +26,7 @@ import {
 	type ToolRegistration,
 	ToolTask,
 	type Tx,
+	wrapTool,
 } from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -45,17 +47,18 @@ import {
 } from "./protocol.ts";
 import { runtimeCredentials } from "./auth.ts";
 import { type AgentContext, CONTAINER_REPO_DIR, SCRATCH_DIR, createPathResolver } from "./paths.ts";
+import { AgentExecutionEnv } from "./tools/agent-execution-env.ts";
 import { createBashTool } from "./tools/bash.ts";
 import { type BatchResult, createDelegateTool, type DelegateTasks } from "./tools/delegate.ts";
-import { createEditTool } from "./tools/edit.ts";
+import { editTool, withEditHandle } from "./tools/edit.ts";
 import { createFindTool } from "./tools/find.ts";
 import { createGrepTool } from "./tools/grep.ts";
 import { createLogsTool } from "./tools/logs.ts";
 import { createPsTool } from "./tools/ps.ts";
-import { createReadTool } from "./tools/read.ts";
+import { readTool, withReadDiagnostics } from "./tools/read.ts";
 import { createRestartTool } from "./tools/restart.ts";
 import type { AgentRpc } from "./tools/rpc.ts";
-import { createWriteTool } from "./tools/write.ts";
+import { writeTool } from "./tools/write.ts";
 
 const SESSIONS_DIR = process.env.PI_STICK_SESSIONS_DIR ?? "/sessions";
 const protocol = new AbortController();
@@ -203,17 +206,17 @@ for (const spec of [job.orchestrator, ...Object.values(job.agents ?? {})]) {
 	}
 }
 
-const agentByConv = new Map<ConversationId, AgentContext>();
-const defaultAgentCtx: AgentContext = {
+const rootAgentCtx: AgentContext = {
 	name: "orchestrator",
 	label: "orchestrator",
 	mode: job.orchestrator?.mode ?? "read-write",
 	scratchDir: join(SCRATCH_DIR, "orchestrator"),
 };
-agentByConv.set(ROOT_CONVERSATION_ID, defaultAgentCtx);
-
-function getAgentCtx(conversationId: ConversationId): AgentContext {
-	return agentByConv.get(conversationId) ?? defaultAgentCtx;
+async function getAgentCtx(id: ConversationId, read: DocumentReader, context: Context): Promise<AgentContext> {
+	if (id === ROOT_CONVERSATION_ID) return rootAgentCtx;
+	const agent = (await read.snapshot(workflow, context))?.agents[id];
+	if (!agent) throw Error(`Missing agent context for conversation ${id}`);
+	return { ...agent, label: `agent:${agent.name}`, scratchDir: join(SCRATCH_DIR, agent.name) };
 }
 
 const probeEvents: string[] = [];
@@ -286,12 +289,6 @@ async function runSubagent(
 	const conv = await h.conversation(id, context);
 	if (!conv) throw Error(`Missing subagent conversation: ${id}`);
 	const label = `agent:${spec.name}`;
-	agentByConv.set(conv.id, {
-		name: spec.name,
-		label,
-		mode: spec.mode,
-		scratchDir,
-	});
 	emitProgress("started", label);
 	const sub = await conv.submit({ type: "input", content: prompt, requestId: "work" }, context);
 	const settled = await sub.wait(context);
@@ -411,37 +408,34 @@ const delegateBatch = defineTask<DelegateTasks, DelegatePhase, BatchResult>({
 	},
 });
 
-const agentRpc: AgentRpc = (request, id) => callHostRpc({ ...request, agent: getAgentCtx(id).name });
+const agentRpc: AgentRpc = (request, agent) => callHostRpc({ ...request, agent });
 
 const toolMap = new Map<string, ToolRegistration>([
-	["read", createReadTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
-	["write", createWriteTool((path, id) => resolveAgentPath(path, getAgentCtx(id), true))],
-	["edit", createEditTool((path, id) => resolveAgentPath(path, getAgentCtx(id), true))],
-	["grep", createGrepTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
-	["find", createFindTool(CONTAINER_REPO_DIR, (path, id) => resolveAgentPath(path, getAgentCtx(id), false))],
+	["read", readTool],
+	["write", writeTool],
+	["edit", editTool],
+	["grep", createGrepTool(CONTAINER_REPO_DIR)],
+	["find", createFindTool(CONTAINER_REPO_DIR)],
 	[
 		"bash",
-		createBashTool(
-			(args, id, onChunk, signal) =>
-				callHostRpc({ ...args, type: "exec", agent: getAgentCtx(id).name }, onChunk, signal),
-			(id) => resolveAgentPath(`/scratch/${getAgentCtx(id).name}`, getAgentCtx(id), true),
-		),
+		createBashTool((args, agent, onChunk, signal) => callHostRpc({ ...args, type: "exec", agent }, onChunk, signal)),
 	],
 	["logs", createLogsTool(agentRpc)],
 	["ps", createPsTool(agentRpc)],
 	["restart", createRestartTool(agentRpc)],
-	["delegate", createDelegateTool(delegateBatch, (id) => getAgentCtx(id).name === "orchestrator")],
+	["delegate", createDelegateTool(delegateBatch)],
 ]);
 
 const registry = createRegistry();
 const mainExtension = defineExtension({
 	tasks: [delegateBatch],
+	wraps: [wrapTool(readTool, withReadDiagnostics), wrapTool(editTool, withEditHandle)],
 	name: "pi-stick",
 	hooks: [
 		hook(GenerationTask, {
-			afterResponse(message, api) {
-				const agentLabel = getAgentCtx(api.conversationId).label;
+			async afterResponse(message, api, context) {
 				if (message.content.some((b) => b.type === "toolCall")) {
+					const agentLabel = (await getAgentCtx(api.conversationId, api, context)).label;
 					for (const b of message.content) {
 						if (b.type === "text" && b.text.trim()) emitProgress(b.text.trim(), agentLabel);
 					}
@@ -449,9 +443,9 @@ const mainExtension = defineExtension({
 			},
 		}),
 		hook(ToolTask, {
-			beforeTool(call, api) {
+			async beforeTool(call, api, context) {
 				if (call.parent) return;
-				const agentLabel = getAgentCtx(api.conversationId).label;
+				const agentLabel = (await getAgentCtx(api.conversationId, api, context)).label;
 				if (call.name === "codemode") emitProgress("codemode", agentLabel);
 				else if (call.name === "delegate" && Array.isArray(call.arguments?.tasks)) {
 					const names = (call.arguments.tasks as Array<{ agent?: string }>).map((t) => t.agent ?? "?").join(", ");
@@ -499,18 +493,20 @@ for (let attempt = 1; ; attempt++) {
 	continueRoot = prior.type === "continue" || prior.entry !== undefined;
 	rootRequestId = `${turnKey}:retry:${attempt}`;
 }
-const h = await Harness.open(storage, { models, registry }, BACKGROUND_CONTEXT);
+const h = await Harness.open(
+	storage,
+	{
+		models,
+		registry,
+		async env({ conversationId, read }, context) {
+			const agent = await getAgentCtx(conversationId, read, context);
+			return new AgentExecutionEnv(agent.name, (path, write) => resolveAgentPath(path, agent, write));
+		},
+	},
+	BACKGROUND_CONTEXT,
+);
 try {
 	protocol.signal.throwIfAborted();
-	// Scheduling can resume siblings as soon as the first input is submitted.
-	for (const [id, agent] of Object.entries((await h.snapshot(workflow, ctx))?.agents ?? {})) {
-		agentByConv.set(Number(id) as ConversationId, {
-			...agent,
-			label: `agent:${agent.name}`,
-			scratchDir: join(SCRATCH_DIR, agent.name),
-		});
-	}
-
 	if (job.check) {
 		const { selfCheck } = await import("./self-check.ts");
 		await selfCheck(h, ctx, models, activeSubagents, probeEvents);
@@ -613,7 +609,7 @@ async function runAction(): Promise<string> {
 	}
 
 	if (!spec) throw new RunFailure("Missing orchestrator");
-	fs.mkdirSync(defaultAgentCtx.scratchDir, { recursive: true });
+	fs.mkdirSync(rootAgentCtx.scratchDir, { recursive: true });
 	const { extensions, tools } = selectToolsAndExtensions(spec.tools);
 	const root = await h.root(ctx, {
 		agent: {

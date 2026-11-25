@@ -57,7 +57,7 @@ export function createPathResolver() {
 				fs.mkdirSync(agentCtx.scratchDir, { recursive: true });
 				return assertWithin(
 					candidate,
-					canonicalBase(agentCtx.scratchDir),
+					join(canonicalBase(SCRATCH_DIR), agentCtx.name),
 					`agent scratch (/scratch/${agentCtx.name})`,
 				);
 			}

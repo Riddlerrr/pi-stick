@@ -4,21 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { createReadTool } from "../runtime/tools/read.ts";
+import { AgentExecutionEnv } from "../runtime/tools/agent-execution-env.ts";
+import { readTool, withReadDiagnostics } from "../runtime/tools/read.ts";
 
 test("read uses Pi line ranges, bounded output and image results inside the agent's path policy", async (t) => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-stick-read-"));
 	t.after(() => rm(dir, { recursive: true, force: true }));
 	await writeFile(join(dir, "note.txt"), "abcd\néfgh\nijk");
-	const tool = createReadTool("/workspace/repo", (path, conversationId) => {
-		assert.equal(conversationId, ROOT_CONVERSATION_ID);
+	const tool = withReadDiagnostics(readTool);
+	const env = new AgentExecutionEnv("reader", (path, write) => {
+		assert.equal(write, false);
 		if (path === "blocked" || path === "can’t") throw Error("blocked by path policy");
 		return join(dir, path);
 	});
-	const api = { conversationId: ROOT_CONVERSATION_ID, agent: async () => ({}) } as unknown as Parameters<
-		typeof tool.execute
-	>[1];
+	const api = { env, agent: async () => ({}) } as unknown as Parameters<typeof tool.execute>[1];
 	const read = async (path: string, offset?: number, limit?: number) => {
 		const result = await tool.execute({ path, offset, limit }, api, BACKGROUND_CONTEXT);
 		assert.ok("output" in result);
