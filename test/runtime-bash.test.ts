@@ -7,6 +7,15 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { AgentExecutionEnv } from "../runtime/tools/agent-execution-env.ts";
 import { createBashTool } from "../runtime/tools/bash.ts";
 
+test("AgentExecutionEnv refuses both shell strings and argv without a broker", async () => {
+	const env = new AgentExecutionEnv("worker", () => assert.fail("direct exec should not resolve paths"));
+	for (const command of ["true", ["true"]]) {
+		const result = await env.exec(command, undefined, BACKGROUND_CONTEXT);
+		assert.ok(!result.ok);
+		assert.equal(result.error.code, "shell_unavailable");
+	}
+});
+
 test("bash routes service, timeout and cancellation to the broker and streams split UTF-8", async () => {
 	const signal = new AbortController().signal;
 	const args = { command: "example", service: "web", timeout: 3 };
