@@ -346,35 +346,49 @@ export class TaskEnv {
 	}
 
 	captureDiff(baseHead?: string) {
-		const untrackedRaw = this.inspectGit("ls-files", "--others", "--exclude-standard").replace(/\n$/, "");
-		const untracked = untrackedRaw ? untrackedRaw.split("\n") : [];
-		const git = [...gitCommand(CONTAINER_REPO_DIR), "--no-optional-locks"];
-		// Intent-to-add needs a writable index and may write the empty blob; keep both in the container tmpfs.
-		const args = untracked.length
-			? this.inspectionArgs(
-					"sh",
-					"-ec",
-					`base=$1; shift
-					tmp=$(mktemp -d)
+		// Stream the patch, then the NUL-delimited paths and their fixed-width byte length.
+		const args = this.inspectionArgs(
+			"sh",
+			"-ec",
+			`base=$1; shift
+				tmp=$(mktemp -d)
+				"$@" ls-files --others --exclude-standard -z > "$tmp/paths"
+				if test -s "$tmp/paths"; then
+					# Intent-to-add must not write the checkout index or object store.
 					index=$("$@" rev-parse --path-format=absolute --git-path index)
 					objects=$("$@" rev-parse --path-format=absolute --git-path objects)
 					test ! -f "$index" || cp -- "$index" "$tmp/index"
 					mkdir "$tmp/objects"
 					export GIT_INDEX_FILE="$tmp/index" GIT_OBJECT_DIRECTORY="$tmp/objects" GIT_ALTERNATE_OBJECT_DIRECTORIES="$objects"
-					"$@" ls-files --others --exclude-standard -z > "$tmp/paths"
 					"$@" --literal-pathspecs add -N --pathspec-from-file="$tmp/paths" --pathspec-file-nul
-					exec "$@" diff --binary --no-ext-diff --no-textconv "$base" --`,
-					"sh",
-					baseHead || "HEAD",
-					...git,
-				)
-			: this.inspectionArgs(...git, "diff", "--binary", "--no-ext-diff", "--no-textconv", baseHead || "HEAD", "--");
+				fi
+				"$@" diff --binary --no-ext-diff --no-textconv "$base" --
+				size=$(wc -c < "$tmp/paths")
+				cat "$tmp/paths"
+				printf '%016d' "$size"`,
+			"sh",
+			baseHead || "HEAD",
+			...gitCommand(CONTAINER_REPO_DIR),
+			"--no-optional-locks",
+		);
 		const patchFile = join(this.dir, "changes.patch");
 		const tmp = `${patchFile}.${runId()}.tmp`;
-		const fd = fs.openSync(tmp, "wx", 0o600);
+		const fd = fs.openSync(tmp, "wx+", 0o600);
+		let untracked: string[];
 		try {
 			try {
 				run(args, { stdio: ["ignore", fd, "inherit"] });
+				const end = fs.fstatSync(fd).size - 16;
+				const length = Buffer.alloc(16);
+				if (end < 0 || fs.readSync(fd, length, 0, 16, end) !== 16 || !/^\d{16}$/.test(length.toString()))
+					throw Error("Invalid diff capture trailer");
+				const size = Number(length.toString());
+				if (size > end || size > 256 * 1024 * 1024) throw Error("Invalid diff path list size");
+				const paths = Buffer.alloc(size);
+				if (fs.readSync(fd, paths, 0, size, end - size) !== size || (size && paths[size - 1] !== 0))
+					throw Error("Incomplete diff path list");
+				untracked = size ? paths.toString("utf8", 0, size - 1).split("\0") : [];
+				fs.ftruncateSync(fd, end - size);
 			} finally {
 				fs.closeSync(fd);
 			}

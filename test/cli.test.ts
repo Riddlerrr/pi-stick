@@ -433,24 +433,34 @@ test("diff preserves patch bytes and publishes only successful captures", (t) =>
 	writeJson(join(dir, "run.json"), { version: 1, mode: "run", phase: "checkout", id, project: "demo" });
 	stub(
 		"docker",
-		`const args = process.argv.slice(process.argv.indexOf('--no-optional-locks')); require('node:child_process').execFileSync('git', args, {cwd:${JSON.stringify(repo)}, stdio:'inherit'});`,
+		`const args = process.argv.slice(process.argv.indexOf('sh') + 1);
+		args[args.indexOf('-C') + 1] = ${JSON.stringify(repo)};
+		require('node:fs').appendFileSync(${JSON.stringify(join(dir, "captures"))}, 'run\\n');
+		require('node:child_process').execFileSync('sh', args, {env:{...process.env, TMPDIR:${JSON.stringify(dir)}}, stdio:'inherit'});`,
 	);
 	const bytes = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]);
 	fs.writeFileSync(join(repo, "example.txt"), bytes);
 	const diff = () => execFileSync(join(bin, "pistick"), ["diff", id], { env });
 	const patchFile = join(dir, "changes.patch");
+	const name = "отчёт\n[1]\t\x1b.md";
+	fs.writeFileSync(join(repo, name), "new\n");
 	const live = diff();
+	assert.equal(read(join(dir, "captures")), "run\n");
 	const patch = fs.readFileSync(patchFile);
-	assert.deepEqual(live, patch);
+	assert.deepEqual(live, Buffer.concat([patch, Buffer.from("\nUntracked files:\n  отчёт\\n[1]\\t\\u001b.md\n")]));
 	execFileSync("git", ["-C", source, "apply", "-"], { input: patch });
 	assert.deepEqual(fs.readFileSync(join(source, "example.txt")), bytes);
+	assert.equal(read(join(source, name)), "new\n");
 	fs.renameSync(repo, `${repo}.saved`);
 	assert.deepEqual(diff(), patch);
 	fs.renameSync(`${repo}.saved`, repo);
-	stub("docker", "if (!process.argv.includes('ls-files')) { process.stdout.write('partial'); process.exitCode = 1; }");
+	stub("docker", "process.stdout.write('partial'); process.exitCode = 1;");
 	fail(["diff", id], /docker failed/);
 	assert.deepEqual(fs.readFileSync(patchFile), patch);
-	stub("docker", "process.exit(0)");
+	stub("docker", "process.stdout.write('partial');");
+	fail(["diff", id], /Invalid diff capture trailer/);
+	assert.deepEqual(fs.readFileSync(patchFile), patch);
+	stub("docker", "process.stdout.write('0'.repeat(16))");
 	assert.equal(diff().toString(), "No changes.\n");
 	assert.ok(!fs.existsSync(patchFile));
 });
@@ -935,6 +945,7 @@ test("resume may initialize a session only before the first agent launch attempt
 		`const fs = require('node:fs');
 		const args = process.argv.slice(2);
 		if (args.includes('config')) console.log(JSON.stringify({services:{runner: {networks: {default: null}, volumes:[{type:'volume',source:'source',target:'/workspace'}]}}}));
+		if (args.includes('--no-optional-locks')) process.stdout.write('0'.repeat(16));
 		for (const cmd of ['up', 'start']) if (args.includes(cmd)) fs.appendFileSync(${JSON.stringify(starts)}, cmd + '\\n');
 		if (args[0] === 'run' && args.includes('/app/agent-runtime.ts')) {
 			const session = args.find(a => a.endsWith(':/sessions')).slice(0, -':/sessions'.length);
@@ -1389,7 +1400,8 @@ else process.exit(1);`,
 		"docker",
 		`const a = process.argv.slice(2);
 const has = s => a.includes(s);
-if (has('config')) {
+if (has('--no-optional-locks')) process.stdout.write('0'.repeat(16));
+else if (has('config')) {
   console.log(JSON.stringify({
     services: {
       runner: { networks: {default: null}, volumes: [{ type: 'volume', source: 'source', target: '/workspace' }] },
@@ -1589,7 +1601,8 @@ test("kill interrupts only the selected concurrent run and preserves its workspa
 		`const fs = require('node:fs');
 const a = process.argv.slice(2);
 const has = s => a.includes(s);
-if (has('config')) {
+if (has('--no-optional-locks')) process.stdout.write('0'.repeat(16));
+else if (has('config')) {
   console.log(JSON.stringify({
     services: { runner: { networks: {default: null}, volumes: [{ type: 'volume', source: 'source', target: '/workspace' }] } },
     volumes: { source: { name: a[a.indexOf('-p') + 1] + '_source' } },

@@ -645,7 +645,12 @@ export async function diffRun(id: string) {
 		: { patchFile: fs.existsSync(saved) ? saved : undefined, untracked: [] };
 	if (patchFile) await pipeline(fs.createReadStream(patchFile), process.stdout, { end: false });
 	if (untracked.length) {
-		console.log(`\nUntracked files:\n${untracked.map((f) => `  ${f}`).join("\n")}`);
+		const lines = untracked.map((f) =>
+			JSON.stringify(f)
+				.slice(1, -1)
+				.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`),
+		);
+		console.log(`\nUntracked files:\n  ${lines.join("\n  ")}`);
 	}
 	if (!patchFile && !untracked.length) console.log("No changes.");
 }
