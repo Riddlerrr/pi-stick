@@ -14,6 +14,7 @@ import {
 	configure,
 	type Conversation,
 	type ConversationId,
+	type Cursor,
 	createRegistry,
 	defineDoc,
 	defineExtension,
@@ -345,12 +346,13 @@ async function answerText(
 	conv: Conversation,
 	label: string,
 	context: Context,
-	initial: SubmissionDraft,
-	reminder?: SubmissionDraft,
+	key: string,
+	prompt: string,
+	requireReport = false,
 ): Promise<string | RunFailure> {
-	for (const draft of [initial, reminder]) {
-		if (!draft) return "";
-		if (draft === reminder) emitProgress("Empty report; requesting final text", label);
+	for (const request of requireReport ? [key, `${key}:report`] : [key]) {
+		if (request !== key) emitProgress("Empty report; requesting final text", label);
+		const draft = recoverRequest(conv.id, label, request, request === key ? prompt : reportPrompt);
 		const sub = await conv.submit(draft, context);
 		const settled = await waitForAnswer(sub, conv.id, label, context);
 		if (settled.status !== "done" || settled.type === "write")
@@ -367,7 +369,7 @@ async function answerText(
 			.trim();
 		if (text) return text;
 	}
-	return new RunFailure(`${label} returned an empty report after one reminder`);
+	return requireReport ? new RunFailure(`${label} returned an empty report after one reminder`) : "";
 }
 
 async function runSubagent(
@@ -381,13 +383,7 @@ async function runSubagent(
 	if (!conv) throw Error(`Missing subagent conversation: ${id}`);
 	const label = `agent:${spec.name}`;
 	emitProgress("started", label);
-	const text = await answerText(
-		conv,
-		label,
-		context,
-		{ type: "input", content: prompt, requestId: "work" },
-		requireReport ? { type: "input", content: reportPrompt, requestId: "work:report" } : undefined,
-	);
+	const text = await answerText(conv, label, context, "work", prompt, requireReport);
 	if (text instanceof RunFailure) {
 		emitProgress(text.message, label);
 		return { agent: spec.name, ok: false, output: text.message };
@@ -606,22 +602,34 @@ function selectToolsAndExtensions(toolNames: string[]) {
 
 const storage = await openNodeSqliteStorage(`${SESSIONS_DIR}/${job.id}.sqlite`);
 const turnKey = job.requestId ?? job.id;
-// Inspect before opening the harness: only retry failures that predate this launch.
-async function rootRequest(key: string) {
+// Freeze failures before Harness.open can resume work: a new failure must wait for the next launch.
+const unanswered = new Map<string, { resume: boolean; reason: string }>();
+let cursor: Cursor | undefined;
+do {
+	const page = await storage.scanSubmissions({ status: "unanswered" }, 256, cursor, BACKGROUND_CONTEXT);
+	for (const s of page.items) {
+		if (s.status === "unanswered" && s.requestId !== undefined)
+			unanswered.set(`${s.conversationId}:${s.requestId}`, {
+				resume: s.type === "continue" || s.entry !== undefined,
+				reason: safeReason(s.reason),
+			});
+	}
+	cursor = page.next;
+} while (cursor);
+
+function recoverRequest(id: ConversationId, label: string, key: string, content: string): SubmissionDraft {
 	let requestId = key;
 	let resume = false;
 	for (let attempt = 1; ; attempt++) {
-		const prior = await storage.submissionByRequest(ROOT_CONVERSATION_ID, requestId, BACKGROUND_CONTEXT);
-		if (prior?.status !== "unanswered") break;
-		emitProgress(`Root attempt ${attempt} was unanswered: ${safeReason(prior.reason)}`, "orchestrator");
-		resume = prior.type === "continue" || prior.entry !== undefined;
+		const prior = unanswered.get(`${id}:${requestId}`);
+		if (!prior) break;
+		emitProgress(`Attempt ${attempt} was unanswered: ${prior.reason}`, label);
+		resume = prior.resume;
 		requestId = `${key}:retry:${attempt}`;
 	}
-	return (content: string): SubmissionDraft =>
-		resume ? { type: "continue", requestId } : { type: "input", content, requestId };
+	return resume ? { type: "continue", requestId } : { type: "input", content, requestId };
 }
-const rootInput = await rootRequest(turnKey);
-const rootReminder = (await rootRequest(`${turnKey}:report`))(reportPrompt);
+
 const h = await Harness.open(
 	storage,
 	{
@@ -772,7 +780,7 @@ async function runAction(): Promise<string> {
 	}
 	let report: string | RunFailure;
 	try {
-		report = await answerText(root, "orchestrator", ctx, rootInput(finalPrompt), rootReminder);
+		report = await answerText(root, "orchestrator", ctx, turnKey, finalPrompt, true);
 	} finally {
 		await checkCleanliness(baseline, "orchestrator");
 	}

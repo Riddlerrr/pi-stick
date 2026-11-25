@@ -361,6 +361,71 @@ test("resume reuses an unparked delegate batch, then restores three settled work
 	}
 });
 
+for (const mode of ["stage", "delegate"]) {
+	test(`one resume retries an unanswered worker in an interrupted ${mode} batch`, async (t) => {
+		const { job, run, dir, stub } = stageFixture(t);
+		const names = ["failed", "done", "pending"];
+		for (const name of names)
+			Object.assign(job.agents, { [name]: { ...job.agents.sibling, name, instructions: `batch-member:${name}` } });
+		job.stages = mode === "stage" ? [{ name: "parallel", parallel: names, prompt: "work" }] : [];
+		job.orchestrator.tools = mode === "delegate" ? ["delegate"] : [];
+		fs.writeFileSync(
+			stub,
+			`import fs from 'node:fs';
+			import { Harness } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-durable"))};
+			const resumed = fs.existsSync('interrupted');
+			const open = Harness.open;
+			let failed = false, done = false, pending = false;
+			function interrupt() {
+				if (!resumed && failed && done && pending) {
+					fs.writeFileSync('interrupted', '');
+					process.kill(process.pid, 'SIGKILL');
+				}
+			}
+			Harness.open = async (...args) => {
+				const h = await open(...args);
+				h.observeCommits({end() {}, advance({changes}) {
+					for (const {type, value} of changes) if (type === 'submission' && value.requestId === 'work') {
+						failed ||= value.status === 'unanswered'; done ||= value.status === 'done'; interrupt();
+					}
+				}});
+				return h;
+			};
+			globalThis.fetch = async (_url, init) => {
+				const {messages} = JSON.parse(init.body);
+				const name = messages.filter(m => m.role === 'system').map(m => m.content).join(' ').match(/batch-member:(\\w+)/)?.[1];
+				let delta = {role:'assistant', content:name ?? 'report'};
+				if (name) {
+					fs.appendFileSync('requests', name + '\\n');
+					if (messages.filter(m => m.role === 'user').length !== 1) throw Error('Duplicated worker input');
+					if (!resumed && name === 'failed') return new Response('model error', {status:400});
+					if (!resumed && name === 'pending') { pending = true; interrupt(); await new Promise(() => {}); }
+				} else if (${mode === "delegate"} && !messages.some(m => m.role === 'tool')) {
+					const tasks = ${JSON.stringify(names)}.map(agent => ({agent, prompt:'work'}));
+					delta = {role:'assistant', tool_calls:[{index:0,id:'batch',type:'function',function:{name:'delegate',arguments:JSON.stringify({tasks})}}]};
+				}
+				const data = {choices:[{index:0, delta, finish_reason:delta.tool_calls?'tool_calls':'stop'}]};
+				return new Response('data: ' + JSON.stringify(data) + '\\n\\ndata: [DONE]\\n\\n', {headers:{'content-type':'text/event-stream'}});
+			};`,
+		);
+		const interrupted = await run();
+		assert.equal(interrupted.signal, "SIGKILL", interrupted.stderr + interrupted.stdout);
+		const resumed = await run();
+		assert.equal(resumed.status, 0, resumed.stderr + resumed.stdout);
+		assert.deepEqual(
+			JSON.parse(resumed.stdout.trim().split("\n").at(-1)!).data.outputs,
+			Object.fromEntries(names.map((name) => [name, name])),
+		);
+		assert.deepEqual(fs.readFileSync(join(dir, "requests"), "utf8").trim().split("\n").sort(), [
+			"done",
+			"failed",
+			"failed",
+			"pending",
+			"pending",
+		]);
+	});
+}
+
 test("same-turn delegates run sequentially, survive resume once, and do not carry into continue", async (t) => {
 	const { run, dir, job, stub } = stageFixture(t);
 	job.stages = [];
