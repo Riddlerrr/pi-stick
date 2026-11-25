@@ -44,6 +44,7 @@ const help =
 		.join("\n");
 
 type Command =
+	| { cmd: "help"; topic: keyof typeof usage }
 	| { cmd: "create-project"; name: string; repo?: string }
 	| { cmd: "create-action"; name: string; project?: string }
 	| { cmd: "actions"; project?: string }
@@ -66,7 +67,33 @@ type Command =
 	| { cmd: "doctor" }
 	| { cmd: "build" | "image-status" };
 
+function promptFlags<const T extends Record<string, { type: "string" | "boolean"; multiple?: boolean }>>(
+	args: string[],
+	options: T,
+	leadingPositionals: number,
+) {
+	const { tokens, values } = parseArgs({
+		args,
+		options: { ...options, help: { type: "boolean", short: "h" } } as const,
+		allowPositionals: true,
+		tokens: true,
+	});
+	const positionals: string[] = [];
+	for (const token of tokens) {
+		if (token.kind === "positional") positionals.push(token.value);
+		else if (token.kind === "option" && token.name === "help") {
+			if (positionals.length <= leadingPositionals) return { positionals, values, showHelp: true };
+			positionals.push(token.rawName);
+		}
+	}
+	return { positionals, values, showHelp: false };
+}
+
 function parse(cmd: string, args: string[]): Command {
+	if (cmd !== "run" && cmd !== "continue" && Object.hasOwn(usage, cmd)) {
+		const marker = args.find((arg) => arg === "--" || arg === "--help" || arg === "-h");
+		if (marker && marker !== "--") return { cmd: "help", topic: cmd as keyof typeof usage };
+	}
 	const flags = <const T extends Record<string, { type: "string" | "boolean"; multiple?: boolean }>>(options: T) =>
 		parseArgs({ args, options, allowPositionals: true });
 	switch (cmd) {
@@ -87,11 +114,20 @@ function parse(cmd: string, args: string[]): Command {
 			break;
 		}
 		case "run": {
-			const { positionals: p, values: v } = flags({
-				ref: { type: "string" },
-				input: { type: "string", multiple: true },
-				"keep-up": { type: "boolean" },
-			});
+			const {
+				positionals: p,
+				values: v,
+				showHelp,
+			} = promptFlags(
+				args,
+				{
+					ref: { type: "string" },
+					input: { type: "string", multiple: true },
+					"keep-up": { type: "boolean" },
+				},
+				2,
+			);
+			if (showHelp) return { cmd: "help", topic: cmd };
 			if (p.length >= 2) {
 				return {
 					cmd: "run",
@@ -122,7 +158,8 @@ function parse(cmd: string, args: string[]): Command {
 			break;
 		}
 		case "continue": {
-			const { positionals: p, values: v } = flags({ "keep-up": { type: "boolean" } });
+			const { positionals: p, values: v, showHelp } = promptFlags(args, { "keep-up": { type: "boolean" } }, 1);
+			if (showHelp) return { cmd: "help", topic: cmd };
 			if (p.length >= 2) {
 				return {
 					cmd: "continue",
@@ -174,10 +211,6 @@ export async function main(rawArgs: string[]) {
 		console.log(help);
 		return 0;
 	}
-	if (Object.hasOwn(usage, cmd) && args.some((s) => s === "--help" || s === "-h")) {
-		console.log(`Usage: pistick ${usage[cmd as keyof typeof usage]}`);
-		return 0;
-	}
 	if (cmd === "version" && !args.length) {
 		console.log(pkg.version);
 		return 0;
@@ -191,6 +224,10 @@ export async function main(rawArgs: string[]) {
 		return worker(id, args[1] === "--continue");
 	}
 	const action = parse(cmd, args);
+	if (action.cmd === "help") {
+		console.log(`Usage: pistick ${usage[action.topic]}`);
+		return 0;
+	}
 	fs.mkdirSync(join(STATE, "runs"), { recursive: true, mode: 0o700 });
 	switch (action.cmd) {
 		case "create-project":

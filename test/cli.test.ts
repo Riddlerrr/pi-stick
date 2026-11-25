@@ -126,6 +126,9 @@ test("version reports the CLI package version without creating state", (t) => {
 	const { app, ok, fail } = fixture(t);
 	const { version } = JSON.parse(read(join(import.meta.dirname, "..", "package.json")));
 	assert.equal(ok(["version"]), `${version}\n`);
+	assert.match(ok(["run", "app", "act", "--help"]), /^Usage: pistick run /);
+	assert.match(ok(["continue", "id", "-h"]), /^Usage: pistick continue /);
+	fail(["version", "--", "--help"], /Usage: pistick version/);
 	fail(["version", "extra"], /Usage: pistick version/);
 	assert.ok(!fs.existsSync(join(app, "state")));
 });
@@ -1112,7 +1115,7 @@ if (has('git') && a[0] === 'run') {
       const db = session + '/' + job.id + '.sqlite';
       if (job.continueRun) {
         if (fs.readFileSync(db, 'utf8') !== job.id) process.exit(6);
-        if (job.prompt === 'No subagents') { send({type:'response', command:'run', id:job.id, success:true, data:{report:'No subagents'}}); rl.close(); return; }
+        if (job.prompt === '--help') { send({type:'response', command:'run', id:job.id, success:true, data:{report:'No subagents'}}); rl.close(); return; }
         if (!fs.existsSync(repoMount + '/followup-started')) { fs.writeFileSync(repoMount + '/followup-started', job.requestId); send({type:'response',command:'run',id:job.id,success:false,error:"Stage 'review' failed: worker",data:{usage:usage(15)}}); rl.close(); process.exitCode=7; return; }
         if (fs.readFileSync(repoMount + '/followup-started', 'utf8') !== job.requestId) process.exit(8);
         if (fs.existsSync(repoMount + '/no-response')) process.exit(7);
@@ -1161,7 +1164,7 @@ if (has('git') && a[0] === 'run') {
 	// Missing required input fails fast before spawning worker
 	fail(["run", "demo", "fix"], /Missing required input 'ticket'/);
 
-	const runOut = ok(["run", "demo", "fix", "--input", "ticket=ISSUE-42", "Fix the bug"]);
+	const runOut = ok(["run", "demo", "fix", "--input", "ticket=ISSUE-42", "Fix", "-h", "bug"]);
 	const idMatch = /Run: ([0-9a-f]{32})/.exec(runOut);
 	assert.ok(idMatch, runOut);
 	const id = idMatch[1];
@@ -1171,6 +1174,7 @@ if (has('git') && a[0] === 'run') {
 
 	const runPath = join(app, "state/runs", id);
 	assert.equal(read(join(runPath, "report.md")), "Initial report\n");
+	assert.match(JSON.parse(read(join(runPath, "run.json"))).prompt, /^Fix -h bug\n/);
 	const usedTokens = () => JSON.parse(read(join(runPath, "run.json"))).usage.models["test/model"].totalTokens;
 	assert.equal(usedTokens(), 12);
 	const patch = read(join(runPath, "changes.patch"));
@@ -1217,9 +1221,9 @@ if (has('git') && a[0] === 'run') {
 	// Continue run with follow-up prompt
 	const cfgPath = join(runPath, "run.json");
 	stub("mkfifo", "process.exit(1)");
-	fail(["continue", id, "Also add followup line"], /mkfifo failed/);
+	fail(["continue", id, "Explain", "--help", "usage"], /mkfifo failed/);
 	const accepted = JSON.parse(read(cfgPath));
-	assert.equal(accepted.prompt, "Also add followup line");
+	assert.equal(accepted.prompt, "Explain --help usage");
 	assert.equal(accepted.phase, "agent");
 	assert.notEqual(accepted.requestId, id);
 	assert.equal(accepted.exitCode, undefined);
@@ -1302,7 +1306,7 @@ if (has('git') && a[0] === 'run') {
 	fail(["resume", id], /already completed/);
 	assert.deepEqual(fs.readdirSync(outputs), ["b.md"]);
 	assert.equal(read(join(outputs, "b.md")), "updated\n");
-	ok(["continue", id, "No subagents"]);
+	ok(["continue", id, "--", "--help"]);
 	assert.ok(!fs.existsSync(outputs));
 });
 

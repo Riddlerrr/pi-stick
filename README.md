@@ -173,6 +173,8 @@ pistick containers status               # compare installed build inputs with th
 pistick containers build                # (re)build the configured agent image from the shipped lockfile
 ```
 
+For `run` and `continue`, `-h` and `--help` show usage before the first prompt word and are literal text after it. Use `--` to end option parsing when the prompt itself starts with a flag: `pistick run my-app my-action -- --help`.
+
 A new task clones the local project checkout and points its `origin` at `project.json`’s `source` before running the `prepare` hook. Use a credential helper or SSH key; source URLs with embedded credentials, a query string, or a fragment are rejected. `--ref` uses a locally available commit or branch first; only a missing ref triggers a fetch from `origin`. It does not refresh existing branches or update the shared project checkout. For manually configured projects without `project.json`, `origin` remains the local project checkout.
 
 Each run mounts only `state/runs/<id>/session/` at `/sessions`; the orchestrator and its subagents share that SQLite database. `containers stop` preserves it and `cleanup` removes it with the run. Legacy `state/sessions/` databases are neither migrated nor used. `continue` refuses a missing session without changing the run. Before the first agent launch attempt, `resume` may initialize a session; after that attempt is recorded, a missing database is an error even if Docker never started.
