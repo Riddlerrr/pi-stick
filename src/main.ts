@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import pkg from "../package.json" with { type: "json" };
 import { createAction, listActions, validateAllActions } from "./actions.ts";
-import { STATE, tryLock } from "./platform.ts";
+import { ASSETS, STATE, tryLock } from "./platform.ts";
 import {
 	activeRunIds,
 	cleanup,
@@ -239,6 +239,7 @@ export async function main(rawArgs: string[]) {
 	switch (action.cmd) {
 		case "create-project":
 			console.log("Created:", await createProject(action.name, action.repo));
+			console.error("Project creation skill:", join(ASSETS, "skills/pi-stick/project-create/SKILL.md"));
 			return 0;
 		case "create-action": {
 			const project = action.project ? getProject(action.project) : undefined;

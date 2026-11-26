@@ -48,6 +48,8 @@ pistick doctor
 
 ## Create a project
 
+Point your host agent at the [main pi-stick skill](skills/pi-stick/SKILL.md), installed at `share/skills/pi-stick/SKILL.md`. It describes when to load each specialist. For project setup, `pistick create project` prints the [project-create skill](skills/pi-stick/project-create/SKILL.md) path directly. No agent-specific plugin or container mount is needed.
+
 ```sh
 pistick create project my-app               # prompts for Git URL or local path
 pistick create project my-app --repo https://github.com/OWNER/REPO.git

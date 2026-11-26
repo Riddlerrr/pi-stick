@@ -20,6 +20,8 @@ app="$HOME/custom install"
 pack
 install_with "$app\nn\n"
 cmp "$tmp/pi-stick/share/package-lock.json" "$app/share/package-lock.json"
+cmp skills/pi-stick/SKILL.md "$app/share/skills/pi-stick/SKILL.md"
+cmp skills/pi-stick/project-create/SKILL.md "$app/share/skills/pi-stick/project-create/SKILL.md"
 test ! -e "$app/Dockerfile"
 printf '{"default_model":"test/model"}\n' > "$app/settings.json"
 test ! -e "$HOME/cli.log"

@@ -37,6 +37,7 @@ function fixture(t: TestContext, copyRelease = false) {
 			"package-lock.json",
 			".dockerignore",
 			"project-template",
+			"skills/pi-stick",
 			"runtime",
 			"Dockerfile",
 			"action.schema.json",
@@ -1794,6 +1795,7 @@ test("stage-release.sh packages updated runtime files and excludes removed legac
 		"share/project-template/compose.yaml",
 		"share/project-template/setup-project",
 		"share/project-template/AGENTS.md",
+		"share/skills/pi-stick/project-create/SKILL.md",
 		"README.md",
 		"CHANGELOG.md",
 	]) {
