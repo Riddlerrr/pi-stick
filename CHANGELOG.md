@@ -1,10 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 — 2026-11-26
 
 - Codemode gets structured results from `find` and `grep`; direct model calls still get text. `find.query` is a literal path substring and `grep` no longer takes an offset. Narrow truncated searches instead of paging.
 
-- `pistick resume` now resumes interrupted delegations instead of abandoning the batch. Completed subagents keep their answers. Rebuild the agent image and start new runs; existing sessions are not migrated.
+- `pistick resume` restores interrupted delegations instead of abandoning the batch. In both stages and delegations, workers that finished keep their answers; a worker whose request already failed before interruption gets a new attempt in the same conversation.
+
+- `pistick follow` reports model retry waits and context compaction. Failed submissions report a reason such as `turn_limit` without exposing raw provider errors.
+
+- A report writer that returns no text gets one reminder in the same conversation. A read-only orchestrator without delegation warns if tracked-file status changes during its turn.
+
+- Runs can be inspected and stopped even if their original project directory is no longer present. Tool images are fitted before entering the model transcript.
+
+Rebuild the agent image with `pistick containers build` and start new runs; existing sessions are not migrated.
 
 ## 0.3.0 — 2026-11-25
 

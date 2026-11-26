@@ -32,5 +32,5 @@
     "test": "node --test test/*.test.ts && bash test/scripts/install.sh",
     "test:docker-recovery": "bash test/integration/docker-recovery.sh"
   },
-  "version": "0.3.0"
+  "version": "0.3.1"
 }
