@@ -315,6 +315,27 @@ test("TaskEnv validates base compose, materializes bind mounts, and isolates rep
 	assert.throws(() => validateCompose(folder, task.key), /host mounts/);
 });
 
+test("trusted runner build preparation uses the task checkout and a private build context", (t) => {
+	const { app, tmp, source, ok } = fixture(t);
+	ok(["create", "project", "demo", "--repo", source]);
+	const folder = join(app, "projects/demo");
+	const task = new TaskEnv(runId(), "demo", join(tmp, "state"));
+	task.prepareWorkspace({ name: "demo", folder, repo: join(folder, "repo") });
+	fs.writeFileSync(join(task.repo, "example.txt"), "selected checkout");
+	const hook = join(folder, "prepare-runner-build");
+	fs.symlinkSync("repo/example.txt", hook);
+	assert.throws(() => task.materializeCompose(folder), /regular trusted project file/);
+	fs.unlinkSync(hook);
+	fs.writeFileSync(hook, '#!/bin/sh\ntouch "$2/partial"\nexit 1\n', { mode: 0o700 });
+	assert.throws(() => task.materializeCompose(folder), /prepare-runner-build failed/);
+	fs.writeFileSync(hook, '#!/bin/sh\ncp "$1/example.txt" "$2/input"\n');
+	task.materializeCompose(folder);
+	const context = JSON.parse(read(task.composeFile)).services.runner.build.context;
+	assert.equal(context, join(task.dir, "runner-build"));
+	assert.deepEqual(fs.readdirSync(context), ["input"]);
+	assert.equal(read(join(context, "input")), "selected checkout");
+});
+
 test("task workspace bind preserves each service's access mode", (t) => {
 	const { app, tmp, source, ok } = fixture(t);
 	ok(["create", "project", "demo", "--repo", source]);

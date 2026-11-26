@@ -18,6 +18,7 @@ export interface Mount {
 }
 
 export interface ComposeService {
+	build?: { context: string };
 	volumes?: Mount[];
 	ports?: unknown[];
 	privileged?: boolean;
@@ -218,6 +219,18 @@ export class TaskEnv {
 
 	materializeCompose(projectFolder: string): { network: string; services: string[] } {
 		const conf = validateCompose(projectFolder, this.key);
+		const prepareBuild = join(projectFolder, "prepare-runner-build");
+		const hook = fs.lstatSync(prepareBuild, { throwIfNoEntry: false });
+		if (hook) {
+			if (!hook.isFile()) throw Error("prepare-runner-build must be a regular trusted project file");
+			const build = conf.services.runner.build;
+			if (!build) throw Error("prepare-runner-build requires services.runner.build");
+			const context = join(this.dir, "runner-build");
+			fs.rmSync(context, { recursive: true, force: true });
+			fs.mkdirSync(context, { recursive: true, mode: 0o700 });
+			run([prepareBuild, this.repo, context], { cwd: projectFolder });
+			build.context = context;
+		}
 		let sourceStillUsed = false;
 		for (const [name, svc] of Object.entries(conf.services)) {
 			let usesWorkspace = false;
