@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { join, relative } from "node:path";
 import type { LoadedAction } from "./actions.ts";
+import { ASSETS, ROOT, read } from "./platform.ts";
 
 const digest = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
 
@@ -10,6 +11,7 @@ type Snapshot = Pick<
 	"name" | "scope" | "orchestrator" | "agents" | "stageContext" | "stages" | "hooks"
 > & {
 	version: 2;
+	systemPrompt?: string; // Absent in runs created before operator prompts.
 	projectNotes: string | null;
 	treeHash: string;
 };
@@ -33,6 +35,14 @@ function treeHash(dir: string, copyTo?: string): string {
 			return [name, mode, digest(bytes)];
 		});
 	return digest(JSON.stringify(entries));
+}
+
+function operatorPrompt(name: string): string | undefined {
+	const path = join(ROOT, name);
+	const stat = fs.lstatSync(path, { throwIfNoEntry: false });
+	if (!stat) return undefined;
+	if (!stat.isFile()) throw Error(`Expected a regular prompt file: ${path}`);
+	return read(path).trim();
 }
 
 // The launcher publishes the digest in run.json only after every file exists.
@@ -59,6 +69,12 @@ export function saveActionSnapshot(runDir: string, action: LoadedAction, project
 		stageContext,
 		hooks,
 		treeHash: treeHash(action.dir, join(dir, "action")),
+		systemPrompt: [
+			operatorPrompt("SYSTEM.md") ?? read(join(ASSETS, "prompts/SYSTEM.md")).trim(),
+			operatorPrompt("APPEND_SYSTEM.md"),
+		]
+			.filter(Boolean)
+			.join("\n\n"),
 		projectNotes: fs.existsSync(notes) ? fs.readFileSync(notes, "utf8") : null,
 	};
 	const bytes = Buffer.from(JSON.stringify(snapshot));

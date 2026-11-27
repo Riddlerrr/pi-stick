@@ -58,8 +58,9 @@ function stageFixture(
 	};
 	const id = runId();
 	const job = {
-		type: "run.v1",
+		type: "run.v2",
 		project: "demo",
+		systemPrompt: "Pinned operator guidance",
 		projectNotes: "Pinned project notes",
 		services: ["runner"],
 		contextFiles: ["ticket.txt"],
@@ -130,7 +131,7 @@ function stageFixture(
 
 test("runtime rejects an unsupported revision before starting a session", async (t) => {
 	const { job, run } = stageFixture(t);
-	const result = await run({ ...job, type: "run.v2" });
+	const result = await run({ ...job, type: "run.v1" });
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /run revision/);
 });
@@ -165,6 +166,7 @@ test("continue appends only changed prompt sections and keeps agent-specific con
 			const [initial, ...updates] = patches;
 			assert.match(initial["context-files"]!, /ticket\.txt/);
 			assert.match(initial["project-notes"]!, /Pinned project notes/);
+			assert.match(initial.system!, /Pinned operator guidance/);
 			assert.match(initial.services!, /runner/);
 			if (id === ROOT_CONVERSATION_ID) {
 				assert.match(initial.workspace!, /\/scratch\/orchestrator/);

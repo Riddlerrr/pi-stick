@@ -93,6 +93,12 @@ services:
 
 Only regular files resolving inside the project folder and outside `repo/` are supported. External, inline and environment-sourced configs are not supported. Keep credentials out of these files. Compose `secrets` are not supported in the base recipe.
 
+## Customize agent instructions
+
+The default guidance for every agent ships in `share/prompts/SYSTEM.md` (`prompts/SYSTEM.md` in a checkout). To add a preference and keep future defaults, create `APPEND_SYSTEM.md` in your pi-stick home (normally `~/pi-stick`, or `~/pi-stick-dev` in dev mode). To replace the default guidance, create `SYSTEM.md` there instead. If both exist, the addendum follows the replacement.
+
+Only regular files in the operator's pi-stick home are used as overrides, never files from the project checkout. Upgrades preserve these files. Each new run pins the resolved text alongside its action; edits need no image rebuild and do not affect `resume` or `continue`. Workspace facts, tool permissions, project notes, and action instructions remain separate. Don't put secrets in prompts: the text is stored in the run and sent to the model.
+
 ## Author actions
 
 A fresh install has no actions. Create global actions (`$PI_STICK_HOME/actions/<name>/`) or project-specific actions (`projects/<project>/actions/<name>/`, which override global actions of the same name):

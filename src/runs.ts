@@ -364,6 +364,7 @@ export async function worker(id: string, freshContinue: boolean): Promise<number
 				models: auth.models,
 				credentials: auth.credentials,
 				project: project.name,
+				systemPrompt: action.systemPrompt ?? "",
 				projectNotes: action.projectNotes,
 				services: task.services(),
 				contextFiles: listContextFiles(task.context),

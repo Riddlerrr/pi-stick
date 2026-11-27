@@ -10,7 +10,7 @@ export interface CredentialPayload extends AccessLease {
 	authType?: "oauth" | "api_key";
 }
 
-export const RUN = "run.v1";
+export const RUN = "run.v2";
 // Only operator-safe summaries belong in a run failure, never raw provider or tool errors.
 export class RunFailure extends Error {}
 export interface AgentRuntimeSpec {
@@ -25,6 +25,7 @@ export interface AgentRuntimeSpec {
 }
 interface ActionFields {
 	project: string;
+	systemPrompt: string;
 	projectNotes: string | null;
 	services: string[];
 	contextFiles: string[];
@@ -166,6 +167,7 @@ function assertJob(m: unknown): asserts m is Job {
 			invalid("probe fields");
 	} else {
 		for (const k of ["project", "prompt", "requestId"]) if (typeof m[k] !== "string" || !m[k]) invalid(`run.${k}`);
+		if (typeof m.systemPrompt !== "string") invalid("run.systemPrompt");
 		if (m.projectNotes !== null && typeof m.projectNotes !== "string") invalid("run.projectNotes");
 		if (!strings(m.services)) invalid("run.services");
 		if (!strings(m.contextFiles)) invalid("run.contextFiles");

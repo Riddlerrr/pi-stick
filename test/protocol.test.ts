@@ -14,6 +14,7 @@ test("initial revision, probe and action fields are checked without echoing the 
 		requestId: "request",
 		prompt: "task",
 		project: "demo",
+		systemPrompt: "",
 		projectNotes: null,
 		services: [],
 		contextFiles: [],
@@ -25,9 +26,10 @@ test("initial revision, probe and action fields are checked without echoing the 
 	const probe = { ...envelope, check: true };
 	assert.deepEqual(readJob(JSON.stringify(probe)), probe);
 	for (const [bad, field] of [
-		[{ ...job, type: "run.v2" }, "revision"],
+		[{ ...job, type: "run.v1" }, "revision"],
 		[{ ...job, contextFiles: [123] }, "contextFiles"],
 		[{ ...job, services: "runner" }, "services"],
+		[{ ...job, systemPrompt: null }, "systemPrompt"],
 		[{ ...job, projectNotes: {} }, "projectNotes"],
 		[{ ...job, requestId: undefined }, "requestId"],
 		[{ ...probe, prompt: "unexpected" }, "probe fields"],

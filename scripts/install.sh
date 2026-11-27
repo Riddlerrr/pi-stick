@@ -51,10 +51,10 @@ release="$tmp/pi-stick"
 share="$release/share"
 [[ -f $release/pistick && -x $release/pistick && ! -L $release/pistick ]] || die "Missing release binary."
 [[ -d $share && ! -L $share ]] || die "Missing release directory: share"
-for name in Dockerfile .dockerignore package.json package-lock.json action.schema.json; do
+for name in Dockerfile .dockerignore package.json package-lock.json action.schema.json prompts/SYSTEM.md; do
   [[ -f $share/$name && ! -L $share/$name ]] || die "Missing release file: $name"
 done
-for name in project-template runtime; do
+for name in project-template runtime prompts; do
   [[ -d $share/$name && ! -L $share/$name ]] || die "Missing release directory: $name"
 done
 managed=(pistick share)

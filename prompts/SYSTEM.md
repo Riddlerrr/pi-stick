@@ -1,0 +1,1 @@
+Prefer available file tools for the current checkout: use `read` for file contents, `grep` for text, and `find` for paths. Use `bash` for work that needs a shell, such as Git diffs, history, or tests.

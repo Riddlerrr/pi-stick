@@ -518,6 +518,7 @@ const mainExtension = defineExtension({
 	sections: job.check
 		? []
 		: [
+				section("system", () => job.systemPrompt || undefined),
 				section("workspace", async ({ conversationId, read }, context) => {
 					const { name, mode } = await getAgentCtx(conversationId, read, context);
 					return (

@@ -37,6 +37,7 @@ function fixture(t: TestContext, copyRelease = false) {
 			"package-lock.json",
 			".dockerignore",
 			"project-template",
+			"prompts",
 			"skills/pi-stick",
 			"runtime",
 			"Dockerfile",
@@ -776,7 +777,7 @@ test("agent-runtime offline self-check exercises canonical paths, scratch, concu
 	const seenMethods: string[] = [];
 	let ready = false;
 	const id = runId();
-	child.stdin.write(`${JSON.stringify({ type: "run.v1", id, check: true, models: {}, credentials: {} })}\n`);
+	child.stdin.write(`${JSON.stringify({ type: "run.v2", id, check: true, models: {}, credentials: {} })}\n`);
 	for await (const line of lines) {
 		const msg = JSON.parse(line);
 		if (typeof msg.id === "string" && ["ps", "logs", "exec", "check_clean", "restart"].includes(msg.type)) {
@@ -1092,6 +1093,8 @@ test("end-to-end run, hooks, multiplexed RPC, diff, continue, and resume", async
 	const afterMarker = join(tmp, "after-called.json");
 	const failHook = join(tmp, "fail-after");
 	const projectDir = join(app, "projects/demo");
+	fs.writeFileSync(join(app, "SYSTEM.md"), "LOCAL DEFAULT\n");
+	fs.writeFileSync(join(app, "APPEND_SYSTEM.md"), "LOCAL ADDENDUM\n");
 	fs.writeFileSync(join(projectDir, "AGENTS.md"), "PINNED PROJECT NOTES");
 	fs.writeFileSync(join(actionDir, "instructions.md"), "PINNED INSTRUCTIONS");
 	fs.writeFileSync(
@@ -1206,8 +1209,9 @@ if (has('git') && a[0] === 'run') {
   rl.on('line', line => {
     const m = JSON.parse(line);
     if (!job) {
-      if (m.type !== 'run.v1') process.exit(12);
+      if (m.type !== 'run.v2') process.exit(12);
       job = m;
+      if (job.systemPrompt !== 'LOCAL DEFAULT\\n\\nLOCAL ADDENDUM') process.exit(13);
       if (job.credentials['openai-codex'].token !== (job.continueRun ? 'fresh-token' : 'secret-fixture-token')) process.exit(3);
       if (job.orchestrator.thinkingLevel !== 'high' || job.orchestrator.model.modelId !== 'gpt-6.2-sol' || job.projectNotes !== 'PINNED PROJECT NOTES' || job.orchestrator.instructions !== 'PINNED INSTRUCTIONS' || job.orchestrator.tools.includes('restart')) process.exit(10);
       if (job.continueRun && job.contextFiles.join(',') !== 'reports/updated-context.md,ticket.txt') process.exit(11);
@@ -1318,6 +1322,8 @@ if (has('git') && a[0] === 'run') {
 		if (entry.isFile()) assert.ok(!read(join(entry.parentPath, entry.name)).includes("secret-fixture-token"));
 	fs.rmSync(actionDir, { recursive: true });
 	writeJson(settings, { default_model: "different/model" });
+	fs.unlinkSync(join(app, "SYSTEM.md"));
+	fs.writeFileSync(join(app, "APPEND_SYSTEM.md"), "CHANGED ADDENDUM");
 	fs.writeFileSync(join(projectDir, "AGENTS.md"), "CHANGED NOTES");
 	fs.mkdirSync(join(runPath, "context/reports"));
 	fs.writeFileSync(join(runPath, "context/reports/updated-context.md"), "new context");
@@ -1545,8 +1551,9 @@ else if (has('config')) {
   rl.on('line', line => {
     const m = JSON.parse(line);
     if (!job) {
-      if (m.type !== 'run.v1') process.exit(12);
+      if (m.type !== 'run.v2') process.exit(12);
       job = m;
+      if (!job.systemPrompt.includes('Prefer available file tools')) process.exit(13);
       if (job.credentials['openai-codex'].token !== 'codex-token-fixture') process.exit(3);
       if (job.credentials['openai-codex'].authType !== 'oauth') process.exit(4);
       if (job.credentials['anthropic'].token !== 'anthropic-key-fixture') process.exit(5);
@@ -1662,8 +1669,9 @@ for (const end of ["duplicate", "EOF", "report", "hang"] as const) {
 		const result = executeAgentContainer(
 			task,
 			{
-				type: "run.v1",
+				type: "run.v2",
 				project: "demo",
+				systemPrompt: "",
 				projectNotes: null,
 				services: [],
 				contextFiles: [],
@@ -1807,6 +1815,7 @@ test("stage-release.sh packages updated runtime files and excludes removed legac
 		"share/runtime/main.ts",
 		"share/runtime/auth.ts",
 		"share/runtime/tools/read.ts",
+		"share/prompts/SYSTEM.md",
 		"share/action.schema.json",
 		"share/Dockerfile",
 		"share/.dockerignore",

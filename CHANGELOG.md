@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Customize agent guidance with `SYSTEM.md` and `APPEND_SYSTEM.md` in the pi-stick home. New runs snapshot the text for every agent. Rebuild the agent image once after upgrading for the new run protocol; later prompt edits need no rebuild.
+
 ## 0.3.1 — 2026-11-26
 
 - Codemode gets structured results from `find` and `grep`; direct model calls still get text. `find.query` is a literal path substring and `grep` no longer takes an offset. Narrow truncated searches instead of paging.
