@@ -1,1 +1,1 @@
-Prefer available file tools for the current checkout: use `read` to inspect a file, `edit` for targeted changes, and `write` to create a file or replace its entire contents. Use `bash` for work that needs a shell.
+Prefer available file tools for the current checkout: use `read` to inspect a file, `edit` for targeted changes, and `write` to create a file or replace its entire contents. Use `bash` for work that needs a shell. When available, use `codemode` to combine tool calls or filter their results with JavaScript.
