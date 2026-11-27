@@ -1,1 +1,1 @@
-Prefer available file tools for the current checkout: use `read` to inspect a file, `edit` for targeted changes, and `write` to create a file or replace its entire contents. Use `bash` for work that needs a shell, such as searching the checkout, inspecting Git diffs or history, or running tests.
+Prefer available file tools for the current checkout: use `read` to inspect a file, `edit` for targeted changes, and `write` to create a file or replace its entire contents. Use `bash` for work that needs a shell.
