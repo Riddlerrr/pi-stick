@@ -81,6 +81,28 @@ test("run responses and exec cancellation do not accept an agent", () => {
 		);
 	}
 });
+test("run usage preserves Pi's optional image output count without accepting arbitrary fields", () => {
+	const counts = { input: 0, output: 5, cacheRead: 0, cacheWrite: 0 };
+	const message = (extra: Record<string, unknown>) => ({
+		type: "response",
+		command: "run",
+		id: "r",
+		success: true,
+		data: {
+			report: "ok",
+			usage: {
+				models: {},
+				tools: { image: { ...counts, totalTokens: 5, cost: { ...counts, total: 5 }, ...extra } },
+			},
+		},
+	});
+	for (const extra of [{}, { imageOutput: 3 }]) {
+		const response = message(extra);
+		assert.deepEqual(readRuntime(JSON.stringify(response)), response);
+	}
+	for (const extra of [{ imageOutput: -1 }, { imageOutput: "3" }, { unknownCounter: 3 }])
+		assert.throws(() => readRuntime(JSON.stringify(message(extra))), /response.usage/);
+});
 test("run outputs must be strings and RPC replies match the pending id and command", () => {
 	const result = {
 		type: "response",

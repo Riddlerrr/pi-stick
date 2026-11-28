@@ -199,7 +199,9 @@ function isUsageSnapshot(value: unknown): value is UsageState {
 				tokens.every((k) => amount(entry[k])) &&
 				Object.entries(entry).every(
 					([k, v]) =>
-						k === "cost" || tokens.includes(k) || ((k === "cacheWrite1h" || k === "reasoning") && amount(v)),
+						k === "cost" ||
+						tokens.includes(k) ||
+						(["cacheWrite1h", "reasoning", "imageOutput"].includes(k) && amount(v)),
 				) &&
 				costs.every((k) => amount(cost[k])) &&
 				Object.entries(cost).every(([k, v]) =>

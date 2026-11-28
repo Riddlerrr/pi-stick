@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Updated the agent runtime from [Pi 1.6.1 to 1.7.0](https://github.com/earendil-works/pi/releases/tag/v1.7.0). Copilot preserves reasoning across turns on its OpenAI Completions models, and Bedrock honors the selected thinking level for Kimi K3.1 and GLM 5.3. Check actions pinned to retired model IDs (for example, Qwen Token Plan Individual’s `qwen4-max-preview` is now `qwen4-max`). Rebuild with `pistick containers build`; this does not update the host Pi CLI.
+
 - Customize agent guidance with `SYSTEM.md` and `APPEND_SYSTEM.md` in the pi-stick home. New runs snapshot the text for every agent. Rebuild the agent image once after upgrading for the new run protocol; later prompt edits need no rebuild.
 
 ## 0.3.1 — 2026-11-26
